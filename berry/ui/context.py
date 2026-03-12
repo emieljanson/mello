@@ -27,4 +27,5 @@ class RenderContext:
     admin_menu_open: bool
     admin_version: str
     admin_confirm_action: Optional[str]  # Action awaiting confirmation
+    wifi_reset_status: Optional[str]  # None, "deleting", "portal_active", "success", "error"
 

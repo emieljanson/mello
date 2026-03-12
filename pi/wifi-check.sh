@@ -5,8 +5,8 @@
 # This script is run at boot by the berry-wifi.service
 # If WiFi is connected, it exits immediately
 # If not, it starts a hotspot "Berry-Setup" where users can configure WiFi
-
-set -e
+#
+# IMPORTANT: No set -e — errors are handled explicitly to avoid blocking boot
 
 # Check if we have a WiFi connection
 SSID=$(iwgetid -r 2>/dev/null || true)
@@ -27,16 +27,29 @@ fi
 echo "Starting WiFi setup portal..."
 echo "Connect to 'Berry-Setup' hotspot to configure WiFi"
 
-# Start the captive portal
-# - Creates a hotspot named "Berry-Setup"
-# - No password required
-# - Timeout after 5 minutes of inactivity
-# - Listens on port 80 for the captive portal
-/usr/local/bin/wifi-connect \
-    --portal-ssid "Berry-Setup" \
-    --portal-passphrase "" \
-    --portal-listening-port 80 \
-    --activity-timeout 300
+# Start the captive portal with retry logic
+# Try up to 2 times in case of transient failures
+for attempt in 1 2; do
+    /usr/local/bin/wifi-connect \
+        --portal-ssid "Berry-Setup" \
+        --portal-passphrase "" \
+        --portal-listening-port 80 \
+        --activity-timeout 300
+    exit_code=$?
 
-echo "WiFi configured, continuing boot..."
+    if [ $exit_code -eq 0 ]; then
+        echo "WiFi configured successfully"
+        exit 0
+    fi
 
+    echo "wifi-connect attempt $attempt failed (exit code: $exit_code)"
+
+    if [ $attempt -lt 2 ]; then
+        echo "Retrying in 5 seconds..."
+        sleep 5
+    fi
+done
+
+# All attempts failed — exit 0 anyway to not block boot
+echo "WiFi setup portal failed, continuing boot without WiFi"
+exit 0

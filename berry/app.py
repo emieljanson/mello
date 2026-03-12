@@ -191,6 +191,8 @@ class Berry:
         self._admin_confirm_action: Optional[str] = None
         self._admin_confirm_time: float = 0
         self._version = get_version()
+        self._wifi_reset_status: Optional[str] = None  # "deleting", "portal_active", "success", "error"
+        self._wifi_reset_process: Optional[subprocess.Popen] = None
 
         # TempItem and delete mode (with lock for thread-safe access)
         self.temp_item: Optional[CatalogItem] = None
@@ -737,6 +739,8 @@ class Berry:
                     self._on_wake()
                     continue
                 self.sleep_manager.reset_timer()
+                if self._wifi_reset_status:
+                    continue  # Block all touch during WiFi reset
                 if self.admin_menu_open:
                     self._handle_admin_tap(event.pos)
                     continue
@@ -751,7 +755,7 @@ class Berry:
                 self._handle_key(event.key)
             
             elif event.type == pygame.MOUSEMOTION:
-                if self.admin_menu_open:
+                if self.admin_menu_open or self._wifi_reset_status:
                     continue
                 if self.touch.dragging:
                     self.sleep_manager.reset_timer()
@@ -764,7 +768,7 @@ class Berry:
             
             elif event.type == pygame.MOUSEBUTTONUP:
                 logger.info(f'Event: MOUSEBUTTONUP at {event.pos}')
-                if self.admin_menu_open:
+                if self.admin_menu_open or self._wifi_reset_status:
                     continue
                 if not self.sleep_manager.is_sleeping:
                     self._handle_touch_up(event.pos)
@@ -1340,19 +1344,25 @@ class Berry:
     def _admin_reset_wifi(self):
         """Reset WiFi by deleting connections and starting captive portal.
 
-        Instead of rebooting (which can cause loops), we:
-        1. Delete saved WiFi connections
-        2. Start wifi-connect captive portal directly
-        3. Only reboot after WiFi is reconfigured (wifi-connect exits on success)
+        Key principle: NEVER reboot on failure. Only restart services on success.
+        On any error, show message and return to admin menu.
+
+        Flow:
+        1. Show "WiFi resetten..." status
+        2. Delete saved WiFi connections (non-fatal errors)
+        3. Start wifi-connect captive portal (non-blocking)
+        4. Poll process in _update() to keep UI responsive
+        5. On success: restart services. On failure: return to admin menu.
         """
         logger.info('Admin: Resetting WiFi')
         self.admin_menu_open = False
         self._admin_confirm_action = None
+        self._wifi_reset_status = 'deleting'
         self.renderer.invalidate()
 
-        def do_reset():
+        def do_delete_and_start_portal():
             try:
-                # Delete saved WiFi connections
+                # Step 1: Delete saved WiFi connections
                 result = subprocess.run(
                     ['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show'],
                     capture_output=True, text=True, timeout=10
@@ -1367,33 +1377,73 @@ class Berry:
                                     capture_output=True, timeout=10
                                 )
                                 logger.info(f'Deleted WiFi connection: {name}')
-                            except subprocess.TimeoutExpired:
-                                logger.warning(f'Timeout deleting connection: {name}')
+                            except (subprocess.TimeoutExpired, OSError) as e:
+                                logger.warning(f'Error deleting connection {name}: {e}')
+            except Exception as e:
+                logger.warning(f'Error listing WiFi connections: {e}')
 
-                # Start captive portal directly (blocks until user configures WiFi)
-                logger.info('Starting WiFi setup portal...')
-                portal = subprocess.run(
+            # Step 2: Start captive portal (non-blocking)
+            try:
+                self._wifi_reset_process = subprocess.Popen(
                     ['sudo', '/usr/local/bin/wifi-connect',
                      '--portal-ssid', 'Berry-Setup',
                      '--portal-passphrase', '',
                      '--portal-listening-port', '80',
                      '--activity-timeout', '300'],
-                    capture_output=True, text=True, timeout=330
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 )
-                if portal.returncode == 0:
-                    logger.info('WiFi reconfigured, rebooting...')
-                    subprocess.Popen(['sudo', 'reboot'])
-                else:
-                    logger.error(f'wifi-connect failed: {portal.stderr}')
-                    # Fall back to reboot so wifi-check.sh can try
-                    subprocess.Popen(['sudo', 'reboot'])
+                self._wifi_reset_status = 'portal_active'
+                logger.info('WiFi captive portal started (Berry-Setup)')
             except FileNotFoundError:
-                logger.error('wifi-connect not installed, rebooting to let wifi-check.sh handle it')
-                subprocess.Popen(['sudo', 'reboot'])
+                logger.error('wifi-connect not installed')
+                self._wifi_reset_status = 'error'
             except Exception as e:
-                logger.error(f'WiFi reset failed: {e}')
+                logger.error(f'Failed to start wifi-connect: {e}')
+                self._wifi_reset_status = 'error'
 
-        threading.Thread(target=do_reset, daemon=True).start()
+            self.renderer.invalidate()
+
+        threading.Thread(target=do_delete_and_start_portal, daemon=True).start()
+
+    def _poll_wifi_reset(self):
+        """Poll wifi-connect process. Called from _update() loop."""
+        if self._wifi_reset_process is None:
+            return
+
+        retcode = self._wifi_reset_process.poll()
+        if retcode is None:
+            return  # Still running
+
+        # Process finished
+        self._wifi_reset_process = None
+
+        if retcode == 0:
+            logger.info('WiFi reconfigured successfully')
+            self._wifi_reset_status = 'success'
+            self.renderer.invalidate()
+            # Restart services instead of rebooting
+            def restart_services():
+                time.sleep(2)  # Show success message briefly
+                try:
+                    subprocess.run(
+                        ['sudo', 'systemctl', 'restart', 'berry-librespot', 'berry-native'],
+                        capture_output=True, timeout=15
+                    )
+                    logger.info('Services restarted after WiFi reset')
+                except Exception as e:
+                    logger.error(f'Failed to restart services: {e}')
+            threading.Thread(target=restart_services, daemon=True).start()
+        else:
+            logger.error(f'wifi-connect exited with code {retcode}')
+            self._wifi_reset_status = 'error'
+            self.renderer.invalidate()
+            # Return to admin menu after 3 seconds
+            def clear_error():
+                time.sleep(3)
+                self._wifi_reset_status = None
+                self.admin_menu_open = True
+                self.renderer.invalidate()
+            threading.Thread(target=clear_error, daemon=True).start()
 
     def _admin_restart(self):
         """Restart Berry service."""
@@ -1573,6 +1623,10 @@ class Berry:
         if self._admin_confirm_action and time.time() - self._admin_confirm_time > 3.0:
             self._admin_confirm_action = None
             self.renderer.invalidate()
+
+        # Poll WiFi reset process
+        if self._wifi_reset_status:
+            self._poll_wifi_reset()
         
         # Update interaction state
         self.user_interacting = (
@@ -1700,5 +1754,6 @@ class Berry:
             admin_menu_open=self.admin_menu_open,
             admin_version=self._version,
             admin_confirm_action=self._admin_confirm_action,
+            wifi_reset_status=self._wifi_reset_status,
         )
         return self.renderer.draw(ctx)

@@ -90,6 +90,12 @@ class Renderer:
             self._needs_full_redraw = True
             return None
 
+        # WiFi reset status screen (takes priority over admin menu)
+        if ctx.wifi_reset_status:
+            self._draw_wifi_reset_status(ctx.wifi_reset_status)
+            self._needs_full_redraw = True
+            return None
+
         # Admin menu overlay
         if ctx.admin_menu_open:
             self._draw_admin_menu(ctx.admin_version, ctx.admin_confirm_action)
@@ -360,6 +366,33 @@ class Renderer:
         version_text = self._render_text_rotated(f'v. {version}', self.font_small, COLORS['text_muted'])
         version_rect = version_text.get_rect(center=(60, center_y))
         self.screen.blit(version_text, version_rect)
+
+    def _draw_wifi_reset_status(self, status: str):
+        """Draw WiFi reset status screen (portrait mode).
+
+        Shows progress/instructions during WiFi reset process.
+        """
+        self.screen.fill(COLORS['bg_primary'])
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+
+        status_messages = {
+            'deleting': ('WiFi resetten...', None),
+            'portal_active': ('Verbind met', "'Berry-Setup' WiFi"),
+            'success': ('WiFi verbonden!', 'Herstarten...'),
+            'error': ('WiFi reset mislukt', 'Terug naar menu...'),
+        }
+
+        title, subtitle = status_messages.get(status, ('WiFi...', None))
+
+        title_surf = self._render_text_rotated(title, self.font_large, COLORS['text_primary'])
+        title_rect = title_surf.get_rect(center=(center_x + (40 if subtitle else 0), center_y))
+        self.screen.blit(title_surf, title_rect)
+
+        if subtitle:
+            sub_surf = self._render_text_rotated(subtitle, self.font_medium, COLORS['text_muted'])
+            sub_rect = sub_surf.get_rect(center=(center_x - 40, center_y))
+            self.screen.blit(sub_surf, sub_rect)
 
     def _draw_empty_state(self):
         """Draw empty catalog state (portrait mode)."""
