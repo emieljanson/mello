@@ -142,7 +142,37 @@ else
 fi
 
 # ============================================
-# 9. Start services
+# 9. Configure display (5" DSI touchscreen)
+# ============================================
+echo "🖥️ Configuring display..."
+
+# Add display overlay to config.txt if not already present
+if ! grep -q "vc4-kms-dsi-ili9881-5inch" /boot/firmware/config.txt 2>/dev/null; then
+  echo "" | sudo tee -a /boot/firmware/config.txt > /dev/null
+  echo "# Berry 5-inch DSI touchscreen" | sudo tee -a /boot/firmware/config.txt > /dev/null
+  echo "dtoverlay=vc4-kms-dsi-ili9881-5inch,rotation=90" | sudo tee -a /boot/firmware/config.txt > /dev/null
+  echo "✅ Display overlay added to config.txt"
+else
+  echo "✅ Display overlay already configured"
+fi
+
+# Add panel orientation to cmdline.txt if not already present
+if ! grep -q "panel_orientation" /boot/firmware/cmdline.txt 2>/dev/null; then
+  # Append to the single line in cmdline.txt (no newline)
+  sudo sed -i 's/$/ video=DSI-1:panel_orientation=left_side_up/' /boot/firmware/cmdline.txt
+  echo "✅ Panel orientation added to cmdline.txt"
+else
+  echo "✅ Panel orientation already configured"
+fi
+
+# Disable console blanking (prevents screen going black)
+if ! grep -q "consoleblank=0" /boot/firmware/cmdline.txt 2>/dev/null; then
+  sudo sed -i 's/$/ consoleblank=0/' /boot/firmware/cmdline.txt
+  echo "✅ Console blanking disabled"
+fi
+
+# ============================================
+# 10. Start services
 # ============================================
 echo "🚀 Starting services..."
 sudo systemctl start berry-librespot berry-native
