@@ -23,6 +23,21 @@ def run_async(fn, *args):
     threading.Thread(target=wrapper, daemon=True).start()
 
 
+def get_version() -> str:
+    """Get current git commit SHA, or 'dev' if not in a git repo."""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(__import__('pathlib').Path(__file__).parent.parent)
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return 'dev'
+
+
 def set_system_volume(speaker_level: int, headphone_level: int):
     """Set the Pi's ALSA system volume for speaker and headphone separately."""
     if sys.platform != 'linux':

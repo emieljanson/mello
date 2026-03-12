@@ -7,7 +7,7 @@ Wants=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/admin/berry/pi/wifi-check.sh
+ExecStart=/home/berry/berry/pi/wifi-check.sh
 RemainAfterExit=yes
 TimeoutStartSec=600
 

@@ -5,7 +5,7 @@ import time
 import logging
 from typing import Tuple, Optional
 
-from ..config import SWIPE_THRESHOLD, SWIPE_VELOCITY, LONG_PRESS_TIME
+from ..config import SWIPE_THRESHOLD, SWIPE_VELOCITY, LONG_PRESS_TIME, ADMIN_HOLD_TIME
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class TouchHandler:
         self.dragging = False
         self.drag_offset = 0  # Current drag offset in pixels
         self.long_press_fired = False  # Track if long press was triggered
+        self.admin_hold_fired = False  # Track if admin hold was triggered
         self.is_swiping = False  # Track if user started swiping (moved beyond threshold)
         self.long_press_time = long_press_time if long_press_time is not None else LONG_PRESS_TIME
     
@@ -34,6 +35,7 @@ class TouchHandler:
         self.dragging = True
         self.drag_offset = 0
         self.long_press_fired = False
+        self.admin_hold_fired = False
         self.is_swiping = False
         logger.debug(f'Touch down at ({pos[0]}, {pos[1]})')
     
@@ -67,9 +69,24 @@ class TouchHandler:
             self.long_press_fired = True
             logger.debug(f'Long press triggered at ({self.start_x}, {self.start_y})')
             return True
-        
+
         return False
-    
+
+    def check_admin_hold(self) -> bool:
+        """Check if admin hold threshold reached (10s). Returns True once."""
+        if not self.dragging or self.admin_hold_fired:
+            return False
+
+        if self.is_swiping:
+            return False
+
+        if time.time() - self.start_time >= ADMIN_HOLD_TIME:
+            self.admin_hold_fired = True
+            logger.info(f'Admin hold triggered at ({self.start_x}, {self.start_y})')
+            return True
+
+        return False
+
     def on_up(self, pos: Tuple[int, int]) -> Tuple[Optional[str], float]:
         """
         Called on touch/mouse up.

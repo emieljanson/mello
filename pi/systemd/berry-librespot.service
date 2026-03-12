@@ -6,11 +6,11 @@ PartOf=berry-native.service
 
 [Service]
 Type=simple
-User=admin
-ExecStart=/usr/local/bin/go-librespot --config_dir /home/admin/.config/go-librespot
+User=berry
+ExecStart=/usr/local/bin/go-librespot --config_dir /home/berry/.config/go-librespot
 Restart=always
 RestartSec=5
-Environment=HOME=/home/admin
+Environment=HOME=/home/berry
 
 [Install]
 WantedBy=multi-user.target

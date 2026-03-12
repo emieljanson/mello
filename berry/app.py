@@ -15,13 +15,14 @@ import pygame
 
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
-    LIBRESPOT_URL, LIBRESPOT_WS, 
+    LIBRESPOT_URL, LIBRESPOT_WS,
     CATALOG_PATH, IMAGES_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     CAROUSEL_X, CAROUSEL_Y, CAROUSEL_CENTER_Y, CONTROLS_X, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     PROGRESS_SAVE_INTERVAL,
     has_spotify_credentials,
+    LIBRESPOT_STATE_FILE,
 )
 from .models import CatalogItem, NowPlaying, PlayState
 from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
@@ -29,7 +30,7 @@ from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager
 from .controllers import VolumeController
 from .ui import ImageCache, Renderer, RenderContext
-from .utils import run_async
+from .utils import run_async, get_version
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,8 @@ class Berry:
         
         # Evdev touch handler for KMSDRM mode (reads /dev/input directly)
         self.evdev_touch = EvdevTouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT)
-        self.evdev_touch.start()  # Starts background thread if touchscreen found
+        self.touch_available = self.evdev_touch.start()  # Starts background thread if touchscreen found
+        self._last_touch_retry = time.time()
         
         # Managers
         self.sleep_manager = SleepManager()
@@ -183,7 +185,13 @@ class Berry:
         # Setup state (first-time Spotify connection)
         self.needs_setup = not has_spotify_credentials()
         self._last_credentials_check = 0
-        
+
+        # Admin menu state
+        self.admin_menu_open = False
+        self._admin_confirm_action: Optional[str] = None
+        self._admin_confirm_time: float = 0
+        self._version = get_version()
+
         # TempItem and delete mode (with lock for thread-safe access)
         self.temp_item: Optional[CatalogItem] = None
         self._temp_item_lock = threading.Lock()
@@ -402,14 +410,39 @@ class Berry:
         
         # Main loop
         while self.running:
-            # Sleep mode: block until event arrives (0% CPU, instant wake)
+            # Keep touch handler healthy; retry periodically if unavailable.
+            if self.touch_available and not self.evdev_touch.is_active():
+                logger.warning('Touch handler stopped; disabling touch sleep and scheduling retry')
+                self.touch_available = False
+            
+            if not self.touch_available and time.time() - self._last_touch_retry >= 5.0:
+                self._last_touch_retry = time.time()
+                self.touch_available = self.evdev_touch.start()
+                if self.touch_available:
+                    logger.info('Touch handler recovered')
+
+            # Sleep mode: keep CPU low, but do not block indefinitely.
+            # Background status polling can wake sleep state (e.g. Spotify starts playback
+            # remotely), so we must re-check state frequently and redraw promptly.
+            if self.sleep_manager.is_sleeping and not self.touch_available:
+                logger.warning('Sleep disabled while touch input is unavailable')
+                self.sleep_manager.wake_up()
+                self._on_wake()
+
             if self.sleep_manager.is_sleeping:
-                event = pygame.event.wait()  # Blocks until event
-                if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
-                    self.sleep_manager.wake_up()
-                    self._on_wake()
-                elif event.type == pygame.QUIT:
-                    self.running = False
+                for event in pygame.event.get():
+                    if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                        self.sleep_manager.wake_up()
+                        self._on_wake()
+                    elif event.type == pygame.QUIT:
+                        self.running = False
+                        break
+                
+                if not self.running:
+                    break
+                
+                if self.sleep_manager.is_sleeping:
+                    time.sleep(0.05)
                 continue
             
             self._handle_events()
@@ -704,6 +737,9 @@ class Berry:
                     self._on_wake()
                     continue
                 self.sleep_manager.reset_timer()
+                if self.admin_menu_open:
+                    self._handle_admin_tap(event.pos)
+                    continue
                 self._handle_touch_down(event.pos)
             
             elif event.type == pygame.KEYDOWN:
@@ -715,6 +751,8 @@ class Berry:
                 self._handle_key(event.key)
             
             elif event.type == pygame.MOUSEMOTION:
+                if self.admin_menu_open:
+                    continue
                 if self.touch.dragging:
                     self.sleep_manager.reset_timer()
                     self.touch.on_move(event.pos)
@@ -726,6 +764,8 @@ class Berry:
             
             elif event.type == pygame.MOUSEBUTTONUP:
                 logger.info(f'Event: MOUSEBUTTONUP at {event.pos}')
+                if self.admin_menu_open:
+                    continue
                 if not self.sleep_manager.is_sleeping:
                     self._handle_touch_up(event.pos)
     
@@ -1213,7 +1253,157 @@ class Berry:
         logger.info(f'Delete mode: {item.name}')
         self.delete_mode_id = item.id
         self.renderer.invalidate()
-    
+
+    # ============================================
+    # Admin Menu
+    # ============================================
+
+    def _handle_admin_tap(self, pos):
+        """Handle tap on admin menu item."""
+        x, y = pos
+        for action, (rx, ry, rw, rh) in self.renderer.admin_menu_rects.items():
+            if rx <= x <= rx + rw and ry <= y <= ry + rh:
+                self._handle_admin_action(action)
+                return
+        # Tap outside menu items — ignore
+
+    def _handle_admin_action(self, action: str):
+        """Execute an admin menu action."""
+        if action == 'close':
+            self.admin_menu_open = False
+            self._admin_confirm_action = None
+            self.renderer.invalidate()
+            return
+
+        # Dangerous actions require confirmation
+        if action in ('reset_spotify', 'reset_wifi'):
+            if self._admin_confirm_action == action:
+                # Second tap — execute
+                self._admin_confirm_action = None
+                if action == 'reset_spotify':
+                    self._admin_reset_spotify()
+                elif action == 'reset_wifi':
+                    self._admin_reset_wifi()
+                return
+            else:
+                # First tap — ask for confirmation
+                self._admin_confirm_action = action
+                self._admin_confirm_time = time.time()
+                self.renderer.invalidate()
+                return
+
+        if action == 'restart':
+            self._admin_restart()
+
+    def _admin_reset_spotify(self):
+        """Reset Spotify credentials, catalog, and images."""
+        logger.info('Admin: Resetting Spotify')
+
+        # Delete go-librespot state
+        try:
+            if LIBRESPOT_STATE_FILE.exists():
+                LIBRESPOT_STATE_FILE.unlink()
+                logger.info(f'Deleted {LIBRESPOT_STATE_FILE}')
+        except OSError as e:
+            logger.warning(f'Failed to delete state file: {e}')
+
+        # Delete catalog
+        try:
+            if CATALOG_PATH.exists():
+                CATALOG_PATH.unlink()
+                logger.info(f'Deleted {CATALOG_PATH}')
+        except OSError as e:
+            logger.warning(f'Failed to delete catalog: {e}')
+
+        # Delete all images
+        try:
+            if IMAGES_DIR.exists():
+                for f in IMAGES_DIR.iterdir():
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                logger.info('Deleted all images')
+        except OSError as e:
+            logger.warning(f'Failed to clean images: {e}')
+
+        # Reset app state
+        self.catalog_manager.load()
+        self.temp_item = None
+        self.selected_index = 0
+        self.delete_mode_id = None
+        self.needs_setup = True
+        self.admin_menu_open = False
+        self._admin_confirm_action = None
+        self.renderer.invalidate()
+
+    def _admin_reset_wifi(self):
+        """Reset WiFi by deleting connections and starting captive portal.
+
+        Instead of rebooting (which can cause loops), we:
+        1. Delete saved WiFi connections
+        2. Start wifi-connect captive portal directly
+        3. Only reboot after WiFi is reconfigured (wifi-connect exits on success)
+        """
+        logger.info('Admin: Resetting WiFi')
+        self.admin_menu_open = False
+        self._admin_confirm_action = None
+        self.renderer.invalidate()
+
+        def do_reset():
+            try:
+                # Delete saved WiFi connections
+                result = subprocess.run(
+                    ['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show'],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.strip().split('\n'):
+                        if ':802-11-wireless' in line:
+                            name = line.split(':')[0]
+                            try:
+                                subprocess.run(
+                                    ['sudo', 'nmcli', 'connection', 'delete', name],
+                                    capture_output=True, timeout=10
+                                )
+                                logger.info(f'Deleted WiFi connection: {name}')
+                            except subprocess.TimeoutExpired:
+                                logger.warning(f'Timeout deleting connection: {name}')
+
+                # Start captive portal directly (blocks until user configures WiFi)
+                logger.info('Starting WiFi setup portal...')
+                portal = subprocess.run(
+                    ['sudo', '/usr/local/bin/wifi-connect',
+                     '--portal-ssid', 'Berry-Setup',
+                     '--portal-passphrase', '',
+                     '--portal-listening-port', '80',
+                     '--activity-timeout', '300'],
+                    capture_output=True, text=True, timeout=330
+                )
+                if portal.returncode == 0:
+                    logger.info('WiFi reconfigured, rebooting...')
+                    subprocess.Popen(['sudo', 'reboot'])
+                else:
+                    logger.error(f'wifi-connect failed: {portal.stderr}')
+                    # Fall back to reboot so wifi-check.sh can try
+                    subprocess.Popen(['sudo', 'reboot'])
+            except FileNotFoundError:
+                logger.error('wifi-connect not installed, rebooting to let wifi-check.sh handle it')
+                subprocess.Popen(['sudo', 'reboot'])
+            except Exception as e:
+                logger.error(f'WiFi reset failed: {e}')
+
+        threading.Thread(target=do_reset, daemon=True).start()
+
+    def _admin_restart(self):
+        """Restart Berry service."""
+        logger.info('Admin: Restarting Berry')
+        self.admin_menu_open = False
+        try:
+            subprocess.Popen(['sudo', 'systemctl', 'restart', 'berry-native'])
+        except Exception as e:
+            logger.error(f'Restart failed: {e}')
+
     def _save_playback_progress(self):
         """Queue progress save in background thread (non-blocking)."""
         if self.mock_mode:
@@ -1369,9 +1559,20 @@ class Berry:
                     if not item.is_temp and not self._is_item_playing(item):
                         self.play_timer.start(item)
         
+        # Check admin hold (10s) — takes priority over long press
+        if self.touch.check_admin_hold():
+            self.admin_menu_open = True
+            self.delete_mode_id = None
+            self.touch.dragging = False
+            self.renderer.invalidate()
         # Check long press for delete mode
-        if self.touch.check_long_press():
+        elif self.touch.check_long_press():
             self._trigger_delete_mode()
+
+        # Expire admin confirm after 3 seconds
+        if self._admin_confirm_action and time.time() - self._admin_confirm_time > 3.0:
+            self._admin_confirm_action = None
+            self.renderer.invalidate()
         
         # Update interaction state
         self.user_interacting = (
@@ -1437,8 +1638,12 @@ class Berry:
                     daemon=True
                 ).start()
         
-        # Check sleep
-        self.sleep_manager.check_sleep(self.now_playing.playing)
+        # Check sleep (disabled when touch input is unavailable to avoid
+        # getting stuck on a black screen that cannot be woken locally)
+        if self.touch_available:
+            self.sleep_manager.check_sleep(self.now_playing.playing)
+        elif self.sleep_manager.is_sleeping:
+            self.sleep_manager.wake_up()
         
         # Update loading state (calculated here so FPS decision can use it)
         self._update_loading_state()
@@ -1485,13 +1690,15 @@ class Berry:
             drag_offset=self.touch.drag_offset,
             dragging=self.touch.dragging,
             is_sleeping=self.sleep_manager.is_sleeping,
-            connected=self.connected,
+            connected=self.connected or self._play_in_progress,
             volume_index=self.volume.index,
             delete_mode_id=self.delete_mode_id,
             pressed_button=self._pressed_button,
             is_loading=self.play_state.is_loading,
             is_playing=self.play_state.display_playing(self.now_playing.playing),
             needs_setup=self.needs_setup,
+            admin_menu_open=self.admin_menu_open,
+            admin_version=self._version,
+            admin_confirm_action=self._admin_confirm_action,
         )
         return self.renderer.draw(ctx)
-

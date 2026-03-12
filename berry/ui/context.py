@@ -24,4 +24,7 @@ class RenderContext:
     is_loading: bool
     is_playing: bool  # What to show for play/pause button
     needs_setup: bool
+    admin_menu_open: bool
+    admin_version: str
+    admin_confirm_action: Optional[str]  # Action awaiting confirmation
 

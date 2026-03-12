@@ -81,6 +81,10 @@ class EvdevTouchHandler:
             except Exception as e:
                 logger.debug(f'Error closing touch device: {e}')
     
+    def is_active(self) -> bool:
+        """Return True when touch reader thread is running."""
+        return bool(self._running and self._thread and self._thread.is_alive())
+    
     def _find_touchscreen(self) -> Optional['evdev.InputDevice']:
         """Find the touchscreen device."""
         try:
@@ -160,5 +164,7 @@ class EvdevTouchHandler:
         except Exception as e:
             if self._running:
                 logger.error(f'Touch read error: {e}')
+        finally:
+            self._running = False
         
         logger.debug('Touch handler stopped')

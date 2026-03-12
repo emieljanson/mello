@@ -136,6 +136,7 @@ PROGRESS_EXPIRY_HOURS = 24  # Expire saved progress after 24 hours
 SWIPE_THRESHOLD = 50      # Minimum distance for swipe
 SWIPE_VELOCITY = 0.3      # Minimum velocity (pixels/ms)
 LONG_PRESS_TIME = 1.0     # Time for long press (seconds)
+ADMIN_HOLD_TIME = 10.0    # Time for admin menu hold (seconds)
 
 # ============================================
 # AUTO-PAUSE (prevents music playing forever)

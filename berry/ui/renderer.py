@@ -57,6 +57,7 @@ class Renderer:
         # Button hit rectangles (updated during draw)
         self.add_button_rect: Optional[Tuple[int, int, int, int]] = None
         self.delete_button_rect: Optional[Tuple[int, int, int, int]] = None
+        self.admin_menu_rects: Dict[str, Tuple[int, int, int, int]] = {}
         
         # Profiler callback (set by app.py when profiling is enabled)
         self._profile_mark: Optional[Callable[[str], None]] = None
@@ -88,7 +89,13 @@ class Renderer:
             self.screen.fill((0, 0, 0))
             self._needs_full_redraw = True
             return None
-        
+
+        # Admin menu overlay
+        if ctx.admin_menu_open:
+            self._draw_admin_menu(ctx.admin_version, ctx.admin_confirm_action)
+            self._needs_full_redraw = True
+            return None
+
         # Setup mode - show Spotify connect instructions
         if ctx.needs_setup:
             self._draw_background()
@@ -285,6 +292,75 @@ class Renderer:
         waiting_rect = waiting.get_rect(center=(60, center_y))
         self.screen.blit(waiting, waiting_rect)
     
+    def _draw_admin_menu(self, version: str, confirm_action: Optional[str]):
+        """Draw admin settings menu (portrait mode).
+
+        Portrait coordinate system:
+        - Physical X (0-720) = user's vertical. X=0 is user's bottom, X=720 is user's top.
+        - Physical Y (0-1280) = user's horizontal. Y=0 is user's left, Y=1280 is user's right.
+        For vertical stacking (user's POV), rows are spaced along X axis.
+        Each row spans full Y width (user's horizontal).
+        """
+        self.admin_menu_rects.clear()
+
+        # Dark background
+        self.screen.fill(COLORS['bg_primary'])
+
+        center_y = SCREEN_HEIGHT // 2  # 640 (user's horizontal center)
+
+        # Title — at user's top (high X)
+        title = self._render_text_rotated('Instellingen', self.font_large, COLORS['text_primary'])
+        title_rect = title.get_rect(center=(SCREEN_WIDTH - 80, center_y))
+        self.screen.blit(title, title_rect)
+
+        # Menu items — stacked vertically (along physical X axis)
+        menu_items = [
+            ('reset_spotify', 'Reset Spotify'),
+            ('reset_wifi', 'Reset WiFi'),
+            ('restart', 'Herstart Berry'),
+            ('close', 'Sluiten'),
+        ]
+
+        row_height = 110  # Height along X (user's vertical spacing)
+        total_height = len(menu_items) * row_height
+        # Center vertically in user's view, offset down from title
+        # High X = user's top, so first item starts at high X
+        start_x = (SCREEN_WIDTH + 80) // 2 + total_height // 2 - row_height
+
+        for i, (action, label) in enumerate(menu_items):
+            row_center_x = start_x - i * row_height
+
+            # Determine label and color
+            if confirm_action == action:
+                display_label = 'Tik nogmaals om te bevestigen'
+                color = COLORS['error']
+            elif action == 'close':
+                display_label = label
+                color = COLORS['text_muted']
+            else:
+                display_label = label
+                color = COLORS['text_primary']
+
+            # Separator line (horizontal in user's view = along Y axis in physical)
+            if i > 0:
+                sep_x = row_center_x + row_height // 2
+                pygame.draw.line(self.screen, COLORS['bg_elevated'],
+                               (sep_x, 100), (sep_x, SCREEN_HEIGHT - 100), 1)
+
+            # Label text — centered in row
+            text = self._render_text_rotated(display_label, self.font_medium, color)
+            text_rect = text.get_rect(center=(row_center_x, center_y))
+            self.screen.blit(text, text_rect)
+
+            # Hit rect: (x, y, width, height) — spans full Y, row_height along X
+            rect_x = row_center_x - row_height // 2
+            self.admin_menu_rects[action] = (rect_x, 0, row_height, SCREEN_HEIGHT)
+
+        # Version at user's bottom (low X)
+        version_text = self._render_text_rotated(f'v. {version}', self.font_small, COLORS['text_muted'])
+        version_rect = version_text.get_rect(center=(60, center_y))
+        self.screen.blit(version_text, version_rect)
+
     def _draw_empty_state(self):
         """Draw empty catalog state (portrait mode)."""
         center_x = SCREEN_WIDTH // 2   # 360
@@ -529,6 +605,7 @@ class Renderer:
         
         icon = self.icons.get('plus')
         if icon:
+            draw_aa_circle(self.screen, (255, 255, 255), center, 28)
             scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
             tinted = scaled_icon.copy()
             tinted.fill(COLORS['accent'], special_flags=pygame.BLEND_RGB_MULT)
@@ -551,6 +628,7 @@ class Renderer:
         
         icon = self.icons.get('minus')
         if icon:
+            draw_aa_circle(self.screen, (255, 255, 255), center, 28)
             scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
             tinted = scaled_icon.copy()
             tinted.fill(COLORS['error'], special_flags=pygame.BLEND_RGB_MULT)
