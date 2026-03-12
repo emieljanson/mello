@@ -94,6 +94,11 @@ fi
 source venv/bin/activate
 pip install -q -r requirements.txt
 
+# Rebuild pygame from source to link against system SDL2 (with kmsdrm support)
+# The pip wheel bundles its own SDL2 without kmsdrm, so Berry can't render to the display
+echo "🔧 Building pygame with kmsdrm support (this takes a few minutes)..."
+pip install --no-binary pygame pygame --force-reinstall -q
+
 # Create data directory
 mkdir -p data/images
 
