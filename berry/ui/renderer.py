@@ -562,9 +562,11 @@ class Renderer:
         
         elif ctx.menu_state == MenuState.WIFI_AP:
             self._draw_menu_screen('WiFi', [], close_label='Terug',
-                                   lines=['1. Verbind je telefoon met',
-                                          '    WiFi netwerk "Berry-Setup"',
+                                   lines=['1. Verbind met WiFi',
+                                          '    netwerk "Berry-Setup"',
+                                          '',
                                           '2. Kies je WiFi netwerk',
+                                          '',
                                           '3. Voer het wachtwoord in'])
         
         else:
@@ -596,10 +598,13 @@ class Renderer:
         
         if lines:
             for line in lines:
+                if line == '':
+                    x -= 15
+                    continue
                 surf = self._render_text_rotated(line, self.font_medium, COLORS['text_secondary'])
                 self.screen.blit(surf, surf.get_rect(center=(x, CAROUSEL_CENTER_Y)))
                 x -= 35
-            x -= GAP
+            x -= GAP * 2
         for entry in buttons:
             if entry is None:
                 x -= GAP
