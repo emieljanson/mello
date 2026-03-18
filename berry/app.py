@@ -981,7 +981,6 @@ class Berry:
         logger.info(f'  Connection state: {self.connected}')
         logger.info(f'  Fail count: {self._connection_fail_count}')
         logger.info(f'  Playing: {self.now_playing.playing}')
-        logger.info(f'  Volume mode: {self.volume.mode}')
         
         # Reset connection state for immediate reconnect
         self._connection_fail_count = 0
