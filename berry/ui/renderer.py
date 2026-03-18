@@ -562,7 +562,10 @@ class Renderer:
         
         elif ctx.menu_state == MenuState.WIFI_AP:
             self._draw_menu_screen('WiFi', [], close_label='Terug',
-                                   message='Verbind met Berry-Setup')
+                                   lines=['1. Verbind je telefoon met',
+                                          '    WiFi netwerk "Berry-Setup"',
+                                          '2. Kies je WiFi netwerk',
+                                          '3. Voer het wachtwoord in'])
         
         else:
             buttons = [
@@ -577,10 +580,11 @@ class Renderer:
         self._needs_full_redraw = True
     
     def _draw_menu_screen(self, title: str, buttons: list,
-                          close_label: str = 'Sluiten', message: Optional[str] = None):
+                          close_label: str = 'Sluiten', lines: Optional[List[str]] = None):
         """Draw a menu screen with consistent layout.
         
         buttons: list of (id, label, color) tuples. None entries add extra spacing.
+        lines: optional text lines shown below title (for instruction screens).
         """
         self.menu_button_rects = {}
         H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
@@ -588,9 +592,12 @@ class Renderer:
         title_surf = self._render_text_rotated(title, self.font_large, COLORS['text_primary'])
         self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
         
-        if message:
-            msg_surf = self._render_text_rotated(message, self.font_medium, COLORS['text_secondary'])
-            self.screen.blit(msg_surf, msg_surf.get_rect(center=(self._MENU_TOP_X, CAROUSEL_CENTER_Y)))
+        if lines:
+            line_x = self._MENU_TOP_X
+            for line in lines:
+                surf = self._render_text_rotated(line, self.font_medium, COLORS['text_secondary'])
+                self.screen.blit(surf, surf.get_rect(center=(line_x, CAROUSEL_CENTER_Y)))
+                line_x -= 35
         
         x = self._MENU_TOP_X
         for entry in buttons:

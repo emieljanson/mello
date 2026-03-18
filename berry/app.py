@@ -1010,7 +1010,7 @@ class Berry:
                 ['nmcli', '-t', '-f', 'STATE', 'general'],
                 capture_output=True, text=True, timeout=3,
             )
-            return 'connected' in result.stdout.lower()
+            return result.stdout.strip().lower().startswith('connected')
         except Exception:
             return True
 
