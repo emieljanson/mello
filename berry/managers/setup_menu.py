@@ -206,10 +206,16 @@ class SetupMenu:
                 ['sudo', 'wifi-connect',
                  '--portal-ssid', 'Berry-Setup',
                  '--ui-directory', '/usr/local/share/wifi-connect/ui'],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
             )
             logger.info('wifi-connect started')
+
+            def _log_output():
+                for line in self._wifi_process.stdout:
+                    logger.info(f'wifi-connect: {line.decode().rstrip()}')
+
+            threading.Thread(target=_log_output, daemon=True).start()
         except Exception as e:
             logger.error(f'Failed to start wifi-connect: {e}')
 
