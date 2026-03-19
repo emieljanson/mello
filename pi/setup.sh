@@ -262,7 +262,7 @@ rm -f "$TMP_SUDOERS"
 # ============================================
 echo "🔄 Setting up auto-updates..."
 chmod +x ~/berry/pi/auto-update.sh
-(crontab -l 2>/dev/null | grep -v "berry/pi/auto-update"; echo "0 * * * * bash ~/berry/pi/auto-update.sh >> ~/berry-update.log 2>&1") | crontab -
+(crontab -l 2>/dev/null | grep -v "berry/pi/auto-update"; echo "0 3 * * * bash ~/berry/pi/auto-update.sh >> ~/berry-update.log 2>&1") | crontab -
 
 # ============================================
 # 11. CPU power management (energy saving)

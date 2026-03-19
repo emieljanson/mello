@@ -55,7 +55,7 @@ To configure WiFi:
 - ✅ Installs Python dependencies (Pygame, Pillow, etc.)
 - ✅ Installs WiFi Connect (captive portal)
 - ✅ Configures auto-start on boot
-- ✅ Configures auto-updates (hourly)
+- ✅ Configures auto-updates (nightly at 03:00)
 - ✅ Starts Berry
 
 ---
