@@ -229,11 +229,11 @@ class Renderer:
         center_x = SCREEN_WIDTH // 2
         center_y = SCREEN_HEIGHT // 2
         
-        line1 = self._render_text_rotated('Speel naar Berry via Spotify', self.font_medium, COLORS['text_secondary'])
+        line1 = self._render_text_rotated('Play to Berry via Spotify', self.font_medium, COLORS['text_secondary'])
         line1_rect = line1.get_rect(center=(center_x + 20, center_y))
         self.screen.blit(line1, line1_rect)
         
-        line2 = self._render_text_rotated('Tik + om op te slaan', self.font_medium, COLORS['text_secondary'])
+        line2 = self._render_text_rotated('Tap + to save', self.font_medium, COLORS['text_secondary'])
         line2_rect = line2.get_rect(center=(center_x - 20, center_y))
         self.screen.blit(line2, line2_rect)
     
@@ -611,37 +611,37 @@ class Renderer:
                 display = ssid if len(ssid) <= 20 else ssid[:18] + '..'
                 buttons.append((f'reconnect_{i}', display, color))
             buttons.append(None)
-            buttons.append(('new_network', '+ Nieuw netwerk', COLORS['bg_elevated']))
+            buttons.append(('new_network', '+ New network', COLORS['bg_elevated']))
             self._draw_menu_screen('WiFi', buttons)
         
         elif ctx.menu_state == MenuState.WIFI_AP:
-            self._draw_menu_screen('WiFi', [], close_label='Terug',
-                                   lines=['1. Verbind met WiFi',
-                                          '    netwerk "Berry-Setup"',
+            self._draw_menu_screen('WiFi', [], close_label='Back',
+                                   lines=['1. Connect to WiFi',
+                                          '    network "Berry-Setup"',
                                           '',
-                                          '2. Kies je WiFi netwerk',
+                                          '2. Choose your WiFi network',
                                           '',
-                                          '3. Voer het wachtwoord in'])
+                                          '3. Enter the password'])
         
         else:
             buttons = [
                 ('wifi', 'WiFi', COLORS['accent']),
                 ('bluetooth', 'Bluetooth', COLORS['accent']),
-                ('library', 'Wis bibliotheek', COLORS['accent']),
+                ('library', 'Clear library', COLORS['accent']),
                 None,
-                ('auto_pause', f'Auto-pauze: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
-                ('progress_expiry', f'Onthouden: {ctx.progress_expiry_hours} uur', COLORS['bg_elevated']),
+                ('auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
+                ('progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
             ]
             self._draw_menu_screen(
-                'Instellingen',
+                'Settings',
                 buttons,
-                footer_line=f'Versie: {ctx.app_version_label}' if ctx.app_version_label else None,
+                footer_line=f'Version: {ctx.app_version_label}' if ctx.app_version_label else None,
             )
         
         self._needs_full_redraw = True
     
     def _draw_menu_screen(self, title: str, buttons: list,
-                          close_label: str = 'Sluiten', lines: Optional[List[str]] = None,
+                          close_label: str = 'Close', lines: Optional[List[str]] = None,
                           footer_line: Optional[str] = None):
         """Draw a menu screen with consistent layout.
         
@@ -704,7 +704,7 @@ class Renderer:
 
         # --- Paired devices section ---
         if ctx.bt_paired_devices:
-            hdr = self._render_text_rotated('Gekoppeld', self.font_small, COLORS['text_muted'])
+            hdr = self._render_text_rotated('Paired', self.font_small, COLORS['text_muted'])
             self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
             x -= 30
 
@@ -720,7 +720,7 @@ class Renderer:
 
         # --- Discovered devices section ---
         if ctx.bt_discovered_devices or ctx.bt_scanning:
-            hdr_text = 'Gevonden...' if ctx.bt_scanning else 'Gevonden'
+            hdr_text = 'Found...' if ctx.bt_scanning else 'Found'
             hdr = self._render_text_rotated(hdr_text, self.font_small, COLORS['text_muted'])
             self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
             x -= 30
@@ -737,6 +737,6 @@ class Renderer:
 
         x -= GAP
         close_btn = pygame.Rect(max(20, x), Y, H, W)
-        self._draw_menu_button(close_btn, 'Sluiten', COLORS['bg_elevated'])
+        self._draw_menu_button(close_btn, 'Close', COLORS['bg_elevated'])
         self.menu_button_rects['close'] = close_btn
 
