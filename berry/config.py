@@ -120,10 +120,23 @@ PROGRESS_BAR_WIDTH = 8
 # Volume levels with separate speaker/headphone values
 # Speaker needs higher gain, headphones need lower to avoid being too loud
 VOLUME_LEVELS = [
-    {'speaker': 88, 'headphone': 70, 'icon': 'volume_none'},
-    {'speaker': 94, 'headphone': 60, 'icon': 'volume_low'},
-    {'speaker': 98, 'headphone': 80, 'icon': 'volume_high'},
+    {'speaker': 88, 'headphone': 70, 'bt': 20, 'icon': 'volume_none'},
+    {'speaker': 94, 'headphone': 60, 'bt': 40, 'icon': 'volume_low'},
+    {'speaker': 98, 'headphone': 80, 'bt': 65, 'icon': 'volume_high'},
 ]
+
+# ============================================
+# BLUETOOTH
+# ============================================
+
+# WM8960 PipeWire sink name (constant on this hardware)
+WM8960_SINK = 'alsa_output.platform-soc_sound.stereo-fallback'
+
+# How often to poll BT connection state (seconds)
+BT_MONITOR_INTERVAL = 5.0
+
+# How long to scan for new devices (seconds)
+BT_SCAN_DURATION = 20.0
 
 # ============================================
 # TIMING

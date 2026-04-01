@@ -156,9 +156,9 @@ class PlaybackController:
             logger.info(f'Dropping stale failed retry by age: {failed_age:.1f}s')
             self._failed_play = None
             self._failed_play_since = 0.0
-            self._emit_toast('Laden mislukt, probeer opnieuw')
+            self._emit_toast('Loading failed, try again')
             logger.warning(
-                'TOAST shown | message="Laden mislukt, probeer opnieuw" '
+                'TOAST shown | message="Loading failed, try again" '
                 f'| reason=retry_window_expired | age={failed_age:.1f}s'
             )
             return
@@ -381,9 +381,9 @@ class PlaybackController:
                 if result is None:
                     # No active Spotify session: definitive failure, clear loader immediately.
                     self.play_state.clear()
-                    self._emit_toast('Verbind via Spotify')
+                    self._emit_toast('Connect via Spotify')
                     logger.warning(
-                        'TOAST shown | message="Verbind via Spotify" '
+                        'TOAST shown | message="Connect via Spotify" '
                         f'| failed_uri={uri[:50]} | epoch={epoch}'
                     )
                 else:

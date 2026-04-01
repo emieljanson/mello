@@ -26,12 +26,14 @@ class SetupMenu:
         on_toast: Callable[[str], None],
         on_invalidate: Callable[[], None],
         on_library_cleared: Callable[[], None],
+        bluetooth_manager=None,
     ):
         self.catalog_manager = catalog_manager
         self.settings = settings
         self._on_toast = on_toast
         self._on_invalidate = on_invalidate
         self._on_library_cleared = on_library_cleared
+        self.bluetooth = bluetooth_manager
 
         self.state = MenuState.CLOSED
         self.known_networks: list = []
@@ -54,7 +56,7 @@ class SetupMenu:
         self._show_wifi_screen()
 
     def close(self):
-        """Close the setup menu, stopping wifi-connect if running."""
+        """Close the setup menu, stopping wifi-connect and BT scan if running."""
         logger.info('Setup menu closed')
         if self._wifi_process:
             try:
@@ -62,6 +64,8 @@ class SetupMenu:
             except Exception:
                 pass
             self._wifi_process = None
+        if self.bluetooth and self.state == MenuState.BT_LIST:
+            self.bluetooth.stop_scan()
         self.state = MenuState.CLOSED
         self.current_network = None
         self._on_invalidate()
@@ -81,11 +85,18 @@ class SetupMenu:
                     self._reconnect_to_known_network()
                 self.state = MenuState.WIFI_LIST
                 self._on_invalidate()
+            elif self.state == MenuState.BT_LIST:
+                if self.bluetooth:
+                    self.bluetooth.stop_scan()
+                self.state = MenuState.MAIN
+                self._on_invalidate()
             else:
                 self.close()
             return
 
-        if self.state == MenuState.WIFI_LIST:
+        if self.state == MenuState.BT_LIST:
+            self._handle_bt_tap(button_rects, x, y)
+        elif self.state == MenuState.WIFI_LIST:
             if 'new_network' in button_rects and button_rects['new_network'].collidepoint(x, y):
                 self._start_wifi_ap()
             else:
@@ -95,6 +106,8 @@ class SetupMenu:
         else:
             if 'wifi' in button_rects and button_rects['wifi'].collidepoint(x, y):
                 self._show_wifi_screen()
+            elif 'bluetooth' in button_rects and button_rects['bluetooth'].collidepoint(x, y):
+                self._show_bt_screen()
             elif 'library' in button_rects and button_rects['library'].collidepoint(x, y):
                 self._clear_library()
             elif 'auto_pause' in button_rects and button_rects['auto_pause'].collidepoint(x, y):
@@ -124,6 +137,40 @@ class SetupMenu:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _show_bt_screen(self):
+        logger.info('Setup menu: Bluetooth screen')
+        self.state = MenuState.BT_LIST
+        self._on_invalidate()
+        if self.bluetooth:
+            self.bluetooth.refresh_paired()
+            self.bluetooth.start_scan()
+
+    def _handle_bt_tap(self, button_rects: dict, x: int, y: int):
+        if not self.bluetooth:
+            return
+        for key, rect in button_rects.items():
+            if not rect.collidepoint(x, y):
+                continue
+            if key.startswith('bt_paired_'):
+                idx = int(key.split('_')[2])
+                paired = self.bluetooth.paired_devices
+                if idx < len(paired):
+                    dev = paired[idx]
+                    if dev.connected:
+                        self.bluetooth.disconnect()
+                        self._on_toast(f'{dev.name} verbroken')
+                    else:
+                        self._on_toast(f'Verbinden met {dev.name}...')
+                        self.bluetooth.connect(dev.mac)
+                break
+            elif key.startswith('bt_discovered_'):
+                idx = int(key.split('_')[2])
+                discovered = self.bluetooth.discovered_devices
+                if idx < len(discovered):
+                    dev = discovered[idx]
+                    self.bluetooth.pair_and_connect(dev.mac, dev.name)
+                break
 
     def _check_reconnect_tap(self, button_rects: dict, x: int, y: int):
         for key, rect in button_rects.items():

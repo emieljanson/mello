@@ -104,18 +104,15 @@ fi
 run_tests() {
     echo -e "${BLUE}🧪 Running tests...${NC}"
 
-    # Check if venv exists, create if needed
+    # Ensure venv exists and deps are installed
     if [ ! -d "$LOCAL_DIR/venv" ]; then
         echo -e "${DIM}Creating local venv...${NC}"
         python3 -m venv "$LOCAL_DIR/venv"
-        source "$LOCAL_DIR/venv/bin/activate"
-        pip install -q -r "$LOCAL_DIR/requirements.txt"
-        pip install -q pytest
-    else
-        source "$LOCAL_DIR/venv/bin/activate"
-        # Install pytest if missing
-        pip show pytest > /dev/null 2>&1 || pip install -q pytest
     fi
+    source "$LOCAL_DIR/venv/bin/activate"
+    # Always sync deps (pip is fast when already satisfied)
+    pip install -q -r "$LOCAL_DIR/requirements.txt" 2>/dev/null
+    pip install -q pytest 2>/dev/null
 
     # Run tests
     if python3 -m pytest "$LOCAL_DIR/tests/" -v --tb=short > /tmp/berry_tests.log 2>&1; then

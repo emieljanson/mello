@@ -30,6 +30,11 @@ class VolumeController:
     def headphone_level(self) -> int:
         """Current headphone volume level (0-100)."""
         return VOLUME_LEVELS[self.index]['headphone']
+
+    @property
+    def bt_level(self) -> int:
+        """Current Bluetooth volume level (0-100) for pactl."""
+        return VOLUME_LEVELS[self.index]['bt']
     
     @property
     def icon(self) -> str:

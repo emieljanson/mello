@@ -21,6 +21,11 @@ from ..config import (
     VOLUME_LEVELS,
 )
 
+# Headphone button Y position — symmetric to volume button on the opposite side.
+# Volume: center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL//2 - BTN_SIZE//2 ≈ 1173
+# Headphone: center_y - (COVER_SIZE + COVER_SPACING) - COVER_SIZE_SMALL//2 + BTN_SIZE//2 ≈ 107
+_HEADPHONE_BTN_Y = CAROUSEL_CENTER_Y - (COVER_SIZE + COVER_SPACING) - COVER_SIZE_SMALL // 2 + BTN_SIZE // 2
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,7 +164,8 @@ class Renderer:
             # Full redraw
             self._draw_background()
             self._draw_track_info(current_item, ctx)
-            self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button)
+            self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button,
+                                bt_connected=ctx.bt_connected, bt_audio_active=ctx.bt_audio_active)
             
             if self._static_layer is None:
                 self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -396,33 +402,43 @@ class Renderer:
             min(255, int(b + (255 - b) * amount)),
         )
     
-    def _draw_controls(self, is_playing: bool, volume_index: int, pressed_button: Optional[str] = None):
+    def _draw_controls(self, is_playing: bool, volume_index: int, pressed_button: Optional[str] = None,
+                       bt_connected: bool = False, bt_audio_active: bool = False):
         """Draw playback control buttons (portrait mode - buttons along Y axis)."""
         x = CONTROLS_X
         center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING
-        
+
         gray_color = COLORS['bg_elevated']
         play_color = COLORS['accent']
-        
+
+        # Headphone button — only when BT is connected, opposite corner from volume
+        if bt_connected:
+            hp_center = (x, _HEADPHONE_BTN_Y)
+            hp_color = COLORS['accent'] if bt_audio_active else gray_color
+            if pressed_button == 'headphone':
+                hp_color = self._lighten_color(hp_color)
+            draw_aa_circle(self.screen, hp_color, hp_center, BTN_SIZE // 2)
+            self._draw_icon('headphone', hp_center)
+
         # Prev button
         prev_center = (x, center_y - btn_spacing)
         prev_color = self._lighten_color(gray_color) if pressed_button == 'prev' else gray_color
         draw_aa_circle(self.screen, prev_color, prev_center, BTN_SIZE // 2)
         self._draw_icon('prev', prev_center)
-        
+
         # Play/Pause button
         play_center = (x, center_y)
         play_btn_color = self._lighten_color(play_color) if pressed_button == 'play' else play_color
         draw_aa_circle(self.screen, play_btn_color, play_center, PLAY_BTN_SIZE // 2)
         self._draw_icon('pause' if is_playing else 'play', play_center)
-        
+
         # Next button
         next_center = (x, center_y + btn_spacing)
         next_color = self._lighten_color(gray_color) if pressed_button == 'next' else gray_color
         draw_aa_circle(self.screen, next_color, next_center, BTN_SIZE // 2)
         self._draw_icon('next', next_center)
-        
+
         # Volume button
         right_cover_edge = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
         vol_center = (x, right_cover_edge - BTN_SIZE // 2)
@@ -584,7 +600,10 @@ class Renderer:
         """Draw fully black background then the active menu screen."""
         self.screen.fill((0, 0, 0))
         
-        if ctx.menu_state == MenuState.WIFI_LIST:
+        if ctx.menu_state == MenuState.BT_LIST:
+            self._draw_bt_screen(ctx)
+
+        elif ctx.menu_state == MenuState.WIFI_LIST:
             buttons = []
             for i, ssid in enumerate(ctx.menu_known_networks[:5]):
                 is_current = ssid == ctx.menu_current_network
@@ -607,6 +626,7 @@ class Renderer:
         else:
             buttons = [
                 ('wifi', 'WiFi', COLORS['accent']),
+                ('bluetooth', 'Bluetooth', COLORS['accent']),
                 ('library', 'Wis bibliotheek', COLORS['accent']),
                 None,
                 ('auto_pause', f'Auto-pauze: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
@@ -671,4 +691,52 @@ class Renderer:
         pygame.draw.rect(self.screen, bg_color, rect, border_radius=18)
         text_surf = self._render_text_rotated(label, self.font_medium, text_color)
         self.screen.blit(text_surf, text_surf.get_rect(center=rect.center))
+
+    def _draw_bt_screen(self, ctx: 'RenderContext'):
+        """Draw the Bluetooth device list screen."""
+        self.menu_button_rects = {}
+        H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
+
+        title_surf = self._render_text_rotated('Bluetooth', self.font_large, COLORS['text_primary'])
+        self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
+
+        x = self._MENU_TOP_X
+
+        # --- Paired devices section ---
+        if ctx.bt_paired_devices:
+            hdr = self._render_text_rotated('Gekoppeld', self.font_small, COLORS['text_muted'])
+            self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
+            x -= 30
+
+            for i, dev in enumerate(ctx.bt_paired_devices):
+                color = COLORS['accent'] if dev.connected else COLORS['bg_elevated']
+                label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
+                btn = pygame.Rect(x, Y, H, W)
+                self._draw_menu_button(btn, label, color)
+                self.menu_button_rects[f'bt_paired_{i}'] = btn
+                x -= H + GAP
+
+            x -= GAP
+
+        # --- Discovered devices section ---
+        if ctx.bt_discovered_devices or ctx.bt_scanning:
+            hdr_text = 'Gevonden...' if ctx.bt_scanning else 'Gevonden'
+            hdr = self._render_text_rotated(hdr_text, self.font_small, COLORS['text_muted'])
+            self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
+            x -= 30
+
+            for i, dev in enumerate(ctx.bt_discovered_devices[:4]):
+                label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
+                btn = pygame.Rect(x, Y, H, W)
+                self._draw_menu_button(btn, label, COLORS['bg_elevated'])
+                self.menu_button_rects[f'bt_discovered_{i}'] = btn
+                x -= H + GAP
+
+            if not ctx.bt_discovered_devices and ctx.bt_scanning:
+                x -= H + GAP  # placeholder spacing while scanning
+
+        x -= GAP
+        close_btn = pygame.Rect(max(20, x), Y, H, W)
+        self._draw_menu_button(close_btn, 'Sluiten', COLORS['bg_elevated'])
+        self.menu_button_rects['close'] = close_btn
 

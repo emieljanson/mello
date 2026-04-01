@@ -15,7 +15,8 @@ sudo apt-get install -y \
   curl git \
   python3-venv python3-pip python3-dev python3-pygame \
   libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
-  network-manager
+  network-manager \
+  pipewire pipewire-pulse wireplumber pipewire-alsa libspa-0.2-bluetooth
 
 # ============================================
 # 2. Configure boot settings (display + audio + quiet boot)
@@ -115,7 +116,7 @@ if [ ! -f ~/.config/go-librespot/config.yml ]; then
 device_name: "Berry"
 device_type: "speaker"
 audio_backend: "alsa"
-audio_device: "plughw:CARD=wm8960soundcard"
+audio_device: "default"
 external_volume: true
 initial_volume: 100
 bitrate: 320
@@ -206,6 +207,9 @@ sudo systemctl disable berry-wifi 2>/dev/null || true
 sudo rm -f /etc/systemd/system/berry-wifi.service
 sudo systemctl enable berry-librespot berry-native berry-touch-fix
 
+# Enable PipeWire user services for the berry user (Bluetooth audio routing)
+sudo -u berry XDG_RUNTIME_DIR=/run/user/$(id -u berry) systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null || true
+
 # ============================================
 # 9. Setup permissions (display, audio, touch, backlight)
 # ============================================
@@ -217,9 +221,9 @@ if ! getent group berry >/dev/null; then
 fi
 
 # Keep berry runtime user and current setup user in required groups.
-sudo usermod -aG video,audio,input,berry "$USER" 2>/dev/null || true
+sudo usermod -aG video,audio,input,bluetooth,berry "$USER" 2>/dev/null || true
 if id berry >/dev/null 2>&1; then
-  sudo usermod -aG video,audio,input,berry berry 2>/dev/null || true
+  sudo usermod -aG video,audio,input,bluetooth,berry berry 2>/dev/null || true
 fi
 
 # Backlight control (for sleep mode) — udev rule + apply immediately
@@ -251,7 +255,7 @@ sudo systemctl stop getty@tty1.service 2>/dev/null || true
 # without a password prompt (needed for the setup menu)
 TMP_SUDOERS="/tmp/berry-wifi.$$"
 cat > "$TMP_SUDOERS" << 'EOF'
-berry ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native
+berry ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up
 EOF
 sudo visudo -cf "$TMP_SUDOERS"
 sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/berry-wifi

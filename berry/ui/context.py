@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 from ..models import CatalogItem, MenuState, NowPlaying
+from ..managers.bluetooth import BluetoothDevice
 
 
 @dataclass
@@ -32,4 +33,10 @@ class RenderContext:
     auto_pause_minutes: int = 30
     progress_expiry_hours: int = 48
     app_version_label: str = ''
+    bt_connected: bool = False          # A BT audio device is connected
+    bt_audio_active: bool = False       # Audio is routed to BT (headphone icon purple)
+    bt_connected_name: Optional[str] = None
+    bt_paired_devices: List[BluetoothDevice] = field(default_factory=list)
+    bt_discovered_devices: List[BluetoothDevice] = field(default_factory=list)
+    bt_scanning: bool = False
 

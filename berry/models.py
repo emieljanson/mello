@@ -13,6 +13,7 @@ class MenuState(Enum):
     MAIN = auto()
     WIFI_LIST = auto()
     WIFI_AP = auto()
+    BT_LIST = auto()
 
 
 @dataclass

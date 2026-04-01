@@ -53,7 +53,16 @@ if git diff --name-only "$LOCAL" "$REMOTE" | grep -q "^requirements\.txt$"; then
 fi
 
 # ============================================
-# 2. Update systemd services
+# 2. Run migration script BEFORE service restart
+#    (may install packages, change configs, update sudoers)
+# ============================================
+if [ -f ~/berry/pi/migrate.sh ]; then
+  log "Running migration script"
+  bash ~/berry/pi/migrate.sh
+fi
+
+# ============================================
+# 3. Update systemd services
 # ============================================
 log "Updating systemd services"
 for f in ~/berry/pi/systemd/*.service; do
@@ -64,7 +73,7 @@ done
 sudo systemctl daemon-reload
 
 # ============================================
-# 3. Restart services
+# 4. Restart services
 # ============================================
 log "Restarting services"
 sudo systemctl restart berry-librespot berry-native
@@ -74,14 +83,6 @@ sleep 2
 if ! systemctl is-active --quiet berry-librespot || ! systemctl is-active --quiet berry-native; then
   log "ERROR: service health check failed after restart"
   exit 1
-fi
-
-# ============================================
-# 4. Run any migration script if present
-# ============================================
-if [ -f ~/berry/pi/migrate.sh ]; then
-  log "Running migration script"
-  bash ~/berry/pi/migrate.sh
 fi
 
 log "Update complete"

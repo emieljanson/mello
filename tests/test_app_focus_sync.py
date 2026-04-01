@@ -220,7 +220,7 @@ class TestContextSwitchWatchdog:
         app.playback.stop_all.assert_called_once()
         app.api.pause.assert_called_once()
         app.volume.mute.assert_called_once()
-        app._show_toast.assert_called_once_with('Laden afgebroken, probeer opnieuw')
+        app._show_toast.assert_called_once_with('Loading cancelled, try again')
         assert app._pending_focus_uri is None
         assert app._requested_focus_epoch is None
         assert app._requested_focus_uri is None

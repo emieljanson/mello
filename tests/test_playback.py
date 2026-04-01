@@ -310,11 +310,11 @@ class TestPlayFailure:
         assert api.play.call_count == 1
         assert pc.play_state.pending_action is None
         assert pc.play_state.loading_since is None
-        toast.assert_called_once_with('Verbind via Spotify')
+        toast.assert_called_once_with('Connect via Spotify')
 
     @patch('berry.controllers.playback.time.sleep')
-    def test_transient_failure_shows_toast(self, mock_sleep):
-        """Transient failures (False) also show toast after all retries."""
+    def test_transient_failure_defers_toast_to_retry(self, mock_sleep):
+        """Transient failures (False) keep loader alive for retry window — no immediate toast."""
         pc, api, _, _ = _make_controller()
         api.play.return_value = False
         toast = MagicMock()
@@ -323,9 +323,12 @@ class TestPlayFailure:
         pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
         assert api.play.call_count == 2
-        assert pc.play_state.pending_action is None
-        assert pc.play_state.loading_since is None
-        toast.assert_called_once_with('Laden mislukt, probeer opnieuw')
+        # Loader stays active for the retry window
+        assert pc.play_state.loading_since is not None
+        # Toast is deferred to retry_failed(), not shown immediately
+        toast.assert_not_called()
+        # Failed play is saved for retry
+        assert pc._failed_play is not None
 
     def test_play_success_keeps_pending_state(self):
         pc, api, _, _ = _make_controller()
@@ -354,8 +357,8 @@ class TestLibrespotCrashRecovery:
         toast.assert_not_called()
 
     @patch('berry.controllers.playback.time.sleep')
-    def test_play_shows_toast_when_never_recovers(self, mock_sleep):
-        """Librespot never comes back — user gets feedback after all retries."""
+    def test_play_keeps_loader_when_never_recovers(self, mock_sleep):
+        """Librespot never comes back — loader stays active for retry window."""
         pc, api, _, _ = _make_controller()
         api.play.return_value = False
         toast = MagicMock()
@@ -364,7 +367,10 @@ class TestLibrespotCrashRecovery:
         pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
         assert api.play.call_count == 2
-        toast.assert_called_once_with('Laden mislukt, probeer opnieuw')
+        # Toast is deferred to retry_failed(), not shown immediately
+        toast.assert_not_called()
+        # Failed play saved for retry window
+        assert pc._failed_play is not None
 
     @patch('berry.controllers.playback.time.sleep')
     def test_play_recovers_from_mixed_failures(self, mock_sleep):
