@@ -248,7 +248,7 @@ class BluetoothManager:
     def connect(self, mac: str):
         """Connect to a paired device (from settings menu tap)."""
         def _do():
-            self._on_toast('Verbinden...')
+            self._on_toast('Connecting...')
             sink = self._reliable_connect(mac)
             if sink:
                 self.refresh_paired()
@@ -256,7 +256,7 @@ class BluetoothManager:
                 if dev:
                     self._set_connected(dev, sink)
             else:
-                self._on_toast('Verbinden mislukt')
+                self._on_toast('Connection failed')
             self._on_invalidate()
         threading.Thread(target=_do, daemon=True).start()
 
@@ -282,14 +282,14 @@ class BluetoothManager:
     def pair_and_connect(self, mac: str, name: str):
         def _do():
             logger.info(f'Bluetooth: pairing with {mac} ({name})')
-            self._on_toast(f'Koppelen met {name}...')
+            self._on_toast(f'Pairing with {name}...')
             self._wait_adapter_ready()
             try:
                 subprocess.run(['bluetoothctl', 'pair', mac], capture_output=True, timeout=30)
                 subprocess.run(['bluetoothctl', 'trust', mac], capture_output=True, timeout=5)
             except Exception as e:
                 logger.warning(f'Bluetooth: pair error: {e}')
-                self._on_toast('Koppelen mislukt')
+                self._on_toast('Pairing failed')
                 return
             sink = self._reliable_connect(mac)
             if sink:
@@ -298,7 +298,7 @@ class BluetoothManager:
                 if dev:
                     self._set_connected(dev, sink)
             else:
-                self._on_toast('Koppelen mislukt')
+                self._on_toast('Pairing failed')
             self._on_invalidate()
         threading.Thread(target=_do, daemon=True).start()
 
@@ -624,7 +624,7 @@ class BluetoothManager:
             self._desired_sink = None
         if was_active:
             self._on_audio_changed(False)
-        self._on_toast(f'{prev_dev.name} losgekoppeld')
+        self._on_toast(f'{prev_dev.name} disconnected')
         self._on_invalidate()
 
     def _try_auto_reconnect(self, paired: list):

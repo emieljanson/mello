@@ -39,8 +39,8 @@ button:disabled{opacity:.25;cursor:default}
 </head>
 <body>
 <h1>Berry</h1>
-<p class="sub">Kies een netwerk</p>
-<div id="app"><div class="loading">Netwerken zoeken...</div></div>
+<p class="sub">Choose a network</p>
+<div id="app"><div class="loading">Scanning for networks...</div></div>
 <script>
 (function(){
   var nets = [];
@@ -61,15 +61,15 @@ button:disabled{opacity:.25;cursor:default}
 
   fetch('/networks').then(function(r){ return r.json() }).then(function(data){
     nets = Array.isArray(data) ? data : [];
-    if(!nets.length){ setStatus('err', 'Geen netwerken gevonden'); return }
+    if(!nets.length){ setStatus('err', 'No networks found'); return }
     render();
   }).catch(function(){
-    setStatus('err', 'Kan netwerken niet laden');
+    setStatus('err', 'Unable to load networks');
   });
 
   function render(){
     var label = document.createElement('label');
-    label.textContent = 'Netwerk';
+    label.textContent = 'Network';
 
     var wrap = document.createElement('div');
     wrap.className = 'select-wrap';
@@ -88,11 +88,11 @@ button:disabled{opacity:.25;cursor:default}
     pwField.className = 'field';
     pwField.id = 'pw-field';
     var pwLabel = document.createElement('label');
-    pwLabel.textContent = 'Wachtwoord';
+    pwLabel.textContent = 'Password';
     var pwInput = document.createElement('input');
     pwInput.id = 'pw';
     pwInput.type = 'password';
-    pwInput.placeholder = 'Voer wachtwoord in';
+    pwInput.placeholder = 'Enter password';
     pwInput.autocomplete = 'off';
     pwInput.autocorrect = 'off';
     pwInput.autocapitalize = 'off';
@@ -102,7 +102,7 @@ button:disabled{opacity:.25;cursor:default}
 
     var btn = document.createElement('button');
     btn.id = 'go';
-    btn.textContent = 'Verbinden';
+    btn.textContent = 'Connect';
 
     var st = document.createElement('div');
     st.className = 'status';
@@ -127,9 +127,9 @@ button:disabled{opacity:.25;cursor:default}
     var btn = document.getElementById('go');
 
     btn.disabled = true;
-    btn.textContent = 'Verbinden...';
+    btn.textContent = 'Connecting...';
     st.className = 'status show wait';
-    st.textContent = 'Verbinding maken...';
+    st.textContent = 'Connecting...';
 
     fetch('/connect',{
       method:'POST',
@@ -138,14 +138,14 @@ button:disabled{opacity:.25;cursor:default}
     }).then(function(r){
       if(r.status !== 200) throw new Error(r.statusText);
       st.className = 'status show wait';
-      st.textContent = 'Verbinding wordt geprobeerd. Als het mislukt verschijnt Berry-Setup opnieuw.';
-      btn.textContent = 'Verbinden...';
+      st.textContent = 'Connection attempt in progress. If it fails, Berry-Setup will reappear.';
+      btn.textContent = 'Connecting...';
       btn.disabled = true;
     }).catch(function(e){
       st.className = 'status show err';
-      st.textContent = 'Verbinding mislukt';
+      st.textContent = 'Connection failed';
       btn.disabled = false;
-      btn.textContent = 'Verbinden';
+      btn.textContent = 'Connect';
     });
   }
 

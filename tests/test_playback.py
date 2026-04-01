@@ -414,25 +414,25 @@ class TestSkipFailureRecovery:
         def do_skip():
             if not api_fn():
                 if not api_fn():
-                    toast('Niet verbonden')
+                    toast('Not connected')
 
         do_skip()
         assert api_fn.call_count == 2
         toast.assert_not_called()
 
     def test_skip_shows_toast_after_two_failures(self):
-        """Next fails twice — user sees 'Niet verbonden'."""
+        """Next fails twice — user sees 'Not connected'."""
         api_fn = MagicMock(return_value=False)
         toast = MagicMock()
 
         def do_skip():
             if not api_fn():
                 if not api_fn():
-                    toast('Niet verbonden')
+                    toast('Not connected')
 
         do_skip()
         assert api_fn.call_count == 2
-        toast.assert_called_once_with('Niet verbonden')
+        toast.assert_called_once_with('Not connected')
 
 
 class TestPlayQueueing:

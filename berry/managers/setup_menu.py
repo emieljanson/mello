@@ -112,11 +112,11 @@ class SetupMenu:
                 self._clear_library()
             elif 'auto_pause' in button_rects and button_rects['auto_pause'].collidepoint(x, y):
                 mins = self.settings.cycle_auto_pause()
-                self._on_toast(f'Auto-pauze: {mins} min')
+                self._on_toast(f'Auto-pause: {mins} min')
                 self._on_invalidate()
             elif 'progress_expiry' in button_rects and button_rects['progress_expiry'].collidepoint(x, y):
                 hours = self.settings.cycle_progress_expiry()
-                self._on_toast(f'Voortgang onthouden: {hours} uur')
+                self._on_toast(f'Remember progress: {hours} hrs')
                 self._on_invalidate()
 
     def update(self):
@@ -127,7 +127,7 @@ class SetupMenu:
                 self._wifi_process = None
                 if ret == 0:
                     logger.info('wifi-connect exited (code=0)')
-                    self._on_toast('WiFi verbonden!')
+                    self._on_toast('WiFi connected!')
                     self.close()
                 else:
                     logger.info(f'wifi-connect exited (code={ret})')
@@ -159,9 +159,9 @@ class SetupMenu:
                     dev = paired[idx]
                     if dev.connected:
                         self.bluetooth.disconnect()
-                        self._on_toast(f'{dev.name} verbroken')
+                        self._on_toast(f'{dev.name} disconnected')
                     else:
-                        self._on_toast(f'Verbinden met {dev.name}...')
+                        self._on_toast(f'Connecting to {dev.name}...')
                         self.bluetooth.connect(dev.mac)
                 break
             elif key.startswith('bt_discovered_'):
@@ -298,16 +298,16 @@ class SetupMenu:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self._on_toast('Verbinden...')
+            self._on_toast('Connecting...')
         except Exception as e:
             logger.error(f'Reconnect failed: {e}')
-            self._on_toast('Verbinden mislukt')
+            self._on_toast('Connection failed')
 
         self.close()
 
     def _clear_library(self):
         """Delete catalog, progress, Spotify credentials, restart app."""
-        logger.info('Setup menu: Wis bibliotheek')
+        logger.info('Setup menu: Clear library')
         try:
             if CATALOG_PATH.exists():
                 CATALOG_PATH.unlink()
@@ -337,5 +337,5 @@ class SetupMenu:
                 logger.warning(f'Could not restart berry-native: {ex}')
         threading.Thread(target=_restart_app, daemon=True).start()
 
-        self._on_toast('Bibliotheek gewist')
+        self._on_toast('Library cleared')
         self.close()
