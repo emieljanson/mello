@@ -41,14 +41,16 @@ run_migration() {
 _migrate_001() {
   # 1. Install PipeWire + Bluetooth audio packages
   #    - pipewire: core audio daemon
-  #    - pipewire-pulse: PulseAudio compat layer (provides pactl)
+  #    - pipewire-pulse: PulseAudio compat layer
+  #    - pulseaudio-utils: provides pactl CLI (not bundled with pipewire-pulse on Trixie)
   #    - wireplumber: session manager
   #    - pipewire-alsa: ALSA integration so apps using "default" route through PipeWire
   #    - libspa-0.2-bluetooth: PipeWire Bluetooth audio module (A2DP, HFP)
   sudo apt-get update -qq
   sudo apt-get install -y -qq \
     pipewire pipewire-pulse wireplumber \
-    pipewire-alsa libspa-0.2-bluetooth
+    pipewire-alsa libspa-0.2-bluetooth \
+    pulseaudio-utils
 
   # Enable PipeWire for the berry user (user-level systemd services)
   # Create user service directory if it doesn't exist
@@ -108,6 +110,28 @@ _migrate_001() {
 }
 
 # ============================================
+# Migration 002: Install pactl (missing from 001 on Trixie)
+# ============================================
+_migrate_002() {
+  # pulseaudio-utils provides the pactl CLI needed for BT audio routing.
+  # On Debian Trixie, pipewire-pulse does NOT bundle pactl (unlike Ubuntu).
+  # Migration 001 missed this; devices that already ran 001 need this fix.
+  if command -v pactl &>/dev/null; then
+    log "pactl already available, skipping"
+    return 0
+  fi
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq pulseaudio-utils
+  if command -v pactl &>/dev/null; then
+    log "pactl installed successfully"
+  else
+    log "ERROR: pactl still not found after install"
+    return 1
+  fi
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
+run_migration "002" "Install pactl (missing from 001 on Trixie)"
