@@ -500,7 +500,7 @@ class Berry:
         self._user_driving_since = 0.0
         self.volume.mute()
         run_async(self.api.pause)
-        self._show_toast('Laden afgebroken, probeer opnieuw')
+        self._show_toast('Loading cancelled, try again')
 
     def _check_context_switch_watchdog(self, focused_item: Optional[CatalogItem]):
         """Detect and break out of a stuck context-switch loading state."""
@@ -664,8 +664,8 @@ class Berry:
         """Called by BluetoothManager when audio routing changes."""
         self._bt_audio_active = active
         if active:
-            # Set initial volume on BT sink to match current headphone level
-            self.bluetooth.set_volume(self.volume.headphone_level)
+            # Set initial volume on BT sink
+            self.bluetooth.set_volume(self.volume.bt_level)
         self.renderer.invalidate()
 
     def _handle_signal(self, signum, frame):
@@ -707,14 +707,27 @@ class Berry:
         
         # Main loop
         while self.running:
-            # Sleep mode: block until event arrives (0% CPU, instant wake)
+            # Sleep mode: wait for touch/key to wake up
             if self.sleep_manager.is_sleeping:
-                event = pygame.event.wait()  # Blocks until event
-                if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                # Primary wake: evdev threading.Event (reliable across threads)
+                # Fallback: pygame.event.wait with timeout (catches KEYDOWN/QUIT)
+                self.evdev_touch.wake_event.wait(0.2)
+                if self.evdev_touch.wake_event.is_set():
+                    self.evdev_touch.wake_event.clear()
                     self.sleep_manager.wake_up()
                     self._on_wake()
-                elif event.type == pygame.QUIT:
-                    self.running = False
+                    pygame.event.clear()  # Discard stale events from sleep
+                    continue
+                # Check for keyboard/quit events that bypass evdev
+                for event in pygame.event.get():
+                    if event.type == pygame.KEYDOWN:
+                        self.sleep_manager.wake_up()
+                        self._on_wake()
+                        pygame.event.clear()
+                        break
+                    elif event.type == pygame.QUIT:
+                        self.running = False
+                        break
                 continue
             
             self._handle_events()
@@ -949,6 +962,8 @@ class Berry:
             if status.playing:
                 self.auto_pause.on_play(status.context_uri)
                 self.auto_pause.check(is_playing=True)
+                # Ensure audio goes to BT headphone if active
+                self.bluetooth.ensure_stream_on_desired_sink()
             elif status.paused or status.stopped:
                 self.auto_pause.on_stop()
         else:
@@ -1402,6 +1417,7 @@ class Berry:
     
     def _on_wake(self):
         """Called when waking from sleep - reconnect and reset state."""
+        self.bluetooth.resume_monitoring()
         self._user_driving = False
         self._reset_pending_focus('play_enqueued')
         self.tracker.on_wake()
@@ -1861,6 +1877,7 @@ class Berry:
         was_awake = not self.sleep_manager.is_sleeping
         self.sleep_manager.check_sleep(self.now_playing.playing)
         if was_awake and self.sleep_manager.is_sleeping:
+            self.bluetooth.pause_monitoring()
             idle = time.time() - self.sleep_manager.last_activity
             self.tracker.on_sleep(idle)
         
@@ -1968,7 +1985,7 @@ class Berry:
         self.volume.toggle()
         # Also set BT sink volume when BT audio is active
         if self._bt_audio_active:
-            self.bluetooth.set_volume(self.volume.headphone_level)
+            self.bluetooth.set_volume(self.volume.bt_level)
         self._last_action_time = time.time()
         self._volume_hold_start = None
     
@@ -1989,6 +2006,9 @@ class Berry:
             and self._last_play_commit_uri == focused_uri
             and (time.time() - self._last_play_commit_at) < 1.25
         )
+
+        # Snapshot BT state once to avoid race with monitor thread
+        bt_dev = self.bluetooth.connected_device
 
         ctx = RenderContext(
             items=items,
@@ -2014,9 +2034,9 @@ class Berry:
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
             app_version_label=self.app_version_label,
-            bt_connected=self.bluetooth.connected_device is not None,
+            bt_connected=bt_dev is not None,
             bt_audio_active=self._bt_audio_active,
-            bt_connected_name=self.bluetooth.connected_device.name if self.bluetooth.connected_device else None,
+            bt_connected_name=bt_dev.name if bt_dev else None,
             bt_paired_devices=self.bluetooth.paired_devices,
             bt_discovered_devices=self.bluetooth.discovered_devices,
             bt_scanning=self.bluetooth.scanning,

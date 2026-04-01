@@ -31,7 +31,11 @@ class EvdevTouchHandler:
         self._device: Optional['evdev.InputDevice'] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
-        
+
+        # Wake signal for sleep mode (pygame.event.post from thread
+        # doesn't reliably wake pygame.event.wait in KMSDRM mode)
+        self.wake_event = threading.Event()
+
         # Touch state
         self._touch_x = 0
         self._touch_y = 0
@@ -135,6 +139,7 @@ class EvdevTouchHandler:
                     
                     if event.value == 1:  # Touch down
                         self._touching = True
+                        self.wake_event.set()
                         pygame.event.post(pygame.event.Event(
                             pygame.MOUSEBUTTONDOWN,
                             {'pos': pos, 'button': 1}

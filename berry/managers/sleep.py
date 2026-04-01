@@ -143,9 +143,14 @@ class SleepManager:
         logger.info('Awake (display on, CPU normal, LED on)')
     
     def _set_display(self, on: bool):
-        """Turn display on/off using all available methods."""
+        """Turn display on/off via backlight only.
+
+        DRM DPMS is NOT used because it powers down the DSI pipeline,
+        which kills the I2C bus and disables the Goodix touch controller.
+        Backlight-only keeps touch alive for wake-from-sleep.
+        """
         state = 'on' if on else 'off'
-        
+
         if self.backlight_path:
             try:
                 value = '0' if on else '1'
@@ -153,13 +158,6 @@ class SleepManager:
                     f.write(value)
             except (IOError, OSError, PermissionError) as e:
                 logger.warning(f'Backlight {state} failed: {e}')
-        
-        if self.drm_dpms_path:
-            try:
-                value = 'On' if on else 'Off'
-                self._write_sysfs(self.drm_dpms_path, value)
-            except Exception as e:
-                logger.warning(f'DRM DPMS {state} failed: {e}')
     
     def _set_low_power_cpu(self, low_power: bool):
         """Switch CPU governor: 'powersave' locks at 600MHz, 'ondemand' scales up."""

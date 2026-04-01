@@ -310,7 +310,7 @@ class TestPlayFailure:
         assert api.play.call_count == 1
         assert pc.play_state.pending_action is None
         assert pc.play_state.loading_since is None
-        toast.assert_called_once_with('Verbind via Spotify')
+        toast.assert_called_once_with('Connect via Spotify')
 
     @patch('berry.controllers.playback.time.sleep')
     def test_transient_failure_defers_toast_to_retry(self, mock_sleep):
