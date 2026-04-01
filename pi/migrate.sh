@@ -79,21 +79,19 @@ _migrate_001() {
   local SUDOERS_FILE="/etc/sudoers.d/berry-wifi"
   local EXPECTED_LINE='berry ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up'
 
-  if [ -f "$SUDOERS_FILE" ]; then
-    if ! grep -q "restart bluetooth" "$SUDOERS_FILE"; then
-      # Replace the existing line with the expanded one
-      local TMP_SUDOERS="/tmp/berry-sudoers.$$"
-      echo "$EXPECTED_LINE" > "$TMP_SUDOERS"
-      if sudo visudo -cf "$TMP_SUDOERS"; then
-        sudo install -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
-        log "sudoers updated with BT commands"
-      else
-        log "ERROR: sudoers validation failed"
-        rm -f "$TMP_SUDOERS"
-        return 1
-      fi
+  # Create or update sudoers if BT commands are missing
+  if ! sudo grep -q "restart bluetooth" "$SUDOERS_FILE" 2>/dev/null; then
+    local TMP_SUDOERS="/tmp/berry-sudoers.$$"
+    echo "$EXPECTED_LINE" > "$TMP_SUDOERS"
+    if sudo visudo -cf "$TMP_SUDOERS"; then
+      sudo install -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
+      log "sudoers updated with BT commands"
+    else
+      log "ERROR: sudoers validation failed"
       rm -f "$TMP_SUDOERS"
+      return 1
     fi
+    rm -f "$TMP_SUDOERS"
   fi
 
   # 5. Ensure XDG_RUNTIME_DIR is set for PipeWire in systemd service
