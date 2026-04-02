@@ -18,23 +18,23 @@ logger = logging.getLogger(__name__)
 class AutoPauseManager:
     """Manages automatic pause after extended playback."""
     
-    def __init__(self, on_pause: Callable[[], None], get_volume: Callable[[], tuple],
+    def __init__(self, on_pause: Callable[[], None], get_volume: Callable[[], int],
                  get_timeout: Callable[[], int] = None):
         """
         Args:
             on_pause: Callback to pause playback
-            get_volume: Returns (speaker_level, headphone_level) tuple
+            get_volume: Returns speaker_level (int)
             get_timeout: Returns auto-pause timeout in seconds (default 30 min)
         """
         self._on_pause = on_pause
         self._get_volume = get_volume
         self._get_timeout = get_timeout or (lambda: 30 * 60)
-        
+
         self._context_uri: Optional[str] = None
         self._play_start_time: Optional[float] = None
         self._is_fading = False
         self._fade_thread: Optional[threading.Thread] = None
-        self._original_volume: tuple = (100, 100)
+        self._original_volume: int = 100
         self._should_restore_volume = False
     
     def on_play(self, context_uri: Optional[str]):
@@ -71,9 +71,8 @@ class AutoPauseManager:
     def restore_volume_if_needed(self):
         """Restore volume after auto-pause (call when user resumes)."""
         if self._should_restore_volume:
-            speaker, headphone = self._original_volume
-            logger.info(f'Auto-pause: restoring volume to speaker={speaker}%, headphone={headphone}%')
-            set_system_volume(speaker, headphone)
+            logger.info(f'Auto-pause: restoring volume to speaker={self._original_volume}%')
+            set_system_volume(self._original_volume)
             self._should_restore_volume = False
     
     def _reset(self):
@@ -95,19 +94,19 @@ class AutoPauseManager:
         """Fade out volume over FADE_DURATION seconds, then pause."""
         steps = 20
         step_duration = AUTO_PAUSE_FADE_DURATION / steps
-        speaker, headphone = self._original_volume
-        
+        speaker = self._original_volume
+
         for i in range(steps):
             progress = (i + 1) / steps
             fade = 1 - progress
-            set_system_volume(max(0, int(speaker * fade)), max(0, int(headphone * fade)))
+            set_system_volume(max(0, int(speaker * fade)))
             time.sleep(step_duration)
-        
+
         logger.info('Auto-pause: pausing playback')
         self._on_pause()
-        
+
         time.sleep(0.5)
-        set_system_volume(speaker, headphone)
+        set_system_volume(speaker)
         self._should_restore_volume = False
         
         self._reset()

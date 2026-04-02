@@ -368,3 +368,69 @@ class TestSettingsBluetooth:
             bt_mgr._set_connected(dev, 'bluez_output.test.1')
 
         settings.set_last_bt_device_mac.assert_called_once_with('AA:BB:CC:DD:EE:FF')
+
+
+# -----------------------------------------------------------------------
+# Adapter recovery: detect powered-off adapter and recover
+# -----------------------------------------------------------------------
+
+class TestAdapterRecovery:
+    """Verify monitor clears stale state when adapter is down."""
+
+    @patch('berry.managers.bluetooth.sys')
+    @patch('berry.managers.bluetooth.subprocess.run')
+    def test_adapter_down_clears_connected_device(self, mock_run, mock_sys, bt, callbacks):
+        """When adapter is off and recovery fails, connected device is cleared."""
+        mock_sys.platform = 'linux'
+
+        # Pre-set a connected device (stale state)
+        dev = BluetoothDevice(mac='79:EF:29:2B:E8:3F', name='SoundForm mini',
+                              paired=True, connected=True, is_audio=True)
+        bt._connected_device = dev
+        bt._audio_active = True
+
+        # bluetoothctl show always returns Powered: no (recovery fails)
+        def fake_run(cmd, **kw):
+            result = MagicMock()
+            result.stdout = 'Powered: no'
+            result.returncode = 0
+            return result
+
+        mock_run.side_effect = fake_run
+
+        bt._poll_connection_state()
+
+        # Connected device should be cleared
+        assert bt._connected_device is None
+        assert bt._audio_active is False
+        callbacks['on_audio_changed'].assert_called_with(False)
+
+    @patch('berry.managers.bluetooth.sys')
+    @patch('berry.managers.bluetooth.subprocess.run')
+    def test_adapter_recovery_succeeds_continues_poll(self, mock_run, mock_sys, bt):
+        """When adapter recovers, normal polling continues."""
+        mock_sys.platform = 'linux'
+
+        call_count = [0]
+
+        def fake_run(cmd, **kw):
+            result = MagicMock()
+            if cmd[:2] == ['bluetoothctl', 'show']:
+                call_count[0] += 1
+                # First call: not powered. After restart: powered.
+                result.stdout = 'Powered: no' if call_count[0] == 1 else 'Powered: yes'
+            elif cmd == ['bluetoothctl', 'devices', 'Paired']:
+                result.stdout = ''
+            else:
+                result.stdout = ''
+            result.returncode = 0
+            return result
+
+        mock_run.side_effect = fake_run
+
+        bt._poll_connection_state()
+
+        # Should have called bluetoothctl show at least twice (check + post-recovery)
+        show_calls = [c for c in mock_run.call_args_list
+                      if c[0][0][:2] == ['bluetoothctl', 'show']]
+        assert len(show_calls) >= 2

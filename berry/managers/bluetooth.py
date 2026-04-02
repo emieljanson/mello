@@ -534,6 +534,17 @@ class BluetoothManager:
         except Exception:
             pass
 
+    def _is_adapter_powered(self) -> bool:
+        """Check if the BT adapter is powered on."""
+        try:
+            result = subprocess.run(
+                ['bluetoothctl', 'show'],
+                capture_output=True, text=True, timeout=5,
+            )
+            return 'Powered: yes' in result.stdout
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # Background monitoring
     # ------------------------------------------------------------------
@@ -553,6 +564,18 @@ class BluetoothManager:
         if sys.platform != 'linux':
             return
         try:
+            # Check adapter health — BCM43430A1 can lock up completely
+            if not self._is_adapter_powered():
+                logger.warning('Bluetooth: adapter not powered, attempting recovery')
+                self._restart_adapter()
+                if not self._is_adapter_powered():
+                    logger.warning('Bluetooth: adapter recovery failed')
+                    with self._lock:
+                        prev = self._connected_device
+                    if prev:
+                        self._handle_device_disconnected(prev)
+                    return
+
             with self._lock:
                 prev = self._connected_device
                 prev_mac = prev.mac if prev else None

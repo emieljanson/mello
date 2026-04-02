@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from ..config import SETTINGS_PATH
+from ..config import SETTINGS_PATH, DEFAULT_VOLUME_LEVELS, VOLUME_RANGE
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ class Settings:
         self._auto_pause_minutes = DEFAULT_AUTO_PAUSE_MINUTES
         self._progress_expiry_hours = DEFAULT_PROGRESS_EXPIRY_HOURS
         self._last_bt_device_mac: Optional[str] = None
+        self._volume_overrides: Optional[list] = None  # None = use defaults
         self._load()
 
     def _load(self):
@@ -36,6 +37,7 @@ class Settings:
                 self._auto_pause_minutes = data.get('auto_pause_minutes', DEFAULT_AUTO_PAUSE_MINUTES)
                 self._progress_expiry_hours = data.get('progress_expiry_hours', DEFAULT_PROGRESS_EXPIRY_HOURS)
                 self._last_bt_device_mac = data.get('last_bt_device_mac')
+                self._volume_overrides = data.get('volume_levels')
                 logger.info(f'Settings loaded: auto_pause={self._auto_pause_minutes}min, expiry={self._progress_expiry_hours}h')
         except (json.JSONDecodeError, IOError, OSError) as e:
             logger.warning(f'Could not load settings, using defaults: {e}')
@@ -43,11 +45,14 @@ class Settings:
     def _save(self):
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(json.dumps({
+            data = {
                 'auto_pause_minutes': self._auto_pause_minutes,
                 'progress_expiry_hours': self._progress_expiry_hours,
                 'last_bt_device_mac': self._last_bt_device_mac,
-            }, indent=2))
+            }
+            if self._volume_overrides is not None:
+                data['volume_levels'] = self._volume_overrides
+            self._path.write_text(json.dumps(data, indent=2))
         except Exception as e:
             logger.warning(f'Could not save settings: {e}')
 
@@ -93,3 +98,44 @@ class Settings:
     def set_last_bt_device_mac(self, mac: Optional[str]):
         self._last_bt_device_mac = mac
         self._save()
+
+    # --- Volume levels ---
+
+    def get_volume_levels(self) -> list:
+        """Return volume levels (3 dicts with speaker, bt, icon keys)."""
+        if self._volume_overrides is None:
+            return [dict(d) for d in DEFAULT_VOLUME_LEVELS]
+        # Merge overrides with defaults (ensure icon key is always present)
+        result = []
+        for i, default in enumerate(DEFAULT_VOLUME_LEVELS):
+            entry = dict(default)
+            if i < len(self._volume_overrides):
+                override = self._volume_overrides[i]
+                for key in ('speaker', 'bt'):
+                    if key in override:
+                        entry[key] = override[key]
+            result.append(entry)
+        return result
+
+    def adjust_volume(self, level_index: int, output_type: str, delta: int) -> int:
+        """Adjust a volume value by delta (+1 or -1). Returns new value."""
+        levels = self.get_volume_levels()
+        if level_index < 0 or level_index >= len(levels):
+            return 0
+        lo, hi = VOLUME_RANGE.get(output_type, (0, 100))
+        new_val = max(lo, min(hi, levels[level_index][output_type] + delta))
+        # Initialize overrides from current effective values
+        if self._volume_overrides is None:
+            self._volume_overrides = [
+                {'speaker': d['speaker'], 'bt': d['bt']}
+                for d in DEFAULT_VOLUME_LEVELS
+            ]
+        self._volume_overrides[level_index][output_type] = new_val
+        self._save()
+        return new_val
+
+    def reset_volume_levels(self):
+        """Reset volume levels to defaults."""
+        self._volume_overrides = None
+        self._save()
+        logger.info('Volume levels reset to defaults')

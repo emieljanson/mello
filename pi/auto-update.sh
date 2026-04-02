@@ -1,7 +1,12 @@
 #!/bin/bash
 # Berry Auto-Update Script
 # Runs via cron, checks GitHub and applies ALL changes
+#
+# The entire script body is wrapped in main() so bash reads it fully into
+# memory before executing.  This prevents corruption when git pull updates
+# this file while it is running.
 
+main() {
 set -euo pipefail
 
 cd ~/berry || exit 1
@@ -28,7 +33,10 @@ fi
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 # Check if there are updates
-git fetch origin "$BRANCH" 2>/dev/null || exit 0
+if ! git fetch origin "$BRANCH" 2>/dev/null; then
+  log "Fetch failed (network issue?), will retry next run"
+  exit 0
+fi
 
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/$BRANCH")
@@ -72,7 +80,9 @@ fi
 # ============================================
 if [ -f ~/berry/pi/migrate.sh ]; then
   log "Running migration script"
-  bash ~/berry/pi/migrate.sh
+  if ! bash ~/berry/pi/migrate.sh; then
+    log "WARNING: migration failed, continuing with service restart"
+  fi
 fi
 
 # ============================================
@@ -100,3 +110,6 @@ if ! systemctl is-active --quiet berry-librespot || ! systemctl is-active --quie
 fi
 
 log "Update complete"
+}
+
+main "$@"

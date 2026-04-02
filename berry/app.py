@@ -30,7 +30,7 @@ from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
 from .controllers import VolumeController, PlaybackController
 from .ui import ImageCache, Renderer, RenderContext
-from .utils import run_async, get_runtime_version_label
+from .utils import run_async, get_runtime_version_label, set_system_volume
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ class Berry:
         self.carousel = SmoothCarousel()
         self.play_timer = PlayTimer()
         self.perf_monitor = PerformanceMonitor()
-        self.volume = VolumeController(self.api)
+        self.volume = VolumeController(self.api, self.settings)
         # Usage analytics
         self.tracker = UsageTracker(
             api_key=POSTHOG_API_KEY,
@@ -190,7 +190,7 @@ class Berry:
         
         self.auto_pause = AutoPauseManager(
             on_pause=lambda: (self.tracker.on_auto_pause(), run_async(self.api.pause)),
-            get_volume=lambda: (self.volume.speaker_level, self.volume.headphone_level),
+            get_volume=lambda: self.volume.speaker_level,
             get_timeout=lambda: self.settings.auto_pause_timeout,
         )
         
@@ -307,6 +307,7 @@ class Berry:
             on_invalidate=lambda: self.renderer.invalidate(),
             on_library_cleared=self._on_library_cleared,
             bluetooth_manager=self.bluetooth,
+            on_volume_preview=self._preview_volume,
         )
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
@@ -553,6 +554,14 @@ class Berry:
                 f'waiting_for_commit={waiting_for_switch_commit} | user_driving={self._user_driving}'
             )
             self._last_context_watchdog_log = now
+
+    def _preview_volume(self, level_idx: int, output_type: str, new_val: int):
+        """Switch to the edited volume level and apply it immediately."""
+        self.volume.index = level_idx
+        if output_type == 'speaker':
+            set_system_volume(new_val)
+        elif output_type == 'bt' and self.bluetooth:
+            self.bluetooth.set_volume(new_val)
 
     def _on_library_cleared(self):
         """Reset in-memory state after library clear (called by SetupMenu)."""
@@ -2063,6 +2072,7 @@ class Berry:
             bt_paired_devices=self.bluetooth.paired_devices,
             bt_discovered_devices=self.bluetooth.discovered_devices,
             bt_scanning=self.bluetooth.scanning,
+            volume_levels=self.settings.get_volume_levels(),
         )
         return self.renderer.draw(ctx)
 

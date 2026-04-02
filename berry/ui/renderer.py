@@ -18,7 +18,7 @@ from ..config import (
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     TRACK_INFO_X, CAROUSEL_X, CONTROLS_X, CAROUSEL_CENTER_Y,
     BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING, PROGRESS_BAR_WIDTH,
-    VOLUME_LEVELS,
+    DEFAULT_VOLUME_LEVELS,
 )
 
 # Headphone button Y position — symmetric to volume button on the opposite side.
@@ -444,7 +444,7 @@ class Renderer:
         vol_center = (x, right_cover_edge - BTN_SIZE // 2)
         vol_color = self._lighten_color(gray_color) if pressed_button == 'volume' else gray_color
         draw_aa_circle(self.screen, vol_color, vol_center, BTN_SIZE // 2)
-        icon_key = VOLUME_LEVELS[volume_index]['icon']
+        icon_key = DEFAULT_VOLUME_LEVELS[volume_index]['icon']
         self._draw_icon(icon_key, vol_center)
     
     def _draw_icon(self, name: str, center: tuple):
@@ -600,7 +600,10 @@ class Renderer:
         """Draw fully black background then the active menu screen."""
         self.screen.fill((0, 0, 0))
         
-        if ctx.menu_state == MenuState.BT_LIST:
+        if ctx.menu_state == MenuState.VOLUME_LEVELS:
+            self._draw_volume_screen(ctx)
+
+        elif ctx.menu_state == MenuState.BT_LIST:
             self._draw_bt_screen(ctx)
 
         elif ctx.menu_state == MenuState.WIFI_LIST:
@@ -631,6 +634,7 @@ class Renderer:
                 None,
                 ('auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
                 ('progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
+                ('volume', 'Volume levels', COLORS['bg_elevated']),
             ]
             self._draw_menu_screen(
                 'Settings',
@@ -738,5 +742,53 @@ class Renderer:
         x -= GAP
         close_btn = pygame.Rect(max(20, x), Y, H, W)
         self._draw_menu_button(close_btn, 'Close', COLORS['bg_elevated'])
+        self.menu_button_rects['close'] = close_btn
+
+    _VOL_LABELS = [
+        ('speaker', ['Speaker laag', 'Speaker midden', 'Speaker hoog']),
+        ('bt', ['BT laag', 'BT midden', 'BT hoog']),
+    ]
+
+    def _draw_volume_screen(self, ctx: 'RenderContext'):
+        """Draw the volume levels settings screen with +/- buttons."""
+        self.menu_button_rects = {}
+        H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
+
+        title_surf = self._render_text_rotated('Volume', self.font_large, COLORS['text_primary'])
+        self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
+
+        levels = ctx.volume_levels
+        x = self._MENU_TOP_X
+        btn_w = 70  # width of +/- buttons
+        label_w = W - btn_w * 2 - 10  # remaining space for label
+
+        for output_type, names in self._VOL_LABELS:
+            for i, name in enumerate(names):
+                val = levels[i][output_type] if i < len(levels) else 0
+
+                # [−] button (left side from user's POV = high Y)
+                minus_rect = pygame.Rect(x, Y, H, btn_w)
+                self._draw_menu_button(minus_rect, '−', COLORS['bg_elevated'])
+                self.menu_button_rects[f'vol_minus_{i}_{output_type}'] = minus_rect
+
+                # Label with current value (center)
+                label_rect = pygame.Rect(x, Y + btn_w + 5, H, label_w)
+                pygame.draw.rect(self.screen, COLORS['bg_secondary'], label_rect, border_radius=18)
+                label_text = f'{name}: {val}%'
+                label_surf = self._render_text_rotated(label_text, self.font_medium, COLORS['text_primary'])
+                self.screen.blit(label_surf, label_surf.get_rect(center=label_rect.center))
+
+                # [+] button (right side from user's POV = low Y)
+                plus_rect = pygame.Rect(x, Y + btn_w + 5 + label_w + 5, H, btn_w)
+                self._draw_menu_button(plus_rect, '+', COLORS['bg_elevated'])
+                self.menu_button_rects[f'vol_plus_{i}_{output_type}'] = plus_rect
+
+                x -= H + GAP
+
+            x -= GAP  # Extra gap between speaker and bt sections
+
+        x -= GAP
+        close_btn = pygame.Rect(max(20, x), Y, H, W)
+        self._draw_menu_button(close_btn, 'Terug', COLORS['bg_elevated'])
         self.menu_button_rects['close'] = close_btn
 
