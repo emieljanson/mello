@@ -39,8 +39,22 @@ fi
 
 log "Updates found on $BRANCH, applying"
 
+# Backup user data that may still be tracked by git (e.g. data/catalog.json
+# was committed early on but later gitignored; git rm --cached will cause
+# git pull to delete it from disk).
+DATA_BACKUP="/tmp/berry-data-backup.$$"
+if [ -d data ] && [ "$(ls -A data/ 2>/dev/null)" ]; then
+  cp -a data "$DATA_BACKUP"
+fi
+
 # Pull changes (fast-forward only to avoid accidental merge commits)
 git pull --ff-only origin "$BRANCH" || exit 1
+
+# Restore any data files that git pull deleted
+if [ -d "$DATA_BACKUP" ]; then
+  cp -an "$DATA_BACKUP"/. data/ 2>/dev/null || true
+  rm -rf "$DATA_BACKUP"
+fi
 
 # ============================================
 # 1. Update Python dependencies if requirements.txt changed
