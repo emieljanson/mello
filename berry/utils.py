@@ -79,8 +79,8 @@ def _find_wm8960_card() -> str:
     return _wm8960_card
 
 
-def set_system_volume(speaker_level: int, headphone_level: int):
-    """Set the Pi's ALSA system volume for speaker and headphone separately."""
+def set_system_volume(speaker_level: int):
+    """Set the Pi's ALSA system volume for the speaker."""
     if sys.platform != 'linux':
         return
     try:
@@ -93,10 +93,6 @@ def set_system_volume(speaker_level: int, headphone_level: int):
             ['amixer', '-c', card, 'set', 'Speaker', f'{speaker_level}%'],
             capture_output=True, check=True
         )
-        subprocess.run(
-            ['amixer', '-c', card, 'set', 'Headphone', f'{headphone_level}%'],
-            capture_output=True, check=True
-        )
     except (subprocess.SubprocessError, FileNotFoundError) as e:
         logger.debug(f'Could not set system volume: {e}')
     except Exception as e:
@@ -104,7 +100,7 @@ def set_system_volume(speaker_level: int, headphone_level: int):
 
 
 def mute_speakers():
-    """Silence speaker and headphone by setting volume to 0% (WM8960 has no mute switch)."""
+    """Silence speaker by setting volume to 0% (WM8960 has no mute switch)."""
     if sys.platform != 'linux':
         return
     try:
@@ -113,28 +109,20 @@ def mute_speakers():
             ['amixer', '-c', card, 'set', 'Speaker', '0%'],
             capture_output=True, check=True
         )
-        subprocess.run(
-            ['amixer', '-c', card, 'set', 'Headphone', '0%'],
-            capture_output=True, check=True
-        )
     except (subprocess.SubprocessError, FileNotFoundError) as e:
         logger.debug(f'Could not mute speakers: {e}')
     except Exception as e:
         logger.warning(f'Unexpected error muting speakers: {e}', exc_info=True)
 
 
-def unmute_speakers(speaker_level: int, headphone_level: int):
-    """Restore speaker and headphone to given volume levels."""
+def unmute_speakers(speaker_level: int):
+    """Restore speaker to given volume level."""
     if sys.platform != 'linux':
         return
     try:
         card = _find_wm8960_card()
         subprocess.run(
             ['amixer', '-c', card, 'set', 'Speaker', f'{speaker_level}%'],
-            capture_output=True, check=True
-        )
-        subprocess.run(
-            ['amixer', '-c', card, 'set', 'Headphone', f'{headphone_level}%'],
             capture_output=True, check=True
         )
     except (subprocess.SubprocessError, FileNotFoundError) as e:

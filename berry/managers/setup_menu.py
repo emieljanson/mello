@@ -27,6 +27,7 @@ class SetupMenu:
         on_invalidate: Callable[[], None],
         on_library_cleared: Callable[[], None],
         bluetooth_manager=None,
+        on_volume_preview: Optional[Callable[[int, str, int], None]] = None,
     ):
         self.catalog_manager = catalog_manager
         self.settings = settings
@@ -34,6 +35,7 @@ class SetupMenu:
         self._on_invalidate = on_invalidate
         self._on_library_cleared = on_library_cleared
         self.bluetooth = bluetooth_manager
+        self._on_volume_preview = on_volume_preview
 
         self.state = MenuState.CLOSED
         self.known_networks: list = []
@@ -75,7 +77,11 @@ class SetupMenu:
         x, y = pos
 
         if 'close' in button_rects and button_rects['close'].collidepoint(x, y):
-            if self.state == MenuState.WIFI_AP:
+            if self.state == MenuState.VOLUME_LEVELS:
+                self.state = MenuState.MAIN
+                self._on_invalidate()
+                return
+            elif self.state == MenuState.WIFI_AP:
                 if self._wifi_process:
                     try:
                         self._wifi_process.terminate()
@@ -94,7 +100,9 @@ class SetupMenu:
                 self.close()
             return
 
-        if self.state == MenuState.BT_LIST:
+        if self.state == MenuState.VOLUME_LEVELS:
+            self._handle_volume_tap(button_rects, x, y)
+        elif self.state == MenuState.BT_LIST:
             self._handle_bt_tap(button_rects, x, y)
         elif self.state == MenuState.WIFI_LIST:
             if 'new_network' in button_rects and button_rects['new_network'].collidepoint(x, y):
@@ -118,6 +126,9 @@ class SetupMenu:
                 hours = self.settings.cycle_progress_expiry()
                 self._on_toast(f'Voortgang onthouden: {hours} uur')
                 self._on_invalidate()
+            elif 'volume' in button_rects and button_rects['volume'].collidepoint(x, y):
+                self.state = MenuState.VOLUME_LEVELS
+                self._on_invalidate()
 
     def update(self):
         """Called each frame to detect wifi-connect exit."""
@@ -137,6 +148,24 @@ class SetupMenu:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _handle_volume_tap(self, button_rects: dict, x: int, y: int):
+        """Handle taps on the volume settings screen (+/- buttons)."""
+        for key, rect in button_rects.items():
+            if not rect.collidepoint(x, y):
+                continue
+            # Keys are like "vol_plus_0_speaker", "vol_minus_1_bt"
+            if key.startswith('vol_'):
+                parts = key.split('_')  # ['vol', 'plus'/'minus', index, type]
+                if len(parts) == 4:
+                    delta = 1 if parts[1] == 'plus' else -1
+                    level_idx = int(parts[2])
+                    output_type = parts[3]
+                    new_val = self.settings.adjust_volume(level_idx, output_type, delta)
+                    if self._on_volume_preview:
+                        self._on_volume_preview(level_idx, output_type, new_val)
+                    self._on_invalidate()
+                break
 
     def _show_bt_screen(self):
         logger.info('Setup menu: Bluetooth screen')

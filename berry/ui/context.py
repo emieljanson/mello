@@ -39,4 +39,5 @@ class RenderContext:
     bt_paired_devices: List[BluetoothDevice] = field(default_factory=list)
     bt_discovered_devices: List[BluetoothDevice] = field(default_factory=list)
     bt_scanning: bool = False
+    volume_levels: list = field(default_factory=list)  # For volume settings screen
 
