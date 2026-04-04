@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Defaults (matching existing config.py values)
 DEFAULT_AUTO_PAUSE_MINUTES = 30
-DEFAULT_PROGRESS_EXPIRY_HOURS = 48
+DEFAULT_PROGRESS_EXPIRY_HOURS = 96
 
 # Allowed options for the setup menu
 AUTO_PAUSE_OPTIONS = [15, 30, 60, 120]  # minutes

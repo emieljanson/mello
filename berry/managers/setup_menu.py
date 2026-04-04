@@ -10,7 +10,9 @@ import subprocess
 import threading
 from typing import Optional, Callable
 
-from ..config import CATALOG_PATH, LIBRESPOT_STATE_PATH
+import shutil
+
+from ..config import CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH
 from ..models import MenuState
 
 logger = logging.getLogger(__name__)
@@ -38,8 +40,10 @@ class SetupMenu:
         self._on_volume_preview = on_volume_preview
 
         self.state = MenuState.CLOSED
+        self.scroll_offset: int = 0  # pixels scrolled in current menu screen
         self.known_networks: list = []
         self.current_network: Optional[str] = None
+        self._ssid_to_con_name: dict = {}
         self._wifi_process: Optional[subprocess.Popen] = None
 
     @property
@@ -50,6 +54,7 @@ class SetupMenu:
         """Open the setup menu overlay."""
         logger.info('Setup menu opened')
         self.state = MenuState.MAIN
+        self.scroll_offset = 0
         self.current_network = None
         self._on_invalidate()
 
@@ -77,10 +82,8 @@ class SetupMenu:
         x, y = pos
 
         if 'close' in button_rects and button_rects['close'].collidepoint(x, y):
-            if self.state == MenuState.VOLUME_LEVELS:
-                self.state = MenuState.MAIN
-                self._on_invalidate()
-                return
+            if self.state == MenuState.MAIN:
+                self.close()
             elif self.state == MenuState.WIFI_AP:
                 if self._wifi_process:
                     try:
@@ -90,14 +93,15 @@ class SetupMenu:
                     self._wifi_process = None
                     self._reconnect_to_known_network()
                 self.state = MenuState.WIFI_LIST
-                self._on_invalidate()
-            elif self.state == MenuState.BT_LIST:
-                if self.bluetooth:
-                    self.bluetooth.stop_scan()
-                self.state = MenuState.MAIN
+                self.scroll_offset = 0
                 self._on_invalidate()
             else:
-                self.close()
+                # All other submenus → back to main
+                if self.state == MenuState.BT_LIST and self.bluetooth:
+                    self.bluetooth.stop_scan()
+                self.state = MenuState.MAIN
+                self.scroll_offset = 0
+                self._on_invalidate()
             return
 
         if self.state == MenuState.VOLUME_LEVELS:
@@ -116,8 +120,8 @@ class SetupMenu:
                 self._show_wifi_screen()
             elif 'bluetooth' in button_rects and button_rects['bluetooth'].collidepoint(x, y):
                 self._show_bt_screen()
-            elif 'library' in button_rects and button_rects['library'].collidepoint(x, y):
-                self._clear_library()
+            elif 'reset' in button_rects and button_rects['reset'].collidepoint(x, y):
+                self._factory_reset()
             elif 'auto_pause' in button_rects and button_rects['auto_pause'].collidepoint(x, y):
                 mins = self.settings.cycle_auto_pause()
                 self._on_toast(f'Auto-pause: {mins} min')
@@ -128,7 +132,13 @@ class SetupMenu:
                 self._on_invalidate()
             elif 'volume' in button_rects and button_rects['volume'].collidepoint(x, y):
                 self.state = MenuState.VOLUME_LEVELS
+                self.scroll_offset = 0
                 self._on_invalidate()
+
+    def handle_scroll(self, delta: int, max_overflow: int):
+        """Adjust scroll offset by delta, clamped to valid range."""
+        self.scroll_offset = max(0, min(max_overflow, self.scroll_offset + delta))
+        self._on_invalidate()
 
     def update(self):
         """Called each frame to detect wifi-connect exit."""
@@ -170,6 +180,7 @@ class SetupMenu:
     def _show_bt_screen(self):
         logger.info('Setup menu: Bluetooth screen')
         self.state = MenuState.BT_LIST
+        self.scroll_offset = 0
         self._on_invalidate()
         if self.bluetooth:
             self.bluetooth.refresh_paired()
@@ -209,6 +220,20 @@ class SetupMenu:
                     self._reconnect_wifi(self.known_networks[idx])
                 break
 
+    def _resolve_ssid(self, con_name: str) -> str:
+        """Get the actual SSID for a connection profile name."""
+        try:
+            result = subprocess.run(
+                ['nmcli', '-g', '802-11-wireless.ssid', 'con', 'show', con_name],
+                capture_output=True, text=True, timeout=3,
+            )
+            ssid = result.stdout.strip()
+            if ssid:
+                return ssid
+        except Exception as e:
+            logger.debug(f'Could not resolve SSID for {con_name}: {e}')
+        return con_name
+
     def _collect_known_networks(self):
         """Populate known_networks and current_network via nmcli."""
         try:
@@ -216,7 +241,7 @@ class SetupMenu:
                 ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show', '--active'],
                 capture_output=True, text=True, timeout=3,
             )
-            active_wifi = [
+            active_con_names = [
                 line.split(':')[0]
                 for line in active_result.stdout.strip().split('\n')
                 if line and '802-11-wireless' in line
@@ -225,35 +250,48 @@ class SetupMenu:
                 ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
                 capture_output=True, text=True, timeout=3,
             )
-            all_wifi = [
+            all_con_names = [
                 line.split(':')[0]
                 for line in all_result.stdout.strip().split('\n')
                 if line and '802-11-wireless' in line
             ]
+            skip = {'Berry-Setup', 'berry-ap', 'berry-setup'}
             seen = set()
             ordered = []
-            skip = {'Berry-Setup', 'berry-ap', 'berry-setup'}
-            for name in active_wifi + all_wifi:
-                if name and name not in seen and name not in skip:
-                    seen.add(name)
-                    ordered.append(name)
-            self.known_networks = ordered[:5]
-            self.current_network = active_wifi[0] if active_wifi else None
+            ssid_map = {}
+            active_ssids = []
+            for con_name in active_con_names + all_con_names:
+                if not con_name or con_name in seen or con_name in skip:
+                    continue
+                seen.add(con_name)
+                ssid = self._resolve_ssid(con_name)
+                if ssid in skip or ssid in ssid_map:
+                    continue
+                ssid_map[ssid] = con_name
+                ordered.append(ssid)
+                if con_name in active_con_names:
+                    active_ssids.append(ssid)
+            self._ssid_to_con_name = ssid_map
+            self.known_networks = ordered
+            self.current_network = active_ssids[0] if active_ssids else None
             logger.info(f'Known WiFi: {self.known_networks}, current: {self.current_network}')
         except Exception as e:
             logger.warning(f'Could not read WiFi connections: {e}')
             self.known_networks = []
             self.current_network = None
+            self._ssid_to_con_name = {}
 
     def _show_wifi_screen(self):
         logger.info('Setup menu: WiFi screen')
         self._collect_known_networks()
         self.state = MenuState.WIFI_LIST
+        self.scroll_offset = 0
         self._on_invalidate()
 
     def _start_wifi_ap(self):
         logger.info('Setup menu: starting wifi-connect AP')
         self.state = MenuState.WIFI_AP
+        self.scroll_offset = 0
         self._on_invalidate()
 
         def _prepare_and_launch():
@@ -298,10 +336,11 @@ class SetupMenu:
     def _reconnect_to_known_network(self):
         if self.known_networks:
             ssid = self.known_networks[0]
-            logger.info(f'Auto-reconnecting to known network: {ssid}')
+            con_name = self._ssid_to_con_name.get(ssid, ssid)
+            logger.info(f'Auto-reconnecting to known network: {ssid} (con: {con_name})')
             try:
                 subprocess.Popen(
-                    ['sudo', 'nmcli', 'con', 'up', ssid],
+                    ['sudo', 'nmcli', 'con', 'up', con_name],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -311,7 +350,8 @@ class SetupMenu:
             logger.warning('No known networks to reconnect to')
 
     def _reconnect_wifi(self, ssid: str):
-        logger.info(f'Setup menu: Reconnect to {ssid}')
+        con_name = self._ssid_to_con_name.get(ssid, ssid)
+        logger.info(f'Setup menu: Reconnect to {ssid} (con: {con_name})')
 
         if self._wifi_process:
             try:
@@ -323,7 +363,7 @@ class SetupMenu:
 
         try:
             subprocess.Popen(
-                ['sudo', 'nmcli', 'con', 'up', ssid],
+                ['sudo', 'nmcli', 'con', 'up', con_name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -334,9 +374,11 @@ class SetupMenu:
 
         self.close()
 
-    def _clear_library(self):
-        """Delete catalog, progress, Spotify credentials, restart app."""
-        logger.info('Setup menu: Clear library')
+    def _factory_reset(self):
+        """Full factory reset: catalog, settings, Spotify, Bluetooth, WiFi."""
+        logger.info('Setup menu: Factory reset')
+
+        # 1. Clear catalog and progress
         try:
             if CATALOG_PATH.exists():
                 CATALOG_PATH.unlink()
@@ -346,6 +388,7 @@ class SetupMenu:
         except Exception as e:
             logger.error(f'Failed to clear catalog: {e}')
 
+        # 2. Clear Spotify credentials
         try:
             if LIBRESPOT_STATE_PATH.exists():
                 state = json.loads(LIBRESPOT_STATE_PATH.read_text())
@@ -355,6 +398,64 @@ class SetupMenu:
         except Exception as e:
             logger.error(f'Failed to clear Spotify credentials: {e}')
 
+        # 3. Delete settings (auto-pause, volume, BT device memory)
+        try:
+            if SETTINGS_PATH.exists():
+                SETTINGS_PATH.unlink()
+                logger.info('Settings deleted')
+        except Exception as e:
+            logger.error(f'Failed to delete settings: {e}')
+
+        # 4. Delete cached album images
+        try:
+            if IMAGES_DIR.exists():
+                shutil.rmtree(IMAGES_DIR)
+                logger.info('Image cache deleted')
+        except Exception as e:
+            logger.error(f'Failed to delete image cache: {e}')
+
+        # 5. Forget all Bluetooth paired devices
+        try:
+            subprocess.run(
+                ['bluetoothctl', 'disconnect'],
+                capture_output=True, timeout=5,
+            )
+            result = subprocess.run(
+                ['bluetoothctl', 'devices', 'Paired'],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    mac = parts[1]
+                    subprocess.run(
+                        ['bluetoothctl', 'remove', mac],
+                        capture_output=True, timeout=5,
+                    )
+            logger.info('Bluetooth devices forgotten')
+        except Exception as e:
+            logger.error(f'Failed to forget Bluetooth devices: {e}')
+
+        # 6. Forget all WiFi networks (keep Berry-Setup AP)
+        try:
+            result = subprocess.run(
+                ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
+                capture_output=True, text=True, timeout=5,
+            )
+            skip = {'Berry-Setup', 'berry-ap', 'berry-setup'}
+            for line in result.stdout.strip().splitlines():
+                if '802-11-wireless' in line:
+                    name = line.split(':')[0]
+                    if name and name not in skip:
+                        subprocess.run(
+                            ['nmcli', 'con', 'delete', name],
+                            capture_output=True, timeout=5,
+                        )
+            logger.info('WiFi networks forgotten')
+        except Exception as e:
+            logger.error(f'Failed to forget WiFi networks: {e}')
+
+        # 7. Restart app
         def _restart_app():
             time.sleep(2)
             try:
@@ -366,5 +467,5 @@ class SetupMenu:
                 logger.warning(f'Could not restart berry-native: {ex}')
         threading.Thread(target=_restart_app, daemon=True).start()
 
-        self._on_toast('Library cleared')
+        self._on_toast('Reset complete')
         self.close()

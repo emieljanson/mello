@@ -148,7 +148,7 @@ SLEEP_TIMEOUT = 120.0  # 2 minutes of inactivity
 PLAY_TIMER_DELAY = 1.0  # seconds before auto-play
 SYNC_COOLDOWN = 5.0  # Block sync for 5s after play timer fires
 PROGRESS_SAVE_INTERVAL = 10  # Save progress every 10 seconds
-PROGRESS_EXPIRY_HOURS = 48  # Expire saved progress after 48 hours
+PROGRESS_EXPIRY_HOURS = 96  # Expire saved progress after 96 hours
 CONTEXT_SWITCH_WATCHDOG_TIMEOUT = 60.0  # Hard failsafe for stuck context-switch loading
 
 # ============================================

@@ -31,7 +31,7 @@ class RenderContext:
     menu_known_networks: List[str] = field(default_factory=list)
     menu_current_network: Optional[str] = None
     auto_pause_minutes: int = 30
-    progress_expiry_hours: int = 48
+    progress_expiry_hours: int = 96
     app_version_label: str = ''
     bt_connected: bool = False          # A BT audio device is connected
     bt_audio_active: bool = False       # Audio is routed to BT (headphone icon purple)
@@ -40,4 +40,5 @@ class RenderContext:
     bt_discovered_devices: List[BluetoothDevice] = field(default_factory=list)
     bt_scanning: bool = False
     volume_levels: list = field(default_factory=list)  # For volume settings screen
+    menu_scroll_offset: int = 0
 

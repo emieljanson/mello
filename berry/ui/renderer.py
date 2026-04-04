@@ -66,7 +66,22 @@ class Renderer:
         
         # Menu button rects (updated when menu is drawn)
         self.menu_button_rects: Dict[str, pygame.Rect] = {}
+        self.menu_content_overflow: int = 0
+        # Header fade: spans from content_top (transparent) to screen edge (opaque)
+        # Covers the entire title zone so content slides under it smoothly (iOS-style)
+        header_fade_size = SCREEN_WIDTH - 615  # 105px, starts just above first button top
+        raw = self._build_fade_surface(header_fade_size)
+        self._menu_header_fade = pygame.transform.flip(raw, True, False)
     
+    @staticmethod
+    def _build_fade_surface(size: int) -> pygame.Surface:
+        """Create a black gradient: x=0 fully opaque, x=size fully transparent."""
+        surf = pygame.Surface((size, SCREEN_HEIGHT), pygame.SRCALPHA)
+        for i in range(size):
+            alpha = 255 - int(255 * i / size)
+            pygame.draw.line(surf, (0, 0, 0, alpha), (i, 0), (i, SCREEN_HEIGHT - 1))
+        return surf
+
     def invalidate(self):
         """Force a full redraw on next frame."""
         self._needs_full_redraw = True
@@ -592,102 +607,247 @@ class Renderer:
     _MENU_BTN_H = 80
     _MENU_BTN_GAP = 10
     _MENU_BTN_W = 400
-    _MENU_BTN_Y = 440      # physical Y start (centered on 640)
-    _MENU_TOP_X = 565       # first button X
-    _MENU_TITLE_X = 670     # title X
-    
+    _MENU_BTN_Y = 440           # physical Y start (centered on 640)
+    _MENU_TITLE_X = 670         # title (fixed top)
+    _MENU_CONTENT_TOP = 530     # first button x (below gradient fade)
+    _MENU_CONTENT_BOT = 20      # content extends to near screen edge
+    _MENU_NAV_SIZE = 60          # close/back icon button diameter
+    _MENU_NAV_CENTER = (670, 50)   # close/back icon button center (user's top-left)
+
+    _VOL_LABELS = [
+        ('speaker', ['Speaker low', 'Speaker mid', 'Speaker high']),
+        ('bt', ['BT low', 'BT mid', 'BT high']),
+    ]
+
     def _draw_menu_frame(self, ctx: 'RenderContext'):
         """Draw fully black background then the active menu screen."""
         self.screen.fill((0, 0, 0))
-        
-        if ctx.menu_state == MenuState.VOLUME_LEVELS:
-            self._draw_volume_screen(ctx)
-
-        elif ctx.menu_state == MenuState.BT_LIST:
-            self._draw_bt_screen(ctx)
-
-        elif ctx.menu_state == MenuState.WIFI_LIST:
-            buttons = []
-            for i, ssid in enumerate(ctx.menu_known_networks[:5]):
-                is_current = ssid == ctx.menu_current_network
-                color = COLORS['accent'] if is_current else COLORS['bg_elevated']
-                display = ssid if len(ssid) <= 20 else ssid[:18] + '..'
-                buttons.append((f'reconnect_{i}', display, color))
-            buttons.append(None)
-            buttons.append(('new_network', '+ New network', COLORS['bg_elevated']))
-            self._draw_menu_screen('WiFi', buttons)
-        
-        elif ctx.menu_state == MenuState.WIFI_AP:
-            self._draw_menu_screen('WiFi', [], close_label='Back',
-                                   lines=['1. Connect to WiFi',
-                                          '    network "Berry-Setup"',
-                                          '',
-                                          '2. Choose your WiFi network',
-                                          '',
-                                          '3. Enter the password'])
-        
-        else:
-            buttons = [
-                ('wifi', 'WiFi', COLORS['accent']),
-                ('bluetooth', 'Bluetooth', COLORS['accent']),
-                ('library', 'Clear library', COLORS['accent']),
-                None,
-                ('auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
-                ('progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
-                ('volume', 'Volume levels', COLORS['bg_elevated']),
-            ]
-            self._draw_menu_screen(
-                'Settings',
-                buttons,
-                footer_line=f'Version: {ctx.app_version_label}' if ctx.app_version_label else None,
-            )
-        
-        self._needs_full_redraw = True
-    
-    def _draw_menu_screen(self, title: str, buttons: list,
-                          close_label: str = 'Close', lines: Optional[List[str]] = None,
-                          footer_line: Optional[str] = None):
-        """Draw a menu screen with consistent layout.
-        
-        buttons: list of (id, label, color) tuples. None entries add extra spacing.
-        lines: optional text lines shown below title (for instruction screens).
-        """
         self.menu_button_rects = {}
-        H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
-        
+
+        # Determine title and content items per screen
+        if ctx.menu_state == MenuState.MAIN:
+            title = 'Settings'
+            nav_icon = 'close'
+            items = self._build_main_content(ctx)
+        elif ctx.menu_state == MenuState.WIFI_LIST:
+            title = 'WiFi'
+            nav_icon = 'back'
+            items = self._build_wifi_content(ctx)
+        elif ctx.menu_state == MenuState.WIFI_AP:
+            title = 'WiFi'
+            nav_icon = 'back'
+            items = [
+                ('text', '1. Connect to WiFi'),
+                ('text', '    network "Berry-Setup"'),
+                ('spacer',),
+                ('text', '2. Choose your WiFi network'),
+                ('spacer',),
+                ('text', '3. Enter the password'),
+            ]
+        elif ctx.menu_state == MenuState.BT_LIST:
+            title = 'Bluetooth'
+            nav_icon = 'back'
+            items = self._build_bt_content(ctx)
+        elif ctx.menu_state == MenuState.VOLUME_LEVELS:
+            title = 'Volume'
+            nav_icon = 'back'
+            items = self._build_volume_content(ctx)
+        else:
+            return
+
+        H = self._MENU_BTN_H
+
+        # 1. Draw scrollable content first (chrome overlays on top)
+        self._draw_menu_content(items, ctx.menu_scroll_offset)
+
+        # 2. Header fade: full gradient from content area (transparent) to screen edge (opaque)
+        #    Content scrolls visibly under the title, fading out — iOS-style.
+        self.screen.blit(self._menu_header_fade, (615, 0))
+
+        # 3. Draw chrome on top: title + nav button
         title_surf = self._render_text_rotated(title, self.font_large, COLORS['text_primary'])
         self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
-        
-        x = self._MENU_TOP_X
-        
-        if lines:
-            for line in lines:
-                if line == '':
-                    x -= 15
-                    continue
-                surf = self._render_text_rotated(line, self.font_medium, COLORS['text_secondary'])
+
+        nav_center = self._MENU_NAV_CENTER
+        nav_r = self._MENU_NAV_SIZE // 2
+        nav_color = COLORS['bg_elevated']
+        if ctx.pressed_button == 'menu_close':
+            nav_color = self._lighten_color(nav_color)
+        draw_aa_circle(self.screen, nav_color, nav_center, nav_r)
+        nav_icon_img = self.icons.get(nav_icon)
+        if nav_icon_img:
+            icon_sz = 32
+            scaled = pygame.transform.smoothscale(nav_icon_img, (icon_sz, icon_sz))
+            self.screen.blit(scaled, scaled.get_rect(center=nav_center))
+        self.menu_button_rects['close'] = pygame.Rect(
+            nav_center[0] - nav_r, nav_center[1] - nav_r,
+            self._MENU_NAV_SIZE, self._MENU_NAV_SIZE)
+
+        self._needs_full_redraw = True
+
+    def _build_main_content(self, ctx: 'RenderContext') -> list:
+        items = [
+            ('button', 'wifi', 'WiFi', COLORS['bg_elevated']),
+            ('button', 'bluetooth', 'Bluetooth', COLORS['bg_elevated']),
+            ('button', 'volume', 'Volume levels', COLORS['bg_elevated']),
+            ('separator',),
+            ('button', 'auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
+            ('button', 'progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
+            ('separator',),
+            ('button', 'reset', 'Reset', COLORS['error']),
+        ]
+        if ctx.app_version_label:
+            items.append(('footer', f'Version: {ctx.app_version_label}'))
+        return items
+
+    def _build_wifi_content(self, ctx: 'RenderContext') -> list:
+        items = []
+        for i, ssid in enumerate(ctx.menu_known_networks):
+            is_current = ssid == ctx.menu_current_network
+            color = COLORS['accent'] if is_current else COLORS['bg_elevated']
+            display = ssid if len(ssid) <= 20 else ssid[:18] + '..'
+            items.append(('button', f'reconnect_{i}', display, color))
+        items.append(('separator',))
+        items.append(('button', 'new_network', '+ New network', COLORS['bg_elevated']))
+        return items
+
+    def _build_bt_content(self, ctx: 'RenderContext') -> list:
+        items = []
+        if ctx.bt_paired_devices:
+            items.append(('header', 'Paired'))
+            for i, dev in enumerate(ctx.bt_paired_devices):
+                color = COLORS['accent'] if dev.connected else COLORS['bg_elevated']
+                label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
+                items.append(('button', f'bt_paired_{i}', label, color))
+            items.append(('separator',))
+        if ctx.bt_discovered_devices or ctx.bt_scanning:
+            hdr = 'Found...' if ctx.bt_scanning else 'Found'
+            items.append(('header', hdr))
+            for i, dev in enumerate(ctx.bt_discovered_devices):
+                label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
+                items.append(('button', f'bt_discovered_{i}', label, COLORS['bg_elevated']))
+            if not ctx.bt_discovered_devices and ctx.bt_scanning:
+                items.append(('placeholder',))
+        return items
+
+    def _build_volume_content(self, ctx: 'RenderContext') -> list:
+        items = []
+        levels = ctx.volume_levels
+        for idx, (output_type, names) in enumerate(self._VOL_LABELS):
+            if idx > 0:
+                items.append(('separator',))
+            for i, name in enumerate(names):
+                val = levels[i][output_type] if i < len(levels) else 0
+                items.append(('vol_row', i, output_type, name, val))
+        return items
+
+    def _draw_menu_content(self, items: list, scroll_offset: int = 0):
+        """Draw content items in the scrollable zone between title and back button."""
+        H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
+        content_top = self._MENU_CONTENT_TOP
+        content_bot = self._MENU_CONTENT_BOT
+
+        # First pass: calculate total content height
+        total_height = 0
+        for item in items:
+            kind = item[0]
+            if kind == 'button':
+                total_height += H + GAP
+            elif kind == 'separator':
+                total_height += GAP
+            elif kind == 'header':
+                total_height += 30
+            elif kind == 'text':
+                total_height += 35
+            elif kind == 'spacer':
+                total_height += 15
+            elif kind == 'vol_row':
+                total_height += H + GAP
+            elif kind == 'placeholder':
+                total_height += H + GAP
+            elif kind == 'footer':
+                total_height += 30
+        if total_height > 0:
+            total_height -= GAP  # remove trailing gap
+
+        available = content_top - content_bot
+        self.menu_content_overflow = max(0, total_height - available)
+
+        # Set clip rect to content zone (buttons extend H pixels right from their x)
+        clip = pygame.Rect(content_bot, 0, SCREEN_WIDTH - content_bot, SCREEN_HEIGHT)
+        self.screen.set_clip(clip)
+
+        # Draw items with scroll offset applied
+        x = content_top + scroll_offset
+
+        btn_w_vol = 70  # +/- button width for volume rows
+        label_w_vol = W - btn_w_vol * 2 - 10
+
+        for item in items:
+            kind = item[0]
+
+            if kind == 'button':
+                _, btn_id, label, color = item
+                btn = pygame.Rect(x, Y, H, W)
+                self._draw_menu_button(btn, label, color)
+                self.menu_button_rects[btn_id] = btn
+                x -= H + GAP
+
+            elif kind == 'separator':
+                x -= GAP
+
+            elif kind == 'header':
+                hdr = self._render_text_rotated(item[1], self.font_small, COLORS['text_muted'])
+                self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
+                x -= 30
+
+            elif kind == 'text':
+                surf = self._render_text_rotated(item[1], self.font_medium, COLORS['text_secondary'])
                 self.screen.blit(surf, surf.get_rect(center=(x, CAROUSEL_CENTER_Y)))
                 x -= 35
-            x -= GAP * 2
-        for entry in buttons:
-            if entry is None:
-                x -= GAP
-                continue
-            btn_id, label, color = entry
-            btn = pygame.Rect(x, Y, H, W)
-            self._draw_menu_button(btn, label, color)
-            self.menu_button_rects[btn_id] = btn
-            x -= H + GAP
-        
-        x -= GAP
-        close_btn = pygame.Rect(max(20, x), Y, H, W)
-        self._draw_menu_button(close_btn, close_label, COLORS['bg_elevated'])
-        self.menu_button_rects['close'] = close_btn
 
-        if footer_line:
-            footer = self._render_text_rotated(footer_line, self.font_small, COLORS['text_muted'])
-            self.screen.blit(footer, footer.get_rect(center=(35, CAROUSEL_CENTER_Y)))
-    
+            elif kind == 'spacer':
+                x -= 15
+
+            elif kind == 'vol_row':
+                _, i, output_type, name, val = item
+                minus_rect = pygame.Rect(x, Y, H, btn_w_vol)
+                self._draw_menu_button(minus_rect, '−', COLORS['bg_elevated'])
+                self.menu_button_rects[f'vol_minus_{i}_{output_type}'] = minus_rect
+
+                label_rect = pygame.Rect(x, Y + btn_w_vol + 5, H, label_w_vol)
+                pygame.draw.rect(self.screen, COLORS['bg_secondary'], label_rect, border_radius=18)
+                label_text = f'{name}: {val}%'
+                label_surf = self._render_text_rotated(label_text, self.font_medium, COLORS['text_primary'])
+                self.screen.blit(label_surf, label_surf.get_rect(center=label_rect.center))
+
+                plus_rect = pygame.Rect(x, Y + btn_w_vol + 5 + label_w_vol + 5, H, btn_w_vol)
+                self._draw_menu_button(plus_rect, '+', COLORS['bg_elevated'])
+                self.menu_button_rects[f'vol_plus_{i}_{output_type}'] = plus_rect
+
+                x -= H + GAP
+
+            elif kind == 'placeholder':
+                x -= H + GAP
+
+            elif kind == 'footer':
+                surf = self._render_text_rotated(item[1], self.font_small, COLORS['text_muted'])
+                self.screen.blit(surf, surf.get_rect(center=(x, CAROUSEL_CENTER_Y)))
+                x -= 30
+
+        # Remove clip
+        self.screen.set_clip(None)
+
+        # Filter out button rects that are outside the visible content zone
+        to_remove = []
+        for btn_id, rect in self.menu_button_rects.items():
+            if btn_id == 'close':
+                continue  # close button is outside content zone by design
+            if rect.x + rect.width <= content_bot or rect.x >= content_top + H:
+                to_remove.append(btn_id)
+        for btn_id in to_remove:
+            del self.menu_button_rects[btn_id]
+
     def _draw_menu_button(self, rect: pygame.Rect, label: str, bg_color: tuple,
                           text_color: Optional[tuple] = None):
         """Draw a rounded rectangle button with rotated label."""
@@ -695,100 +855,4 @@ class Renderer:
         pygame.draw.rect(self.screen, bg_color, rect, border_radius=18)
         text_surf = self._render_text_rotated(label, self.font_medium, text_color)
         self.screen.blit(text_surf, text_surf.get_rect(center=rect.center))
-
-    def _draw_bt_screen(self, ctx: 'RenderContext'):
-        """Draw the Bluetooth device list screen."""
-        self.menu_button_rects = {}
-        H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
-
-        title_surf = self._render_text_rotated('Bluetooth', self.font_large, COLORS['text_primary'])
-        self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
-
-        x = self._MENU_TOP_X
-
-        # --- Paired devices section ---
-        if ctx.bt_paired_devices:
-            hdr = self._render_text_rotated('Paired', self.font_small, COLORS['text_muted'])
-            self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
-            x -= 30
-
-            for i, dev in enumerate(ctx.bt_paired_devices):
-                color = COLORS['accent'] if dev.connected else COLORS['bg_elevated']
-                label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
-                btn = pygame.Rect(x, Y, H, W)
-                self._draw_menu_button(btn, label, color)
-                self.menu_button_rects[f'bt_paired_{i}'] = btn
-                x -= H + GAP
-
-            x -= GAP
-
-        # --- Discovered devices section ---
-        if ctx.bt_discovered_devices or ctx.bt_scanning:
-            hdr_text = 'Found...' if ctx.bt_scanning else 'Found'
-            hdr = self._render_text_rotated(hdr_text, self.font_small, COLORS['text_muted'])
-            self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
-            x -= 30
-
-            for i, dev in enumerate(ctx.bt_discovered_devices[:4]):
-                label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
-                btn = pygame.Rect(x, Y, H, W)
-                self._draw_menu_button(btn, label, COLORS['bg_elevated'])
-                self.menu_button_rects[f'bt_discovered_{i}'] = btn
-                x -= H + GAP
-
-            if not ctx.bt_discovered_devices and ctx.bt_scanning:
-                x -= H + GAP  # placeholder spacing while scanning
-
-        x -= GAP
-        close_btn = pygame.Rect(max(20, x), Y, H, W)
-        self._draw_menu_button(close_btn, 'Close', COLORS['bg_elevated'])
-        self.menu_button_rects['close'] = close_btn
-
-    _VOL_LABELS = [
-        ('speaker', ['Speaker laag', 'Speaker midden', 'Speaker hoog']),
-        ('bt', ['BT laag', 'BT midden', 'BT hoog']),
-    ]
-
-    def _draw_volume_screen(self, ctx: 'RenderContext'):
-        """Draw the volume levels settings screen with +/- buttons."""
-        self.menu_button_rects = {}
-        H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
-
-        title_surf = self._render_text_rotated('Volume', self.font_large, COLORS['text_primary'])
-        self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
-
-        levels = ctx.volume_levels
-        x = self._MENU_TOP_X
-        btn_w = 70  # width of +/- buttons
-        label_w = W - btn_w * 2 - 10  # remaining space for label
-
-        for output_type, names in self._VOL_LABELS:
-            for i, name in enumerate(names):
-                val = levels[i][output_type] if i < len(levels) else 0
-
-                # [−] button (left side from user's POV = high Y)
-                minus_rect = pygame.Rect(x, Y, H, btn_w)
-                self._draw_menu_button(minus_rect, '−', COLORS['bg_elevated'])
-                self.menu_button_rects[f'vol_minus_{i}_{output_type}'] = minus_rect
-
-                # Label with current value (center)
-                label_rect = pygame.Rect(x, Y + btn_w + 5, H, label_w)
-                pygame.draw.rect(self.screen, COLORS['bg_secondary'], label_rect, border_radius=18)
-                label_text = f'{name}: {val}%'
-                label_surf = self._render_text_rotated(label_text, self.font_medium, COLORS['text_primary'])
-                self.screen.blit(label_surf, label_surf.get_rect(center=label_rect.center))
-
-                # [+] button (right side from user's POV = low Y)
-                plus_rect = pygame.Rect(x, Y + btn_w + 5 + label_w + 5, H, btn_w)
-                self._draw_menu_button(plus_rect, '+', COLORS['bg_elevated'])
-                self.menu_button_rects[f'vol_plus_{i}_{output_type}'] = plus_rect
-
-                x -= H + GAP
-
-            x -= GAP  # Extra gap between speaker and bt sections
-
-        x -= GAP
-        close_btn = pygame.Rect(max(20, x), Y, H, W)
-        self._draw_menu_button(close_btn, 'Terug', COLORS['bg_elevated'])
-        self.menu_button_rects['close'] = close_btn
 

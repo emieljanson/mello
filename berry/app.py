@@ -312,6 +312,9 @@ class Berry:
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
         self._menu_hold_triggered = False
+        # Menu scroll tracking
+        self._menu_touch_start: Optional[tuple] = None
+        self._menu_touch_scrolled: bool = False
         
         # Initialize carousel
         self._update_carousel_max_index()
@@ -330,6 +333,8 @@ class Berry:
             'plus': 'plus-circle-fill.png',
             'minus': 'minus-circle-fill.png',
             'headphone': 'headphone.png',
+            'close': 'close.png',
+            'back': 'back.png',
         }
         for name, filename in icon_files.items():
             try:
@@ -1118,19 +1123,38 @@ class Berry:
                 self._handle_key(event.key)
             
             elif event.type == pygame.MOUSEMOTION:
-                if self.touch.dragging:
+                if self.setup_menu.is_open and self._menu_touch_start is not None:
+                    # Menu scroll: track vertical drag (physical x-axis)
+                    dx = event.pos[0] - self._menu_touch_start[0]
+                    if abs(dx) > 10 and self.renderer.menu_content_overflow > 0:
+                        self._menu_touch_scrolled = True
+                        self.setup_menu.handle_scroll(
+                            dx, self.renderer.menu_content_overflow)
+                        self._menu_touch_start = event.pos
+                elif self.touch.dragging:
                     self.sleep_manager.reset_timer()
                     self.touch.on_move(event.pos)
-                    
+
                     # Cancel delete mode when user starts swiping
                     if self.touch.is_swiping and self.delete_mode_id:
                         self.delete_mode_id = None
                         self.renderer.invalidate()
-            
+
             elif event.type == pygame.MOUSEBUTTONUP:
                 logger.debug(f'Event: MOUSEBUTTONUP at {event.pos}')
                 if not self.sleep_manager.is_sleeping:
-                    self._handle_touch_up(event.pos)
+                    if self.setup_menu.is_open and self._menu_touch_start is not None:
+                        if not self._menu_touch_scrolled:
+                            # Flash pressed state on close/back button
+                            close_rect = self.renderer.menu_button_rects.get('close')
+                            if close_rect and close_rect.collidepoint(*event.pos):
+                                self._pressed_button = 'menu_close'
+                                self._pressed_time = time.time()
+                            self.setup_menu.handle_tap(event.pos, self.renderer.menu_button_rects)
+                        self._menu_touch_start = None
+                        self._menu_touch_scrolled = False
+                    else:
+                        self._handle_touch_up(event.pos)
                     self._handle_button_up()
     
     def _handle_key(self, key):
@@ -1152,9 +1176,10 @@ class Berry:
     def _handle_touch_down(self, pos):
         """Handle touch/mouse down."""
         self._user_activated_playback = True
-        # Menu intercept — all taps handled by menu when open
+        # Menu intercept — track touch start for scroll vs tap detection
         if self.setup_menu.is_open:
-            self.setup_menu.handle_tap(pos, self.renderer.menu_button_rects)
+            self._menu_touch_start = pos
+            self._menu_touch_scrolled = False
             return
         
         x, y = pos
@@ -2073,6 +2098,7 @@ class Berry:
             bt_discovered_devices=self.bluetooth.discovered_devices,
             bt_scanning=self.bluetooth.scanning,
             volume_levels=self.settings.get_volume_levels(),
+            menu_scroll_offset=self.setup_menu.scroll_offset,
         )
         return self.renderer.draw(ctx)
 
