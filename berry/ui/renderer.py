@@ -694,7 +694,19 @@ class Renderer:
             ('button', 'auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
             ('button', 'progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
             ('separator',),
-            ('button', 'reset', 'Reset', COLORS['error']),
+        ]
+        # Dynamic update button
+        if ctx.update_running:
+            items.append(('button', 'check_update', 'Updating...', COLORS['bg_elevated']))
+        elif ctx.update_checking:
+            items.append(('button', 'check_update', 'Checking...', COLORS['bg_elevated']))
+        elif ctx.update_available:
+            items.append(('button', 'check_update', 'Update now', COLORS['accent']))
+        else:
+            items.append(('button', 'check_update', 'Check for updates', COLORS['bg_elevated']))
+        items += [
+            ('separator',),
+            ('button', 'reset', 'Confirm Reset?' if ctx.reset_confirm_pending else 'Reset', COLORS['error']),
         ]
         if ctx.app_version_label:
             items.append(('footer', f'Version: {ctx.app_version_label}'))

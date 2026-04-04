@@ -2099,6 +2099,10 @@ class Berry:
             bt_scanning=self.bluetooth.scanning,
             volume_levels=self.settings.get_volume_levels(),
             menu_scroll_offset=self.setup_menu.scroll_offset,
+            update_checking=self.setup_menu._update_checking,
+            update_available=self.setup_menu._update_available,
+            update_running=self.setup_menu._update_running,
+            reset_confirm_pending=self.setup_menu._reset_confirm_pending,
         )
         return self.renderer.draw(ctx)
 

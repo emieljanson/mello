@@ -12,8 +12,12 @@ from typing import Optional, Callable
 
 import shutil
 
+from pathlib import Path
+
 from ..config import CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH
 from ..models import MenuState
+
+_REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,16 @@ class SetupMenu:
         self._ssid_to_con_name: dict = {}
         self._wifi_process: Optional[subprocess.Popen] = None
 
+        # Reset confirmation state
+        self._reset_confirm_pending: bool = False
+        self._reset_confirm_time: float = 0.0
+
+        # Manual update state
+        self._update_available: bool = False
+        self._update_checking: bool = False
+        self._update_running: bool = False
+        self._update_process: Optional[subprocess.Popen] = None
+
     @property
     def is_open(self) -> bool:
         return self.state != MenuState.CLOSED
@@ -73,6 +87,7 @@ class SetupMenu:
             self._wifi_process = None
         if self.bluetooth and self.state == MenuState.BT_LIST:
             self.bluetooth.stop_scan()
+        self._reset_confirm_pending = False
         self.state = MenuState.CLOSED
         self.current_network = None
         self._on_invalidate()
@@ -116,12 +131,23 @@ class SetupMenu:
         elif self.state == MenuState.WIFI_AP:
             self._check_reconnect_tap(button_rects, x, y)
         else:
+            if 'reset' in button_rects and button_rects['reset'].collidepoint(x, y):
+                if self._reset_confirm_pending:
+                    self._reset_confirm_pending = False
+                    self._factory_reset()
+                else:
+                    self._reset_confirm_pending = True
+                    self._reset_confirm_time = time.time()
+                    self._on_invalidate()
+                return
+            # Any other tap in main menu clears reset confirmation
+            if self._reset_confirm_pending:
+                self._reset_confirm_pending = False
+                self._on_invalidate()
             if 'wifi' in button_rects and button_rects['wifi'].collidepoint(x, y):
                 self._show_wifi_screen()
             elif 'bluetooth' in button_rects and button_rects['bluetooth'].collidepoint(x, y):
                 self._show_bt_screen()
-            elif 'reset' in button_rects and button_rects['reset'].collidepoint(x, y):
-                self._factory_reset()
             elif 'auto_pause' in button_rects and button_rects['auto_pause'].collidepoint(x, y):
                 mins = self.settings.cycle_auto_pause()
                 self._on_toast(f'Auto-pause: {mins} min')
@@ -134,6 +160,13 @@ class SetupMenu:
                 self.state = MenuState.VOLUME_LEVELS
                 self.scroll_offset = 0
                 self._on_invalidate()
+            elif 'check_update' in button_rects and button_rects['check_update'].collidepoint(x, y):
+                if self._update_running or self._update_checking:
+                    return
+                if self._update_available:
+                    self._run_update()
+                else:
+                    self._check_for_update()
 
     def handle_scroll(self, delta: int, max_overflow: int):
         """Adjust scroll offset by delta, clamped to valid range."""
@@ -141,7 +174,23 @@ class SetupMenu:
         self._on_invalidate()
 
     def update(self):
-        """Called each frame to detect wifi-connect exit."""
+        """Called each frame to detect wifi-connect / update exit."""
+        # Auto-clear reset confirmation after 4 seconds
+        if self._reset_confirm_pending and time.time() - self._reset_confirm_time > 4:
+            self._reset_confirm_pending = False
+            self._on_invalidate()
+
+        # Monitor manual update process
+        if self._update_process is not None:
+            ret = self._update_process.poll()
+            if ret is not None:
+                self._update_process = None
+                self._update_running = False
+                if ret != 0:
+                    self._on_toast('Update failed')
+                self._update_available = False
+                self._on_invalidate()
+
         if self.state == MenuState.WIFI_AP and self._wifi_process:
             ret = self._wifi_process.poll()
             if ret is not None:
@@ -158,6 +207,67 @@ class SetupMenu:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _check_for_update(self):
+        """Check if a newer version is available on the remote branch."""
+        self._update_checking = True
+        self._update_available = False
+        self._on_invalidate()
+
+        def _check():
+            try:
+                branch = subprocess.run(
+                    ['git', '-C', _REPO_DIR, 'rev-parse', '--abbrev-ref', 'HEAD'],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout.strip()
+                result = subprocess.run(
+                    ['git', '-C', _REPO_DIR, 'fetch', 'origin', branch],
+                    capture_output=True, timeout=15,
+                )
+                if result.returncode != 0:
+                    self._on_toast('No internet?')
+                    self._update_checking = False
+                    self._on_invalidate()
+                    return
+                local = subprocess.run(
+                    ['git', '-C', _REPO_DIR, 'rev-parse', 'HEAD'],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout.strip()
+                remote = subprocess.run(
+                    ['git', '-C', _REPO_DIR, 'rev-parse', f'origin/{branch}'],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout.strip()
+                self._update_available = local != remote
+                if self._update_available:
+                    self._on_toast('Update available!')
+                else:
+                    self._on_toast('Up to date')
+            except Exception as e:
+                logger.error(f'Update check failed: {e}')
+                self._on_toast('Check failed')
+            finally:
+                self._update_checking = False
+                self._on_invalidate()
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _run_update(self):
+        """Trigger the auto-update script (will restart the app)."""
+        self._update_running = True
+        self._on_invalidate()
+        self._on_toast("Updating... don't unplug")
+        try:
+            self._update_process = subprocess.Popen(
+                ['bash', f'{_REPO_DIR}/pi/auto-update.sh'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            logger.info('Manual update triggered')
+        except Exception as e:
+            logger.error(f'Failed to start update: {e}')
+            self._update_running = False
+            self._on_toast('Update failed')
+            self._on_invalidate()
 
     def _handle_volume_tap(self, button_rects: dict, x: int, y: int):
         """Handle taps on the volume settings screen (+/- buttons)."""

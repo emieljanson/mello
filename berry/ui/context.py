@@ -41,4 +41,8 @@ class RenderContext:
     bt_scanning: bool = False
     volume_levels: list = field(default_factory=list)  # For volume settings screen
     menu_scroll_offset: int = 0
+    reset_confirm_pending: bool = False
+    update_checking: bool = False
+    update_available: bool = False
+    update_running: bool = False
 
