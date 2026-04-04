@@ -1,0 +1,9 @@
+# Berry Native - Pygame UI
+# pygame is installed via apt (python3-pygame) for SDL 2.32+ / kmsdrm support.
+# Do NOT add it here — the venv uses --system-site-packages to pick it up.
+requests>=2.31.0
+websocket-client>=1.7.0
+Pillow>=10.0.0
+numpy>=1.24.0
+evdev>=1.7.0; sys_platform == 'linux'
+posthog>=3.0.0

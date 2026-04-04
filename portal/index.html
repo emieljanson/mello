@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Berry</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d0d0d;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;padding:32px 20px;min-height:100vh;-webkit-font-smoothing:antialiased}
+
+h1{font-size:20px;font-weight:600;letter-spacing:-.02em;margin-bottom:6px}
+.sub{font-size:13px;color:#666;margin-bottom:32px}
+
+label{display:block;font-size:12px;font-weight:500;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+
+.select-wrap{position:relative;margin-bottom:24px}
+select{width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:10px;padding:13px 40px 13px 14px;font-size:15px;color:#fff;outline:none;-webkit-appearance:none;appearance:none;cursor:pointer;transition:border-color .15s}
+select:focus{border-color:#bd65fc}
+.select-wrap::after{content:"";position:absolute;right:14px;top:50%;transform:translateY(-50%);width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #666;pointer-events:none}
+
+input[type=password]{width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:10px;padding:13px 14px;font-size:15px;color:#fff;outline:none;-webkit-appearance:none;transition:border-color .15s}
+input[type=password]:focus{border-color:#bd65fc}
+input::placeholder{color:#444}
+.field{margin-bottom:24px;display:none}
+.field.show{display:block}
+
+button{width:100%;background:#bd65fc;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:600;color:#fff;cursor:pointer;transition:opacity .15s;margin-top:8px}
+button:active{opacity:.8}
+button:disabled{opacity:.25;cursor:default}
+
+.status{margin-top:20px;padding:13px 14px;border-radius:10px;font-size:14px;text-align:center;display:none}
+.status.show{display:block}
+.status.ok{background:#1a2e1a;color:#4ade80;border:1px solid #264d26}
+.status.err{background:#2e1a1a;color:#f87171;border:1px solid #4d2626}
+.status.wait{background:#1a1a1a;color:#888;border:1px solid #2a2a2a}
+
+.loading{text-align:center;color:#666;font-size:14px;padding:60px 0}
+</style>
+</head>
+<body>
+<h1>Berry</h1>
+<p class="sub">Choose a network</p>
+<div id="app"><div class="loading">Scanning for networks...</div></div>
+<script>
+(function(){
+  var nets = [];
+  var app = document.getElementById('app');
+  var MAX_SSID_LENGTH = 64;
+
+  function safeText(value){
+    if(typeof value !== 'string') return '';
+    return value.slice(0, MAX_SSID_LENGTH);
+  }
+
+  function setStatus(type, text){
+    var box = document.createElement('div');
+    box.className = 'status show ' + type;
+    box.textContent = text;
+    app.replaceChildren(box);
+  }
+
+  fetch('/networks').then(function(r){ return r.json() }).then(function(data){
+    nets = Array.isArray(data) ? data : [];
+    if(!nets.length){ setStatus('err', 'No networks found'); return }
+    render();
+  }).catch(function(){
+    setStatus('err', 'Unable to load networks');
+  });
+
+  function render(){
+    var label = document.createElement('label');
+    label.textContent = 'Network';
+
+    var wrap = document.createElement('div');
+    wrap.className = 'select-wrap';
+    var sel = document.createElement('select');
+    sel.id = 'ssid';
+    for(var i=0;i<nets.length;i++){
+      var opt = document.createElement('option');
+      var ssid = safeText((nets[i] && nets[i].ssid) || '');
+      opt.value = ssid;
+      opt.textContent = ssid;
+      sel.appendChild(opt);
+    }
+    wrap.appendChild(sel);
+
+    var pwField = document.createElement('div');
+    pwField.className = 'field';
+    pwField.id = 'pw-field';
+    var pwLabel = document.createElement('label');
+    pwLabel.textContent = 'Password';
+    var pwInput = document.createElement('input');
+    pwInput.id = 'pw';
+    pwInput.type = 'password';
+    pwInput.placeholder = 'Enter password';
+    pwInput.autocomplete = 'off';
+    pwInput.autocorrect = 'off';
+    pwInput.autocapitalize = 'off';
+    pwInput.spellcheck = false;
+    pwField.appendChild(pwLabel);
+    pwField.appendChild(pwInput);
+
+    var btn = document.createElement('button');
+    btn.id = 'go';
+    btn.textContent = 'Connect';
+
+    var st = document.createElement('div');
+    st.className = 'status';
+    st.id = 'st';
+
+    app.replaceChildren(label, wrap, pwField, btn, st);
+
+    function updatePw(){
+      var n = nets.find(function(x){ return x.ssid === sel.value });
+      pwField.className = (n && n.security !== 'none') ? 'field show' : 'field';
+    }
+    sel.addEventListener('change', updatePw);
+    updatePw();
+
+    btn.addEventListener('click', doConnect);
+  }
+
+  function doConnect(){
+    var ssid = document.getElementById('ssid').value;
+    var pw = document.getElementById('pw');
+    var st = document.getElementById('st');
+    var btn = document.getElementById('go');
+
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+    st.className = 'status show wait';
+    st.textContent = 'Connecting...';
+
+    fetch('/connect',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ssid:ssid, identity:'', passphrase: pw ? pw.value : ''})
+    }).then(function(r){
+      if(r.status !== 200) throw new Error(r.statusText);
+      st.className = 'status show wait';
+      st.textContent = 'Connection attempt in progress. If it fails, Berry-Setup will reappear.';
+      btn.textContent = 'Connecting...';
+      btn.disabled = true;
+    }).catch(function(e){
+      st.className = 'status show err';
+      st.textContent = 'Connection failed';
+      btn.disabled = false;
+      btn.textContent = 'Connect';
+    });
+  }
+
+})();
+</script>
+</body>
+</html>

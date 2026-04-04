@@ -1,0 +1,13 @@
+[Unit]
+Description=Fix Goodix touchscreen probe (WM8960 I2C timing workaround)
+DefaultDependencies=no
+After=sysinit.target
+Before=berry-native.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'if [ -e /sys/bus/i2c/drivers/Goodix-TS/10-005d ]; then exit 0; fi; echo 10-005d > /sys/bus/i2c/drivers/Goodix-TS/bind 2>/dev/null; sleep 1'
+
+[Install]
+WantedBy=multi-user.target

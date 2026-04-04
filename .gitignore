@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+
+# Local data (per-device, don't sync)
+data/
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Update/runtime artifacts
+berry-update.log
+.pytest_cache/
+
+# IDE
+.cursor/
+.vscode/

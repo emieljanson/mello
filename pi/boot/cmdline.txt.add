@@ -1,0 +1,3 @@
+# Add these to the END of /boot/cmdline.txt (same line, space-separated):
+# logo.nologo quiet splash loglevel=0 vt.global_cursor_default=0
+
