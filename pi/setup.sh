@@ -3,6 +3,23 @@
 # Run this ONCE on a new Raspberry Pi (Lite or Desktop)
 
 set -euo pipefail
+
+# Detect installing user (used for systemd services, permissions, sudoers)
+BERRY_USER="$USER"
+BERRY_HOME="$HOME"
+BERRY_UID="$(id -u)"
+
+# Render a .service.template file and install it to systemd
+install_service() {
+  local template="$1"
+  local name
+  name=$(basename "$template" .template)
+  sed -e "s|__USER__|$BERRY_USER|g" \
+      -e "s|__HOME__|$BERRY_HOME|g" \
+      -e "s|__UID__|$BERRY_UID|g" \
+      "$template" | sudo tee "/etc/systemd/system/$name" > /dev/null
+}
+
 echo "🍓 Berry Setup Starting..."
 echo ""
 
@@ -231,20 +248,28 @@ else
   echo "{\"share_usage_data\": $SHARE_USAGE}" > "$SETTINGS_FILE"
 fi
 
+# Save install environment (used by auto-update and migrations)
+cat > ~/berry/.berry-env << EOF
+BERRY_USER=$BERRY_USER
+BERRY_HOME=$BERRY_HOME
+BERRY_UID=$BERRY_UID
+EOF
+
 # ============================================
-# 9. Setup systemd services (symlinks)
+# 9. Setup systemd services
 # ============================================
 echo "⚙️  Setting up systemd services..."
-sudo ln -sf ~/berry/pi/systemd/berry-librespot.service /etc/systemd/system/
-sudo ln -sf ~/berry/pi/systemd/berry-native.service /etc/systemd/system/
+for tmpl in ~/berry/pi/systemd/*.service.template; do
+  install_service "$tmpl"
+done
 sudo ln -sf ~/berry/pi/systemd/berry-touch-fix.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl disable berry-wifi 2>/dev/null || true
 sudo rm -f /etc/systemd/system/berry-wifi.service
 sudo systemctl enable berry-librespot berry-native berry-touch-fix
 
-# Enable PipeWire user services for the berry user (Bluetooth audio routing)
-sudo -u berry XDG_RUNTIME_DIR=/run/user/$(id -u berry) systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null || true
+# Enable PipeWire user services (Bluetooth audio routing)
+sudo -u "$BERRY_USER" XDG_RUNTIME_DIR=/run/user/$BERRY_UID systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null || true
 
 # ============================================
 # 10. Setup permissions (display, audio, touch, backlight)
@@ -256,11 +281,8 @@ if ! getent group berry >/dev/null; then
   sudo groupadd --system berry
 fi
 
-# Keep berry runtime user and current setup user in required groups.
-sudo usermod -aG video,audio,input,bluetooth,berry "$USER" 2>/dev/null || true
-if id berry >/dev/null 2>&1; then
-  sudo usermod -aG video,audio,input,bluetooth,berry berry 2>/dev/null || true
-fi
+# Add installing user to required groups.
+sudo usermod -aG video,audio,input,bluetooth,berry "$BERRY_USER" 2>/dev/null || true
 
 # Backlight control (for sleep mode) — udev rule + apply immediately
 echo 'SUBSYSTEM=="backlight", RUN+="/bin/chgrp berry /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power", RUN+="/bin/chmod 660 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"' \
@@ -290,8 +312,8 @@ sudo systemctl stop getty@tty1.service 2>/dev/null || true
 # Allow Berry app to run wifi-connect, nmcli, and librespot service management
 # without a password prompt (needed for the setup menu)
 TMP_SUDOERS="/tmp/berry-wifi.$$"
-cat > "$TMP_SUDOERS" << 'EOF'
-berry ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up
+cat > "$TMP_SUDOERS" << EOF
+$BERRY_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up
 EOF
 sudo visudo -cf "$TMP_SUDOERS"
 sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/berry-wifi

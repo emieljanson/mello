@@ -11,6 +11,15 @@ set -euo pipefail
 
 cd ~/berry || exit 1
 
+# Load install environment (username, home, uid)
+if [ -f ~/berry/.berry-env ]; then
+  source ~/berry/.berry-env
+else
+  BERRY_USER="$USER"
+  BERRY_HOME="$HOME"
+  BERRY_UID="$(id -u)"
+fi
+
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') [auto-update] $*"
 }
@@ -89,10 +98,19 @@ fi
 # 3. Update systemd services
 # ============================================
 log "Updating systemd services"
+# Render templated services with install-time user/home/uid
+for tmpl in ~/berry/pi/systemd/*.service.template; do
+  [ -f "$tmpl" ] || continue
+  name=$(basename "$tmpl" .template)
+  sed -e "s|__USER__|$BERRY_USER|g" \
+      -e "s|__HOME__|$BERRY_HOME|g" \
+      -e "s|__UID__|$BERRY_UID|g" \
+      "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
+done
+# Symlink non-templated services
 for f in ~/berry/pi/systemd/*.service; do
   [ -f "$f" ] || continue
-  name=$(basename "$f")
-  sudo ln -sf "$f" "/etc/systemd/system/$name"
+  sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")"
 done
 sudo systemctl daemon-reload
 

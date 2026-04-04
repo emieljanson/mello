@@ -36,13 +36,13 @@ See [pi/README.md](pi/README.md) for detailed setup instructions.
 
 Use the [Raspberry Pi Imager](https://www.raspberrypi.com/software/):
 - Choose **Raspberry Pi OS Lite (64-bit)**
-- Set hostname to `berry`, username to `berry`
+- Choose a hostname and username (e.g. `berry` / `berry`)
 - Configure WiFi and enable SSH
 
 ### 2. Install Berry
 
 ```bash
-ssh berry@berry.local
+ssh <your-user>@<your-hostname>.local
 curl -sSL https://raw.githubusercontent.com/emieljanson/berry/main/install.sh | bash
 sudo reboot
 ```
@@ -98,17 +98,26 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-## Configuration
+## Settings Menu
 
-Long-press the volume button (3 seconds) to open the setup menu:
+> **How to open:** Press and hold the volume button for 3 seconds. There's no gear icon or visible button — the long-press on the volume button is the only way in.
 
-- **WiFi** — Connect to a new network or switch between saved networks
-- **Bluetooth** — Pair and connect wireless audio devices
-- **Volume levels** — Adjust speaker and Bluetooth volume per level
-- **Auto-pause** — Set inactivity timeout (15, 30, 60, or 120 minutes)
-- **Progress memory** — How long to remember playback position (12, 24, 48, or 96 hours)
-- **Check for updates** — Manually check and apply updates
-- **Factory reset** — Clear all data, WiFi, Bluetooth, and Spotify credentials
+Once open, you'll see a scrollable menu with these sections:
+
+### Connections
+- **WiFi** — View saved networks, connect to a new one, or switch. If WiFi drops, Berry creates a "Berry-Setup" hotspot you can connect to from your phone
+- **Bluetooth** — Pair and connect wireless headphones or speakers. Shows paired devices and nearby discoverable devices
+- **Volume levels** — Set separate volume levels (low/mid/high) for the built-in speaker and Bluetooth output
+
+### Playback settings
+- **Auto-pause** — How long Berry plays before automatically pausing (15, 30, 60, or 120 minutes). Tap to cycle through options. Default: 30 minutes
+- **Remember progress** — How long Berry remembers where each album left off (12, 24, 48, or 96 hours). Tap to cycle. Default: 96 hours
+
+### System
+- **Check for updates** — Manually check for and install updates (Berry also updates automatically each night)
+- **Reset** — Factory reset: clears all albums, WiFi, Bluetooth, Spotify credentials, and settings. Requires a second tap to confirm
+
+To close the menu, tap the **✕** in the top-right corner.
 
 ### Usage Data
 

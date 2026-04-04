@@ -19,6 +19,9 @@ logs/
 .env.*
 !.env.example
 
+# Install environment (per-device)
+.berry-env
+
 # Update/runtime artifacts
 berry-update.log
 .pytest_cache/

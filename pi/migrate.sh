@@ -8,6 +8,15 @@
 
 set -euo pipefail
 
+# Load install environment (username, home, uid)
+if [ -f "$HOME/berry/.berry-env" ]; then
+  source "$HOME/berry/.berry-env"
+else
+  BERRY_USER="$USER"
+  BERRY_HOME="$HOME"
+  BERRY_UID="$(id -u)"
+fi
+
 MIGRATION_DIR="$HOME/.berry-migrations"
 mkdir -p "$MIGRATION_DIR"
 
@@ -79,7 +88,7 @@ _migrate_001() {
   # 4. Add BT-related commands to sudoers
   #    bluetooth.py needs: systemctl restart bluetooth, hciconfig hci0 up
   local SUDOERS_FILE="/etc/sudoers.d/berry-wifi"
-  local EXPECTED_LINE='berry ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up'
+  local EXPECTED_LINE="$BERRY_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up"
 
   # Create or update sudoers if BT commands are missing
   if ! sudo grep -q "restart bluetooth" "$SUDOERS_FILE" 2>/dev/null; then
@@ -131,7 +140,48 @@ _migrate_002() {
 }
 
 # ============================================
+# Migration 003: Dynamic username support
+# ============================================
+_migrate_003() {
+  # Create .berry-env if it doesn't exist (existing installs used user "berry")
+  if [ ! -f "$HOME/berry/.berry-env" ]; then
+    cat > "$HOME/berry/.berry-env" << EOF
+BERRY_USER=$BERRY_USER
+BERRY_HOME=$BERRY_HOME
+BERRY_UID=$BERRY_UID
+EOF
+    log "Created .berry-env (user=$BERRY_USER)"
+  fi
+
+  # Re-render service templates (replaces old symlinks with rendered copies)
+  for tmpl in "$HOME/berry/pi/systemd/"*.service.template; do
+    [ -f "$tmpl" ] || continue
+    local name
+    name=$(basename "$tmpl" .template)
+    sed -e "s|__USER__|$BERRY_USER|g" \
+        -e "s|__HOME__|$BERRY_HOME|g" \
+        -e "s|__UID__|$BERRY_UID|g" \
+        "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
+    log "Rendered $name"
+  done
+  sudo systemctl daemon-reload
+
+  # Update sudoers if it still has hardcoded "berry" username
+  local SUDOERS_FILE="/etc/sudoers.d/berry-wifi"
+  if sudo grep -q "^berry " "$SUDOERS_FILE" 2>/dev/null && [ "$BERRY_USER" != "berry" ]; then
+    local TMP_SUDOERS="/tmp/berry-sudoers.$$"
+    echo "$BERRY_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up" > "$TMP_SUDOERS"
+    if sudo visudo -cf "$TMP_SUDOERS"; then
+      sudo install -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
+      log "sudoers updated for user $BERRY_USER"
+    fi
+    rm -f "$TMP_SUDOERS"
+  fi
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
 run_migration "002" "Install pactl (missing from 001 on Trixie)"
+run_migration "003" "Dynamic username support"

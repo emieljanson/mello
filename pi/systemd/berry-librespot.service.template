@@ -6,14 +6,14 @@ PartOf=berry-native.service
 
 [Service]
 Type=simple
-User=berry
+User=__USER__
 SupplementaryGroups=audio
-ExecStart=/usr/local/bin/go-librespot --config_dir /home/berry/.config/go-librespot
+ExecStart=/usr/local/bin/go-librespot --config_dir __HOME__/.config/go-librespot
 Restart=always
 RestartSec=5
-Environment=HOME=/home/berry
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+Environment=HOME=__HOME__
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/__UID__/bus
 
 [Install]
 WantedBy=multi-user.target

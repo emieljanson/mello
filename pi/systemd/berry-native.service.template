@@ -1,0 +1,28 @@
+[Unit]
+Description=Berry Music Player
+After=berry-touch-fix.service
+Wants=berry-librespot.service
+
+[Service]
+Type=simple
+User=__USER__
+SupplementaryGroups=video audio input render bluetooth
+WorkingDirectory=__HOME__/berry
+ExecStartPre=-/bin/rm -f __HOME__/berry/berry.log
+ExecStart=__HOME__/berry/venv/bin/python -u berry.py --fullscreen
+Restart=always
+RestartSec=5
+TimeoutStopSec=5
+StandardOutput=append:__HOME__/berry/berry.log
+StandardError=append:__HOME__/berry/berry.log
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+PAMName=login
+Environment=HOME=__HOME__
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/__UID__/bus
+
+[Install]
+WantedBy=multi-user.target
