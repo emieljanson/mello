@@ -4,26 +4,11 @@ Thanks for your interest in contributing! Berry is a simple music player for kid
 
 ## Development Setup
 
-### Local (Mac, no Pi required)
+You need a Raspberry Pi with Berry installed (see the [README](README.md)). Edit code on your machine, then sync and test on the Pi:
 
 ```bash
-git clone https://github.com/emieljanson/berry.git
-cd berry
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-./run.sh  # Runs in mock mode (no Spotify needed)
+./dev-pi.sh  # Syncs changes to Pi over SSH and streams logs
 ```
-
-Mock mode simulates playback and album art so you can work on the UI without a Pi or Spotify account.
-
-### With a Raspberry Pi
-
-```bash
-./dev-pi.sh
-```
-
-This syncs your local changes to the Pi over SSH and streams logs back. Edit locally, test on the Pi.
 
 ## Running Tests
 
@@ -31,14 +16,12 @@ This syncs your local changes to the Pi over SSH and streams logs back. Edit loc
 pytest tests/ -v
 ```
 
-Tests run without pygame or hardware dependencies. All managers, models, and API logic are covered.
-
 ## Making Changes
 
 1. Fork the repo and create a branch from `main`
 2. Make your changes
 3. Run the tests: `pytest tests/ -v`
-4. Test on a Pi if your change touches hardware (touch, display, audio, Bluetooth)
+4. Test on the Pi
 5. Open a pull request
 
 ### What makes a good PR
