@@ -52,29 +52,20 @@ if ! flock -n 9; then
   exit 0
 fi
 
-# Never auto-update a dirty tree; leave it for manual intervention.
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  log "Skip: working tree has local changes"
-  exit 0
-fi
-
-# Get current branch name (could be main or master)
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-
-# Check if there are updates
-if ! git fetch origin "$BRANCH" 2>/dev/null; then
+# Always converge to origin/main regardless of local state.
+if ! git fetch origin main 2>/dev/null; then
   log "Fetch failed (network issue?), will retry next run"
   exit 0
 fi
 
 LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse "origin/$BRANCH")
+REMOTE=$(git rev-parse origin/main)
 
 if [ "$LOCAL" = "$REMOTE" ]; then
   exit 0  # No updates
 fi
 
-log "Updates found on $BRANCH, applying"
+log "Updates found, applying (local=$LOCAL remote=$REMOTE)"
 
 # Remember current code directory (may be ~/tomo or ~/berry during transition)
 CODE_DIR="$(pwd)"
@@ -87,8 +78,9 @@ if [ -d data ] && [ "$(ls -A data/ 2>/dev/null)" ]; then
   cp -a data "$DATA_BACKUP"
 fi
 
-# Pull changes (fast-forward only to avoid accidental merge commits)
-git pull --ff-only origin "$BRANCH" || exit 1
+# Hard reset to origin/main — always converge to the target state
+git checkout main 2>/dev/null || true
+git reset --hard origin/main
 
 # Restore any data files that git pull deleted
 if [ -d "$DATA_BACKUP" ]; then
