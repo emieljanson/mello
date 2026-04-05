@@ -365,7 +365,7 @@ class SetupMenu:
                 for line in all_result.stdout.strip().split('\n')
                 if line and '802-11-wireless' in line
             ]
-            skip = {'Berry-Setup', 'berry-ap', 'berry-setup'}
+            skip = {'Mello-Setup', 'mello-ap', 'mello-setup'}
             seen = set()
             ordered = []
             ssid_map = {}
@@ -428,7 +428,7 @@ class SetupMenu:
         try:
             self._wifi_process = subprocess.Popen(
                 ['sudo', 'wifi-connect',
-                 '--portal-ssid', 'Berry-Setup',
+                 '--portal-ssid', 'Mello-Setup',
                  '--ui-directory', '/usr/local/share/wifi-connect/ui'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -546,13 +546,13 @@ class SetupMenu:
         except Exception as e:
             logger.error(f'Failed to forget Bluetooth devices: {e}')
 
-        # 6. Forget all WiFi networks (keep Berry-Setup AP)
+        # 6. Forget all WiFi networks (keep Mello-Setup AP)
         try:
             result = subprocess.run(
                 ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
                 capture_output=True, text=True, timeout=5,
             )
-            skip = {'Berry-Setup', 'berry-ap', 'berry-setup'}
+            skip = {'Mello-Setup', 'mello-ap', 'mello-setup'}
             for line in result.stdout.strip().splitlines():
                 if '802-11-wireless' in line:
                     name = line.split(':')[0]
@@ -570,11 +570,11 @@ class SetupMenu:
             time.sleep(2)
             try:
                 subprocess.run(
-                    ['sudo', 'systemctl', 'restart', 'berry-native'],
+                    ['sudo', 'systemctl', 'restart', 'mello-native'],
                     timeout=10,
                 )
             except Exception as ex:
-                logger.warning(f'Could not restart berry-native: {ex}')
+                logger.warning(f'Could not restart mello-native: {ex}')
         threading.Thread(target=_restart_app, daemon=True).start()
 
         self._on_toast('Reset complete')

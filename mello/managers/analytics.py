@@ -5,7 +5,7 @@ Events fired:
   - session_start    Music starts playing (album, artist)
   - session_end      Music stops (duration, reason: pause/auto_pause/shutdown/switch)
   - track_changed    New track within same session (track name, artist)
-  - app_started      Berry boots up
+  - app_started      Mello boots up
   - device_sleep     Screen goes to sleep (idle_seconds)
   - device_wake      Screen wakes up
 """
@@ -232,7 +232,7 @@ class UsageTracker:
     @staticmethod
     def _get_device_id(use_machine_id: bool = False) -> str:
         """Device identifier for analytics (privacy-safe defaults)."""
-        hostname = 'berry'
+        hostname = 'mello'
         try:
             hostname = socket.gethostname()
         except Exception:

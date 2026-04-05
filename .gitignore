@@ -20,10 +20,10 @@ logs/
 !.env.example
 
 # Install environment (per-device)
-.berry-env
+.mello-env
 
 # Update/runtime artifacts
-berry-update.log
+mello-update.log
 .pytest_cache/
 
 # IDE

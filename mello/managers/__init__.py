@@ -1,5 +1,5 @@
 """
-Berry Managers - State and behavior management.
+Mello Managers - State and behavior management.
 """
 from .sleep import SleepManager
 from .carousel import SmoothCarousel, PlayTimer

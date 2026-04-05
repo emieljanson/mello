@@ -1,5 +1,5 @@
 #!/bin/bash
-# Berry Native - Development launcher
+# Mello - Development launcher
 # Starts go-librespot (if needed) and the Pygame app
 
 set -e
@@ -11,12 +11,12 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}🍓 Berry Native${NC}"
+echo -e "${GREEN}Mello${NC}"
 echo ""
 
 # Check if go-librespot is installed
 if ! command -v go-librespot &> /dev/null; then
-    echo -e "${RED}❌ go-librespot not found${NC}"
+    echo -e "${RED}go-librespot not found${NC}"
     echo ""
     echo "Install it with:"
     echo "  brew tap devgianlu/tap"
@@ -30,7 +30,7 @@ if ! command -v go-librespot &> /dev/null; then
     echo 'port = 3678'
     echo ''
     echo '[player]'
-    echo 'device_name = "Berry Dev"'
+    echo 'device_name = "Mello Dev"'
     echo 'device_type = "speaker"'
     echo 'EOF'
     exit 1
@@ -39,7 +39,7 @@ fi
 # Check if go-librespot is running
 if ! curl -s http://localhost:3678/status > /dev/null 2>&1; then
     echo -e "${YELLOW}Starting go-librespot...${NC}"
-    
+
     # Create config if not exists
     if [ ! -f ~/.config/go-librespot/config.toml ]; then
         mkdir -p ~/.config/go-librespot
@@ -49,27 +49,27 @@ enabled = true
 port = 3678
 
 [player]
-device_name = "Berry Dev"
+device_name = "Mello Dev"
 device_type = "speaker"
 EOF
         echo "Created default config"
     fi
-    
+
     # Start librespot in background
     go-librespot --config_dir ~/.config/go-librespot > /tmp/librespot.log 2>&1 &
     LIBRESPOT_PID=$!
     echo "Started go-librespot (PID: $LIBRESPOT_PID)"
-    
+
     # Wait for it to be ready
     for i in {1..10}; do
         if curl -s http://localhost:3678/status > /dev/null 2>&1; then
-            echo -e "${GREEN}✓ go-librespot ready${NC}"
+            echo -e "${GREEN}go-librespot ready${NC}"
             break
         fi
         sleep 0.5
     done
 else
-    echo -e "${GREEN}✓ go-librespot already running${NC}"
+    echo -e "${GREEN}go-librespot already running${NC}"
 fi
 
 # Create virtual environment if needed
@@ -87,9 +87,9 @@ pip install -q -r requirements.txt
 mkdir -p data/images
 
 echo ""
-echo -e "${GREEN}Starting Berry...${NC}"
-echo "Connect Spotify to 'Berry Dev' to play music"
+echo -e "${GREEN}Starting Mello...${NC}"
+echo "Connect Spotify to 'Mello Dev' to play music"
 echo ""
 
 # Run the app (pass any arguments like --fullscreen)
-python berry.py "$@"
+python mello.py "$@"

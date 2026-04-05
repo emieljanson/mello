@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.api.catalog import CatalogManager
+from mello.api.catalog import CatalogManager
 
 
 class TestCatalogLoadSave:

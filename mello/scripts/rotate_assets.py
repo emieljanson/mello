@@ -3,9 +3,9 @@
 Rotate assets 90° CW for portrait display mode.
 
 Usage:
-    python -m berry.scripts.rotate_assets --icons    # Rotate icons only
-    python -m berry.scripts.rotate_assets --images   # Rotate cover images only
-    python -m berry.scripts.rotate_assets --all      # Rotate everything
+    python -m mello.scripts.rotate_assets --icons    # Rotate icons only
+    python -m mello.scripts.rotate_assets --images   # Rotate cover images only
+    python -m mello.scripts.rotate_assets --all      # Rotate everything
 """
 import sys
 from pathlib import Path
@@ -52,7 +52,7 @@ def main():
     do_images = '--images' in sys.argv or '--all' in sys.argv
     
     if not do_icons and not do_images:
-        print("Usage: python -m berry.scripts.rotate_assets [--icons] [--images] [--all]")
+        print("Usage: python -m mello.scripts.rotate_assets [--icons] [--images] [--all]")
         print("\nOptions:")
         print("  --icons   Rotate icons in /icons")
         print("  --images  Rotate cover images in /data/images")

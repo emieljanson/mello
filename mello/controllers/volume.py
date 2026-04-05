@@ -1,7 +1,7 @@
 """
 Volume Controller - Manages volume via ALSA on the Pi.
 
-Berry always owns volume: Spotify stays at 100%, Pi controls via ALSA.
+Mello always owns volume: Spotify stays at 100%, Pi controls via ALSA.
 """
 import logging
 

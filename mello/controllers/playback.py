@@ -1,7 +1,7 @@
 """
 Playback Controller - Manages play/pause/resume and progress.
 
-Extracted from Berry.app to keep playback logic isolated and testable.
+Extracted from Mello.app to keep playback logic isolated and testable.
 """
 import time
 import logging

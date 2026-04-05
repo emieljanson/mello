@@ -1,5 +1,5 @@
 """
-Tests for VolumeController - always Berry mode (ALSA-controlled).
+Tests for VolumeController - always Mello mode (ALSA-controlled).
 """
 import pytest
 from pathlib import Path
@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.controllers.volume import VolumeController
-from berry.utils import set_system_volume
-from berry.config import VOLUME_LEVELS
+from mello.controllers.volume import VolumeController
+from mello.utils import set_system_volume
+from mello.config import VOLUME_LEVELS
 
 
 class FakeAPI:
@@ -62,7 +62,7 @@ class TestVolumeInit:
         assert vc.speaker_level == VOLUME_LEVELS[1]['speaker']
         assert vc.headphone_level == VOLUME_LEVELS[1]['headphone']
 
-    @patch('berry.controllers.volume.set_system_volume')
+    @patch('mello.controllers.volume.set_system_volume')
     def test_init_sets_system_volume(self, mock_set_vol):
         api = FakeAPI()
         vc = VolumeController(api)
@@ -73,8 +73,8 @@ class TestVolumeInit:
 class TestVolumeToggle:
     """Tests for cycling volume levels."""
 
-    @patch('berry.controllers.volume.set_system_volume')
-    @patch('berry.controllers.volume.run_async')
+    @patch('mello.controllers.volume.set_system_volume')
+    @patch('mello.controllers.volume.run_async')
     def test_toggle_cycles_through_levels(self, mock_run_async, mock_set_vol):
         api = FakeAPI()
         vc = VolumeController(api)
@@ -82,8 +82,8 @@ class TestVolumeToggle:
         vc.toggle()
         assert vc.index == (initial + 1) % len(VOLUME_LEVELS)
 
-    @patch('berry.controllers.volume.set_system_volume')
-    @patch('berry.controllers.volume.run_async')
+    @patch('mello.controllers.volume.set_system_volume')
+    @patch('mello.controllers.volume.run_async')
     def test_toggle_wraps_around(self, mock_run_async, mock_set_vol):
         api = FakeAPI()
         vc = VolumeController(api)
@@ -91,7 +91,7 @@ class TestVolumeToggle:
             vc.toggle()
         assert vc.index == 1  # Back to start
 
-    @patch('berry.controllers.volume.run_async')
+    @patch('mello.controllers.volume.run_async')
     def test_toggle_calls_set_system_volume(self, mock_run_async):
         api = FakeAPI()
         vc = VolumeController(api)

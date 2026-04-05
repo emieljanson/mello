@@ -1,20 +1,20 @@
 [Unit]
-Description=Berry Music Player
-After=berry-touch-fix.service
-Wants=berry-librespot.service
+Description=Mello Music Player
+After=mello-touch-fix.service
+Wants=mello-librespot.service
 
 [Service]
 Type=simple
 User=__USER__
 SupplementaryGroups=video audio input render bluetooth
-WorkingDirectory=__HOME__/berry
-ExecStartPre=-/bin/rm -f __HOME__/berry/berry.log
-ExecStart=__HOME__/berry/venv/bin/python -u berry.py --fullscreen
+WorkingDirectory=__HOME__/mello
+ExecStartPre=-/bin/rm -f __HOME__/mello/mello.log
+ExecStart=__HOME__/mello/venv/bin/python -u mello.py --fullscreen
 Restart=always
 RestartSec=5
 TimeoutStopSec=5
-StandardOutput=append:__HOME__/berry/berry.log
-StandardError=append:__HOME__/berry/berry.log
+StandardOutput=append:__HOME__/mello/mello.log
+StandardError=append:__HOME__/mello/mello.log
 StandardInput=tty
 TTYPath=/dev/tty1
 TTYReset=yes

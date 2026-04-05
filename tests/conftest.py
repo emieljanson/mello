@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for Berry tests.
+Pytest configuration and shared fixtures for Mello tests.
 """
 import json
 import pytest

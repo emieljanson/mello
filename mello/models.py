@@ -1,5 +1,5 @@
 """
-Berry Data Models - Core data structures.
+Mello Data Models - Core data structures.
 """
 import time
 from dataclasses import dataclass

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Berry Native - Pygame UI for Raspberry Pi
+Mello - Pygame UI for Raspberry Pi
 
 Usage:
-    python -m berry              # Windowed (development)
-    python -m berry --fullscreen # Fullscreen (Pi)
-    python -m berry --mock       # Mock mode (UI testing)
+    python -m mello              # Windowed (development)
+    python -m mello --fullscreen # Fullscreen (Pi)
+    python -m mello --mock       # Mock mode (UI testing)
 """
 import os
 import sys
@@ -18,13 +18,13 @@ from .config import (
     LIBRESPOT_URL, MOCK_MODE, FULLSCREEN,
     LOG_DIR, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
 )
-from .app import Berry
+from .app import Mello
 
 
 def setup_logging():
     """Configure logging with console and rotating file handler."""
     # Determine log level from environment or default to INFO
-    level_name = os.environ.get('BERRY_LOG_LEVEL', 'INFO').upper()
+    level_name = os.environ.get('MELLO_LOG_LEVEL', 'INFO').upper()
     level = getattr(logging, level_name, logging.INFO)
     
     # Create formatters
@@ -72,7 +72,7 @@ def setup_logging():
 def log_system_info(logger: logging.Logger):
     """Log system information at startup."""
     logger.info('=' * 50)
-    logger.info('BERRY STARTUP')
+    logger.info('MELLO STARTUP')
     logger.info('=' * 50)
     
     # Python version
@@ -136,7 +136,7 @@ def log_system_info(logger: logging.Logger):
 
 
 def main():
-    """Entry point for Berry application."""
+    """Entry point for Mello application."""
     setup_logging()
     
     logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ def main():
     # Log system info first
     log_system_info(logger)
     
-    logger.info('Berry Native')
+    logger.info('Mello')
     if MOCK_MODE:
         logger.info('Mode: MOCK (UI testing)')
     else:
@@ -162,7 +162,7 @@ def main():
     print('   Esc     Quit')
     print()
     
-    app = Berry(fullscreen=FULLSCREEN)
+    app = Mello(fullscreen=FULLSCREEN)
     app.start()
 
 

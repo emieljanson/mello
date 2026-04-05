@@ -1,4 +1,4 @@
-# Berry Icons
+# Mello Icons
 
 Place PNG icons here with transparent backgrounds.
 

@@ -1,5 +1,5 @@
 """
-Berry Utilities - Shared helper functions.
+Mello Utilities - Shared helper functions.
 """
 import sys
 import atexit

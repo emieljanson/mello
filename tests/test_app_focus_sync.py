@@ -1,5 +1,5 @@
 """
-Tests for Berry remote Spotify focus sync behavior.
+Tests for Mello remote Spotify focus sync behavior.
 """
 import time
 import threading
@@ -18,18 +18,18 @@ pygame_stub.font = SimpleNamespace(Font=object)
 sys.modules.setdefault('pygame', pygame_stub)
 sys.modules.setdefault('pygame.gfxdraw', types.ModuleType('pygame.gfxdraw'))
 
-from berry.app import Berry
-from berry.config import CONTEXT_SWITCH_WATCHDOG_TIMEOUT
-from berry.models import CatalogItem, NowPlaying
+from mello.app import Mello
+from mello.config import CONTEXT_SWITCH_WATCHDOG_TIMEOUT
+from mello.models import CatalogItem, NowPlaying
 
 
 def _item(item_id: str, uri: str, name: str) -> CatalogItem:
     return CatalogItem(id=item_id, uri=uri, name=name, type='album')
 
 
-def _make_berry(items: list[CatalogItem], now_playing: NowPlaying) -> Berry:
-    """Build a lightweight Berry instance for unit-level sync tests."""
-    app = Berry.__new__(Berry)
+def _make_mello(items: list[CatalogItem], now_playing: NowPlaying) -> Mello:
+    """Build a lightweight Mello instance for unit-level sync tests."""
+    app = Mello.__new__(Mello)
     app.catalog_manager = SimpleNamespace(items=items)
     app.temp_item = None
     app.selected_index = 0
@@ -80,7 +80,7 @@ class TestRemoteFocusSync:
             _item('1', 'spotify:album:a', 'A'),
             _item('2', 'spotify:album:b', 'B'),
         ]
-        app = _make_berry(items, NowPlaying(playing=True, context_uri='spotify:album:b'))
+        app = _make_mello(items, NowPlaying(playing=True, context_uri='spotify:album:b'))
 
         app._sync_to_playing()
 
@@ -95,7 +95,7 @@ class TestRemoteFocusSync:
             _item('1', 'spotify:album:a', 'A'),
             _item('2', 'spotify:album:b', 'B'),
         ]
-        app = _make_berry(items, NowPlaying(playing=True, context_uri='spotify:album:b'))
+        app = _make_mello(items, NowPlaying(playing=True, context_uri='spotify:album:b'))
         app._user_driving = True
 
         app._sync_to_playing()
@@ -109,7 +109,7 @@ class TestRemoteFocusSync:
             _item('1', 'spotify:album:a', 'A'),
             _item('2', 'spotify:album:b', 'B'),
         ]
-        app = _make_berry(items, NowPlaying(playing=True, context_uri='spotify:album:b'))
+        app = _make_mello(items, NowPlaying(playing=True, context_uri='spotify:album:b'))
         app._user_driving = True
 
         app._sync_to_playing()
@@ -126,7 +126,7 @@ class TestRemoteFocusSync:
             _item('1', 'spotify:album:a', 'A'),
             _item('2', 'spotify:album:b', 'B'),
         ]
-        app = _make_berry(items, NowPlaying(playing=False, paused=True, context_uri='spotify:album:b'))
+        app = _make_mello(items, NowPlaying(playing=False, paused=True, context_uri='spotify:album:b'))
 
         app._sync_to_playing()
 
@@ -136,7 +136,7 @@ class TestRemoteFocusSync:
 
     def test_sync_keeps_pending_when_context_not_in_display_items(self):
         items = [_item('1', 'spotify:album:a', 'A')]
-        app = _make_berry(items, NowPlaying(playing=True, context_uri='spotify:album:external'))
+        app = _make_mello(items, NowPlaying(playing=True, context_uri='spotify:album:external'))
 
         app._sync_to_playing()
 
@@ -146,7 +146,7 @@ class TestRemoteFocusSync:
 
     def test_sync_does_not_unmute_when_pause_intent_is_active(self):
         items = [_item('1', 'spotify:album:a', 'A')]
-        app = _make_berry(items, NowPlaying(playing=True, context_uri='spotify:album:a'))
+        app = _make_mello(items, NowPlaying(playing=True, context_uri='spotify:album:a'))
         app.playback.pause_intent_active = True
 
         app._sync_to_playing()
@@ -155,7 +155,7 @@ class TestRemoteFocusSync:
 
     def test_sync_does_not_unmute_when_manual_pause_lock_is_active(self):
         items = [_item('1', 'spotify:album:a', 'A')]
-        app = _make_berry(items, NowPlaying(playing=True, context_uri='spotify:album:a'))
+        app = _make_mello(items, NowPlaying(playing=True, context_uri='spotify:album:a'))
         app._manual_pause_lock = True
 
         app._sync_to_playing()
@@ -168,20 +168,20 @@ class TestRemoteFocusPriority:
 
     def test_prioritizes_remote_focus_on_mismatch_without_user_intent(self):
         focused = _item('1', 'spotify:album:a', 'A')
-        app = _make_berry([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
+        app = _make_mello([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
 
         assert app._should_prioritize_remote_focus(focused) is True
 
     def test_does_not_prioritize_remote_focus_while_user_driving(self):
         focused = _item('1', 'spotify:album:a', 'A')
-        app = _make_berry([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
+        app = _make_mello([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
         app._user_driving = True
 
         assert app._should_prioritize_remote_focus(focused) is False
 
     def test_does_not_prioritize_remote_focus_when_context_matches(self):
         focused = _item('1', 'spotify:album:a', 'A')
-        app = _make_berry([focused], NowPlaying(playing=True, context_uri='spotify:album:a'))
+        app = _make_mello([focused], NowPlaying(playing=True, context_uri='spotify:album:a'))
 
         assert app._should_prioritize_remote_focus(focused) is False
 
@@ -191,7 +191,7 @@ class TestContextSwitchWatchdog:
 
     def test_watchdog_does_not_trigger_before_timeout(self):
         focused = _item('1', 'spotify:album:a', 'A')
-        app = _make_berry([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
+        app = _make_mello([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
         app._requested_focus_epoch = app._focus_epoch
         app._requested_focus_uri = focused.uri
         app._requested_focus_since = time.time() - 30.0
@@ -205,7 +205,7 @@ class TestContextSwitchWatchdog:
 
     def test_watchdog_triggers_hard_fail_safe_after_timeout(self):
         focused = _item('1', 'spotify:album:a', 'A')
-        app = _make_berry([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
+        app = _make_mello([focused], NowPlaying(playing=True, context_uri='spotify:album:b'))
         app._pending_focus_uri = focused.uri
         app._requested_focus_epoch = app._focus_epoch
         app._requested_focus_uri = focused.uri
@@ -214,7 +214,7 @@ class TestContextSwitchWatchdog:
         app._user_driving = True
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr('berry.app.run_async', lambda fn, *a: fn(*a))
+            mp.setattr('mello.app.run_async', lambda fn, *a: fn(*a))
             app._check_context_switch_watchdog(focused)
 
         app.playback.stop_all.assert_called_once()
@@ -230,7 +230,7 @@ class TestContextSwitchWatchdog:
 
     def test_watchdog_resets_timer_when_stall_condition_clears(self):
         focused = _item('1', 'spotify:album:a', 'A')
-        app = _make_berry([focused], NowPlaying(playing=False, paused=True, context_uri='spotify:album:a'))
+        app = _make_mello([focused], NowPlaying(playing=False, paused=True, context_uri='spotify:album:a'))
         app._context_switch_stall_since = time.time() - 10.0
         app._pending_focus_uri = None
         app._requested_focus_uri = None
@@ -247,7 +247,7 @@ class TestPausedSameFocusContext:
     def test_true_when_paused_and_uri_matches(self):
         uri = 'spotify:album:a'
         items = [_item('1', uri, 'A')]
-        app = _make_berry(
+        app = _make_mello(
             items,
             NowPlaying(playing=False, paused=True, stopped=False, context_uri=uri),
         )
@@ -256,7 +256,7 @@ class TestPausedSameFocusContext:
     def test_false_when_playing(self):
         uri = 'spotify:album:a'
         items = [_item('1', uri, 'A')]
-        app = _make_berry(
+        app = _make_mello(
             items,
             NowPlaying(playing=True, paused=False, context_uri=uri),
         )
@@ -264,7 +264,7 @@ class TestPausedSameFocusContext:
 
     def test_false_when_different_context(self):
         items = [_item('1', 'spotify:album:a', 'A')]
-        app = _make_berry(
+        app = _make_mello(
             items,
             NowPlaying(playing=False, paused=True, stopped=False, context_uri='spotify:album:b'),
         )

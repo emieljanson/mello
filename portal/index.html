@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Berry</title>
+<title>Mello</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0d0d0d;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;padding:32px 20px;min-height:100vh;-webkit-font-smoothing:antialiased}
@@ -38,7 +38,7 @@ button:disabled{opacity:.25;cursor:default}
 </style>
 </head>
 <body>
-<h1>Berry</h1>
+<h1>Mello</h1>
 <p class="sub">Choose a network</p>
 <div id="app"><div class="loading">Scanning for networks...</div></div>
 <script>
@@ -138,7 +138,7 @@ button:disabled{opacity:.25;cursor:default}
     }).then(function(r){
       if(r.status !== 200) throw new Error(r.statusText);
       st.className = 'status show wait';
-      st.textContent = 'Connection attempt in progress. If it fails, Berry-Setup will reappear.';
+      st.textContent = 'Connection attempt in progress. If it fails, Mello-Setup will reappear.';
       btn.textContent = 'Connecting...';
       btn.disabled = true;
     }).catch(function(e){

@@ -1,8 +1,8 @@
 [Unit]
-Description=Berry go-librespot Spotify Connect
+Description=Mello go-librespot Spotify Connect
 After=network.target
 Wants=network.target
-PartOf=berry-native.service
+PartOf=mello-native.service
 
 [Service]
 Type=simple
@@ -17,4 +17,3 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/__UID__/bus
 
 [Install]
 WantedBy=multi-user.target
-

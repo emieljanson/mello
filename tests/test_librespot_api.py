@@ -9,7 +9,7 @@ import requests
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.api.librespot import LibrespotAPI
+from mello.api.librespot import LibrespotAPI
 
 
 def test_status_204_returns_explicit_stopped_payload():

@@ -2,7 +2,7 @@
 Description=Fix Goodix touchscreen probe (WM8960 I2C timing workaround)
 DefaultDependencies=no
 After=sysinit.target
-Before=berry-native.service
+Before=mello-native.service
 
 [Service]
 Type=oneshot

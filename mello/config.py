@@ -1,5 +1,5 @@
 """
-Berry Configuration - All constants and settings.
+Mello Configuration - All constants and settings.
 """
 import os
 import sys
@@ -48,8 +48,8 @@ ICONS_DIR = Path(__file__).parent.parent / 'icons'
 LIBRESPOT_STATE_PATH = Path.home() / '.config' / 'go-librespot' / 'state.json'
 
 # Logging directory
-LOG_DIR = Path.home() / 'berry' / 'logs'
-LOG_FILE = LOG_DIR / 'berry.log'
+LOG_DIR = Path.home() / 'mello' / 'logs'
+LOG_FILE = LOG_DIR / 'mello.log'
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB per file
 LOG_BACKUP_COUNT = 10  # Keep 10 backup files (~50MB total)
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Berry Migration Script
+# Mello Migration Script
 # Runs automatically after auto-update (see auto-update.sh step 4).
 # Each migration is idempotent and guarded by a marker file.
 #
@@ -9,15 +9,34 @@
 set -euo pipefail
 
 # Load install environment (username, home, uid)
-if [ -f "$HOME/berry/.berry-env" ]; then
+# Support old (.berry-env), intermediate (.tomo-env), and new (.mello-env) locations
+if [ -f "$HOME/mello/.mello-env" ]; then
+  source "$HOME/mello/.mello-env"
+elif [ -f "$HOME/tomo/.tomo-env" ]; then
+  source "$HOME/tomo/.tomo-env"
+  # Map Tomo variable names to Mello
+  MELLO_USER="${TOMO_USER:-$USER}"
+  MELLO_HOME="${TOMO_HOME:-$HOME}"
+  MELLO_UID="${TOMO_UID:-$(id -u)}"
+elif [ -f "$HOME/berry/.berry-env" ]; then
   source "$HOME/berry/.berry-env"
+  # Map Berry variable names to Mello
+  MELLO_USER="${BERRY_USER:-$USER}"
+  MELLO_HOME="${BERRY_HOME:-$HOME}"
+  MELLO_UID="${BERRY_UID:-$(id -u)}"
 else
-  BERRY_USER="$USER"
-  BERRY_HOME="$HOME"
-  BERRY_UID="$(id -u)"
+  MELLO_USER="$USER"
+  MELLO_HOME="$HOME"
+  MELLO_UID="$(id -u)"
 fi
 
-MIGRATION_DIR="$HOME/.berry-migrations"
+# Support old, intermediate, and new migration dirs for transition
+MIGRATION_DIR="$HOME/.mello-migrations"
+if [ ! -d "$MIGRATION_DIR" ] && [ -d "$HOME/.tomo-migrations" ]; then
+  mv "$HOME/.tomo-migrations" "$MIGRATION_DIR"
+elif [ ! -d "$MIGRATION_DIR" ] && [ -d "$HOME/.berry-migrations" ]; then
+  mv "$HOME/.berry-migrations" "$MIGRATION_DIR"
+fi
 mkdir -p "$MIGRATION_DIR"
 
 log() {
@@ -61,7 +80,7 @@ _migrate_001() {
     pipewire-alsa libspa-0.2-bluetooth \
     pulseaudio-utils
 
-  # Enable PipeWire for the berry user (user-level systemd services)
+  # Enable PipeWire for the mello user (user-level systemd services)
   # Create user service directory if it doesn't exist
   mkdir -p "$HOME/.config/systemd/user"
 
@@ -82,17 +101,21 @@ _migrate_001() {
     fi
   fi
 
-  # 3. Add berry user to bluetooth group
+  # 3. Add mello user to bluetooth group
   sudo usermod -aG bluetooth "$USER" 2>/dev/null || true
 
   # 4. Add BT-related commands to sudoers
   #    bluetooth.py needs: systemctl restart bluetooth, hciconfig hci0 up
-  local SUDOERS_FILE="/etc/sudoers.d/berry-wifi"
-  local EXPECTED_LINE="$BERRY_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up"
+  local SUDOERS_FILE="/etc/sudoers.d/mello-wifi"
+  # Also check old name for transition
+  if [ ! -f "$SUDOERS_FILE" ] && [ -f "/etc/sudoers.d/berry-wifi" ]; then
+    SUDOERS_FILE="/etc/sudoers.d/berry-wifi"
+  fi
+  local EXPECTED_LINE="$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop mello-librespot, /bin/systemctl start mello-librespot, /bin/systemctl restart mello-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up"
 
   # Create or update sudoers if BT commands are missing
   if ! sudo grep -q "restart bluetooth" "$SUDOERS_FILE" 2>/dev/null; then
-    local TMP_SUDOERS="/tmp/berry-sudoers.$$"
+    local TMP_SUDOERS="/tmp/mello-sudoers.$$"
     echo "$EXPECTED_LINE" > "$TMP_SUDOERS"
     if sudo visudo -cf "$TMP_SUDOERS"; then
       sudo install -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
@@ -107,9 +130,11 @@ _migrate_001() {
 
   # 5. Ensure XDG_RUNTIME_DIR is set for PipeWire in systemd service
   #    PipeWire needs this to find its socket
-  local SERVICE="/etc/systemd/system/berry-native.service"
+  local SERVICE="/etc/systemd/system/mello-native.service"
+  # Check old name too
+  [ -f "$SERVICE" ] || SERVICE="/etc/systemd/system/berry-native.service"
   if [ -f "$SERVICE" ] && ! grep -q "DBUS_SESSION_BUS_ADDRESS" "$SERVICE"; then
-    log "Note: berry-native.service will be updated on next auto-update cycle"
+    log "Note: mello-native.service will be updated on next auto-update cycle"
   fi
 
   # Restart bluetooth service to pick up new group membership
@@ -143,40 +168,303 @@ _migrate_002() {
 # Migration 003: Dynamic username support
 # ============================================
 _migrate_003() {
-  # Create .berry-env if it doesn't exist (existing installs used user "berry")
-  if [ ! -f "$HOME/berry/.berry-env" ]; then
-    cat > "$HOME/berry/.berry-env" << EOF
-BERRY_USER=$BERRY_USER
-BERRY_HOME=$BERRY_HOME
-BERRY_UID=$BERRY_UID
+  # Create .mello-env if it doesn't exist (existing installs used user "berry")
+  # Check both old and new locations
+  local CODE_DIR="$HOME/mello"
+  [ -d "$CODE_DIR" ] || CODE_DIR="$HOME/berry"
+
+  if [ ! -f "$CODE_DIR/.mello-env" ] && [ ! -f "$CODE_DIR/.berry-env" ]; then
+    cat > "$CODE_DIR/.mello-env" << EOF
+MELLO_USER=$MELLO_USER
+MELLO_HOME=$MELLO_HOME
+MELLO_UID=$MELLO_UID
 EOF
-    log "Created .berry-env (user=$BERRY_USER)"
+    log "Created .mello-env (user=$MELLO_USER)"
   fi
 
   # Re-render service templates (replaces old symlinks with rendered copies)
-  for tmpl in "$HOME/berry/pi/systemd/"*.service.template; do
+  for tmpl in "$CODE_DIR/pi/systemd/"*.service.template; do
     [ -f "$tmpl" ] || continue
     local name
     name=$(basename "$tmpl" .template)
-    sed -e "s|__USER__|$BERRY_USER|g" \
-        -e "s|__HOME__|$BERRY_HOME|g" \
-        -e "s|__UID__|$BERRY_UID|g" \
+    sed -e "s|__USER__|$MELLO_USER|g" \
+        -e "s|__HOME__|$MELLO_HOME|g" \
+        -e "s|__UID__|$MELLO_UID|g" \
         "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
     log "Rendered $name"
   done
   sudo systemctl daemon-reload
 
   # Update sudoers if it still has hardcoded "berry" username
-  local SUDOERS_FILE="/etc/sudoers.d/berry-wifi"
-  if sudo grep -q "^berry " "$SUDOERS_FILE" 2>/dev/null && [ "$BERRY_USER" != "berry" ]; then
-    local TMP_SUDOERS="/tmp/berry-sudoers.$$"
-    echo "$BERRY_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up" > "$TMP_SUDOERS"
+  local SUDOERS_FILE="/etc/sudoers.d/mello-wifi"
+  [ -f "$SUDOERS_FILE" ] || SUDOERS_FILE="/etc/sudoers.d/berry-wifi"
+  if sudo grep -q "^berry " "$SUDOERS_FILE" 2>/dev/null && [ "$MELLO_USER" != "berry" ]; then
+    local TMP_SUDOERS="/tmp/mello-sudoers.$$"
+    echo "$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop mello-librespot, /bin/systemctl start mello-librespot, /bin/systemctl restart mello-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up" > "$TMP_SUDOERS"
     if sudo visudo -cf "$TMP_SUDOERS"; then
       sudo install -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
-      log "sudoers updated for user $BERRY_USER"
+      log "sudoers updated for user $MELLO_USER"
     fi
     rm -f "$TMP_SUDOERS"
   fi
+}
+
+# ============================================
+# Migration 004: Berry → Mello rebrand
+# ============================================
+_migrate_004() {
+  log "Starting Berry → Mello rebrand migration"
+
+  # 1. Stop old services
+  sudo systemctl stop berry-native berry-librespot 2>/dev/null || true
+
+  # 2. Move code directory ~/berry → ~/mello
+  if [ -d "$HOME/berry" ] && [ ! -d "$HOME/mello" ]; then
+    mv "$HOME/berry" "$HOME/mello"
+    log "Moved ~/berry → ~/mello"
+  elif [ -d "$HOME/berry" ] && [ -d "$HOME/mello" ]; then
+    log "Both ~/berry and ~/mello exist — skipping directory move"
+  fi
+
+  local CODE_DIR="$HOME/mello"
+
+  # 3. Rename .berry-env → .mello-env and update variable names
+  if [ -f "$CODE_DIR/.berry-env" ]; then
+    sed -e 's/^BERRY_USER=/MELLO_USER=/' \
+        -e 's/^BERRY_HOME=/MELLO_HOME=/' \
+        -e 's/^BERRY_UID=/MELLO_UID=/' \
+        "$CODE_DIR/.berry-env" > "$CODE_DIR/.mello-env"
+    rm -f "$CODE_DIR/.berry-env"
+    log "Migrated .berry-env → .mello-env"
+  fi
+
+  # Reload env from new file
+  if [ -f "$CODE_DIR/.mello-env" ]; then
+    source "$CODE_DIR/.mello-env"
+  fi
+
+  # 4. Remove old systemd services, install new ones
+  sudo systemctl disable berry-native berry-librespot berry-touch-fix 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/berry-native.service
+  sudo rm -f /etc/systemd/system/berry-librespot.service
+  sudo rm -f /etc/systemd/system/berry-touch-fix.service
+
+  # Render and install new service templates
+  for tmpl in "$CODE_DIR/pi/systemd/"*.service.template; do
+    [ -f "$tmpl" ] || continue
+    local name
+    name=$(basename "$tmpl" .template)
+    sed -e "s|__USER__|$MELLO_USER|g" \
+        -e "s|__HOME__|$MELLO_HOME|g" \
+        -e "s|__UID__|$MELLO_UID|g" \
+        "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
+    log "Installed $name"
+  done
+
+  # Symlink non-templated services
+  for f in "$CODE_DIR/pi/systemd/"*.service; do
+    [ -f "$f" ] || continue
+    sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")"
+  done
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable mello-librespot mello-native mello-touch-fix
+
+  # 5. Update cron job
+  ( (crontab -l 2>/dev/null || true) | grep -v "berry/pi/auto-update\|mello/pi/auto-update" || true
+    echo "0 3 * * * bash ~/mello/pi/auto-update.sh >> ~/mello-update.log 2>&1"
+  ) | crontab -
+  log "Cron job updated"
+
+  # 6. Rename system group berry → mello
+  if getent group berry >/dev/null 2>&1; then
+    if ! getent group mello >/dev/null 2>&1; then
+      sudo groupmod -n mello berry
+      log "Renamed group berry → mello"
+    else
+      # mello group already exists, just add user
+      sudo usermod -aG mello "$MELLO_USER" 2>/dev/null || true
+    fi
+  fi
+
+  # 7. Update udev rules
+  if [ -f /etc/udev/rules.d/99-berry-drm.rules ]; then
+    sudo mv /etc/udev/rules.d/99-berry-drm.rules /etc/udev/rules.d/99-mello-drm.rules
+  fi
+  if [ -f /etc/udev/rules.d/99-berry-power.rules ]; then
+    sudo mv /etc/udev/rules.d/99-mello-power.rules 2>/dev/null || true
+    sudo mv /etc/udev/rules.d/99-berry-power.rules /etc/udev/rules.d/99-mello-power.rules
+  fi
+  # Update backlight rule to use mello group
+  if [ -f /etc/udev/rules.d/99-backlight.rules ]; then
+    sudo sed -i 's/chgrp berry/chgrp mello/g' /etc/udev/rules.d/99-backlight.rules
+  fi
+  # Update power rules to use mello group
+  if [ -f /etc/udev/rules.d/99-mello-power.rules ]; then
+    sudo sed -i 's/chgrp berry/chgrp mello/g' /etc/udev/rules.d/99-mello-power.rules
+  fi
+  sudo udevadm control --reload-rules 2>/dev/null || true
+  sudo udevadm trigger 2>/dev/null || true
+
+  # 8. Update sudoers
+  if [ -f /etc/sudoers.d/berry-wifi ]; then
+    local TMP_SUDOERS="/tmp/mello-sudoers.$$"
+    echo "$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop mello-librespot, /bin/systemctl start mello-librespot, /bin/systemctl restart mello-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up" > "$TMP_SUDOERS"
+    if sudo visudo -cf "$TMP_SUDOERS"; then
+      sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/mello-wifi
+      sudo rm -f /etc/sudoers.d/berry-wifi
+      log "Sudoers migrated to mello-wifi"
+    fi
+    rm -f "$TMP_SUDOERS"
+  fi
+
+  # 9. Update go-librespot device name
+  local CONFIG="$HOME/.config/go-librespot/config.yml"
+  if [ -f "$CONFIG" ]; then
+    sed -i 's/device_name:.*"Berry"/device_name: "Mello"/' "$CONFIG"
+    log "go-librespot device name updated to Mello"
+  fi
+
+  # 10. Update portal UI
+  sudo cp "$CODE_DIR/portal/index.html" /usr/local/share/wifi-connect/ui/index.html 2>/dev/null || true
+
+  # 11. Start new services
+  sudo systemctl start mello-librespot mello-native
+
+  log "Berry → Mello rebrand migration complete"
+}
+
+# ============================================
+# Migration 005: Tomo → Mello rebrand
+# ============================================
+# Handles devices that were running the intermediate Tomo version.
+# Similar to 004 but replaces tomo references instead of berry.
+_migrate_005() {
+  # Skip if no tomo artifacts exist (device came straight from berry via 004)
+  if [ ! -d "$HOME/tomo" ] && ! systemctl list-unit-files tomo-native.service &>/dev/null; then
+    log "No Tomo artifacts found, skipping"
+    return 0
+  fi
+
+  log "Starting Tomo → Mello rebrand migration"
+
+  # 1. Stop old services
+  sudo systemctl stop tomo-native tomo-librespot 2>/dev/null || true
+
+  # 2. Move code directory ~/tomo → ~/mello
+  if [ -d "$HOME/tomo" ] && [ ! -d "$HOME/mello" ]; then
+    mv "$HOME/tomo" "$HOME/mello"
+    log "Moved ~/tomo → ~/mello"
+  elif [ -d "$HOME/tomo" ] && [ -d "$HOME/mello" ]; then
+    log "Both ~/tomo and ~/mello exist — skipping directory move"
+  fi
+
+  local CODE_DIR="$HOME/mello"
+
+  # 3. Rename .tomo-env → .mello-env and update variable names
+  if [ -f "$CODE_DIR/.tomo-env" ]; then
+    sed -e 's/^TOMO_USER=/MELLO_USER=/' \
+        -e 's/^TOMO_HOME=/MELLO_HOME=/' \
+        -e 's/^TOMO_UID=/MELLO_UID=/' \
+        "$CODE_DIR/.tomo-env" > "$CODE_DIR/.mello-env"
+    rm -f "$CODE_DIR/.tomo-env"
+    log "Migrated .tomo-env → .mello-env"
+  fi
+
+  # Reload env from new file
+  if [ -f "$CODE_DIR/.mello-env" ]; then
+    source "$CODE_DIR/.mello-env"
+  fi
+
+  # 4. Remove old systemd services, install new ones
+  sudo systemctl disable tomo-native tomo-librespot tomo-touch-fix 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/tomo-native.service
+  sudo rm -f /etc/systemd/system/tomo-librespot.service
+  sudo rm -f /etc/systemd/system/tomo-touch-fix.service
+
+  # Render and install new service templates
+  for tmpl in "$CODE_DIR/pi/systemd/"*.service.template; do
+    [ -f "$tmpl" ] || continue
+    local name
+    name=$(basename "$tmpl" .template)
+    sed -e "s|__USER__|$MELLO_USER|g" \
+        -e "s|__HOME__|$MELLO_HOME|g" \
+        -e "s|__UID__|$MELLO_UID|g" \
+        "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
+    log "Installed $name"
+  done
+
+  # Symlink non-templated services
+  for f in "$CODE_DIR/pi/systemd/"*.service; do
+    [ -f "$f" ] || continue
+    sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")"
+  done
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable mello-librespot mello-native mello-touch-fix
+
+  # 5. Update cron job
+  ( (crontab -l 2>/dev/null || true) | grep -v "tomo/pi/auto-update\|mello/pi/auto-update" || true
+    echo "0 3 * * * bash ~/mello/pi/auto-update.sh >> ~/mello-update.log 2>&1"
+  ) | crontab -
+  log "Cron job updated"
+
+  # 6. Rename system group tomo → mello
+  if getent group tomo >/dev/null 2>&1; then
+    if ! getent group mello >/dev/null 2>&1; then
+      sudo groupmod -n mello tomo
+      log "Renamed group tomo → mello"
+    else
+      sudo usermod -aG mello "$MELLO_USER" 2>/dev/null || true
+    fi
+  fi
+
+  # 7. Update udev rules
+  if [ -f /etc/udev/rules.d/99-tomo-drm.rules ]; then
+    sudo mv /etc/udev/rules.d/99-tomo-drm.rules /etc/udev/rules.d/99-mello-drm.rules
+  fi
+  if [ -f /etc/udev/rules.d/99-tomo-power.rules ]; then
+    sudo mv /etc/udev/rules.d/99-tomo-power.rules /etc/udev/rules.d/99-mello-power.rules
+  fi
+  # Update rules to use mello group
+  if [ -f /etc/udev/rules.d/99-backlight.rules ]; then
+    sudo sed -i 's/chgrp tomo/chgrp mello/g' /etc/udev/rules.d/99-backlight.rules
+  fi
+  if [ -f /etc/udev/rules.d/99-mello-power.rules ]; then
+    sudo sed -i 's/chgrp tomo/chgrp mello/g' /etc/udev/rules.d/99-mello-power.rules
+  fi
+  sudo udevadm control --reload-rules 2>/dev/null || true
+  sudo udevadm trigger 2>/dev/null || true
+
+  # 8. Update sudoers
+  if [ -f /etc/sudoers.d/tomo-wifi ]; then
+    local TMP_SUDOERS="/tmp/mello-sudoers.$$"
+    echo "$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop mello-librespot, /bin/systemctl start mello-librespot, /bin/systemctl restart mello-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up" > "$TMP_SUDOERS"
+    if sudo visudo -cf "$TMP_SUDOERS"; then
+      sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/mello-wifi
+      sudo rm -f /etc/sudoers.d/tomo-wifi
+      log "Sudoers migrated from tomo-wifi to mello-wifi"
+    fi
+    rm -f "$TMP_SUDOERS"
+  fi
+
+  # 9. Update go-librespot device name
+  local CONFIG="$HOME/.config/go-librespot/config.yml"
+  if [ -f "$CONFIG" ]; then
+    sed -i 's/device_name:.*"Tomo"/device_name: "Mello"/' "$CONFIG"
+    log "go-librespot device name updated to Mello"
+  fi
+
+  # 10. Update portal UI
+  sudo cp "$CODE_DIR/portal/index.html" /usr/local/share/wifi-connect/ui/index.html 2>/dev/null || true
+
+  # 11. Clean up old tomo update log
+  rm -f "$HOME/tomo-update.log"
+
+  # 12. Start new services
+  sudo systemctl start mello-librespot mello-native
+
+  log "Tomo → Mello rebrand migration complete"
 }
 
 # ============================================
@@ -185,3 +473,5 @@ EOF
 run_migration "001" "Bluetooth audio via PipeWire"
 run_migration "002" "Install pactl (missing from 001 on Trixie)"
 run_migration "003" "Dynamic username support"
+run_migration "004" "Berry to Mello rebrand"
+run_migration "005" "Tomo to Mello rebrand"

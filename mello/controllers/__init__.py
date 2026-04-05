@@ -1,5 +1,5 @@
 """
-Berry Controllers - Business logic controllers.
+Mello Controllers - Business logic controllers.
 """
 from .volume import VolumeController
 from .playback import PlaybackController

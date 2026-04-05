@@ -1,13 +1,13 @@
-# Contributing to Berry
+# Contributing to Mello
 
-Thanks for your interest in contributing! Berry is a simple music player for kids, and we want to keep it that way — simple, reliable, and fun.
+Thanks for your interest in contributing! Mello is a simple music player for kids, and we want to keep it that way — simple, reliable, and fun.
 
 ## Development Setup
 
-You need a Raspberry Pi with Berry installed (see the [README](README.md)). Edit code on your machine, then sync and test on the Pi:
+You need a Raspberry Pi with Mello installed (see the [README](README.md)). Edit code on your machine, then sync and test on the Pi:
 
 ```bash
-./dev-pi.sh  # Syncs changes to Pi over SSH and streams logs
+./dev-pi.sh --host user@host  # Syncs changes to Pi over SSH and streams logs
 ```
 
 ## Running Tests
@@ -40,7 +40,7 @@ pytest tests/ -v
 ## Project Structure
 
 ```
-berry/
+mello/
 ├── api/          # Spotify & catalog APIs
 ├── handlers/     # Touch & event input
 ├── managers/     # Feature controllers (sleep, carousel, analytics, etc.)

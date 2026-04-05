@@ -1,4 +1,4 @@
-# Berry boot config additions
+# Mello boot config additions
 # These are applied automatically by pi/setup.sh
 # Manual reference only — no need to edit /boot/config.txt yourself
 

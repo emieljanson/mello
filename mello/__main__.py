@@ -1,5 +1,5 @@
 """
-Allow running as: python -m berry
+Allow running as: python -m mello
 """
 from .main import main
 

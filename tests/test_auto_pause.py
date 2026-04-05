@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.managers.auto_pause import AutoPauseManager
+from mello.managers.auto_pause import AutoPauseManager
 
 
 @pytest.fixture
@@ -160,8 +160,8 @@ class TestCheckGuards:
 
 
 class TestFadeOutAndRestore:
-    @patch('berry.managers.auto_pause.set_system_volume')
-    @patch('berry.managers.auto_pause.time.sleep')
+    @patch('mello.managers.auto_pause.set_system_volume')
+    @patch('mello.managers.auto_pause.time.sleep')
     def test_fade_calls_pause_and_restores_volume(self, mock_sleep, mock_vol):
         on_pause = MagicMock()
         mgr = AutoPauseManager(
@@ -177,7 +177,7 @@ class TestFadeOutAndRestore:
         last_restore_call = mock_vol.call_args_list[-1]
         assert last_restore_call == ((100, 80),)
 
-    @patch('berry.managers.auto_pause.set_system_volume')
+    @patch('mello.managers.auto_pause.set_system_volume')
     def test_restore_volume_if_needed(self, mock_vol):
         mgr = AutoPauseManager(
             on_pause=MagicMock(),
@@ -191,7 +191,7 @@ class TestFadeOutAndRestore:
         mock_vol.assert_called_once_with(90, 70)
         assert mgr._should_restore_volume is False
 
-    @patch('berry.managers.auto_pause.set_system_volume')
+    @patch('mello.managers.auto_pause.set_system_volume')
     def test_restore_does_nothing_when_not_needed(self, mock_vol):
         mgr = AutoPauseManager(
             on_pause=MagicMock(),
@@ -209,7 +209,7 @@ class TestSettingsIntegration:
         settings_path = tmp_path / 'settings.json'
         settings_path.write_text(json.dumps({'auto_pause_minutes': 60}))
 
-        from berry.managers.settings import Settings
+        from mello.managers.settings import Settings
         settings = Settings(path=settings_path)
 
         mgr = AutoPauseManager(
@@ -230,7 +230,7 @@ class TestSettingsIntegration:
         import json
         settings_path = tmp_path / 'settings.json'
 
-        from berry.managers.settings import Settings
+        from mello.managers.settings import Settings
         settings = Settings(path=settings_path)
 
         assert settings.auto_pause_timeout == 30 * 60

@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Berry Pi Development Script
+# Mello Pi Development Script
 # Syncs files and runs the Pygame app on the Pi via systemd
 
 set -e
 
-PI_HOST="berry@berry.local"
-PI_DIR="~/berry"
+PI_HOST=""
+PI_DIR="~/mello"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Colors
@@ -31,16 +31,16 @@ while [[ "$#" -gt 0 ]]; do
         -T|--skip-tests) SKIP_TESTS=true ;;
         --host)
             shift
-            PI_HOST="berry@$1"
+            PI_HOST="$1"
             ;;
         -h|--help)
-            echo "Usage: ./dev-pi.sh [-v|--verbose] [-p|--profile] [-T|--skip-tests] [--host IP]"
+            echo "Usage: ./dev-pi.sh --host user@host [-v|--verbose] [-p|--profile] [-T|--skip-tests]"
             echo ""
             echo "Options:"
+            echo "  --host USER@HOST  SSH target (required, e.g. --host pi@mello.local)"
             echo "  -v, --verbose     Show all logs (INFO + DEBUG)"
             echo "  -p, --profile     Enable frame profiler (shows render timing)"
             echo "  -T, --skip-tests  Skip running tests before sync"
-            echo "  --host IP         Target a specific Pi by IP (e.g. --host 192.168.1.152)"
             echo ""
             echo "Commands while running:"
             echo "  r, Enter  Sync files and restart app"
@@ -55,7 +55,14 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-echo -e "${GREEN}🍓 Berry Pi Development${NC}"
+if [ -z "$PI_HOST" ]; then
+    echo -e "${RED}Error: --host is required${NC}"
+    echo "Usage: ./dev-pi.sh --host user@host"
+    echo "Example: ./dev-pi.sh --host pi@mello.local"
+    exit 1
+fi
+
+echo -e "${GREEN}Mello Pi Development${NC}"
 echo "========================"
 echo ""
 
@@ -72,37 +79,37 @@ fi
 # Cleanup function
 cleanup() {
     echo ""
-    echo -e "${YELLOW}🛑 Stopping...${NC}"
-    
+    echo -e "${YELLOW}Stopping...${NC}"
+
     # Kill log tail
     kill $LOG_PID 2>/dev/null || true
-    
-    # Stop Berry service gracefully (SIGTERM → graceful shutdown)
-    ssh -o ConnectTimeout=3 $PI_HOST "sudo systemctl stop berry-native" 2>/dev/null || true
-    
-    echo -e "${GREEN}✓ Stopped${NC}"
+
+    # Stop Mello service gracefully (SIGTERM -> graceful shutdown)
+    ssh -o ConnectTimeout=3 $PI_HOST "sudo systemctl stop mello-native" 2>/dev/null || true
+
+    echo -e "${GREEN}Stopped${NC}"
     exit 0
 }
 trap cleanup SIGINT SIGTERM
 
 # Setup SSH key if needed
 if ! ssh -o BatchMode=yes -o ConnectTimeout=5 $PI_HOST "exit" 2>/dev/null; then
-    echo -e "${YELLOW}🔑 Setting up SSH key (one-time setup)...${NC}"
+    echo -e "${YELLOW}Setting up SSH key (one-time setup)...${NC}"
     echo -e "${YELLOW}   You'll need to enter the Pi password once.${NC}"
-    
+
     if [ ! -f ~/.ssh/id_ed25519 ]; then
         echo -e "${BLUE}Generating SSH key...${NC}"
         ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
     fi
-    
+
     ssh-copy-id -i ~/.ssh/id_ed25519.pub $PI_HOST
-    echo -e "${GREEN}✓ SSH key installed${NC}"
+    echo -e "${GREEN}SSH key installed${NC}"
     echo ""
 fi
 
 # Run tests locally (fast feedback before sync)
 run_tests() {
-    echo -e "${BLUE}🧪 Running tests...${NC}"
+    echo -e "${BLUE}Running tests...${NC}"
 
     # Ensure venv exists and deps are installed
     if [ ! -d "$LOCAL_DIR/venv" ]; then
@@ -115,15 +122,15 @@ run_tests() {
     pip install -q pytest 2>/dev/null
 
     # Run tests
-    if python3 -m pytest "$LOCAL_DIR/tests/" -v --tb=short > /tmp/berry_tests.log 2>&1; then
-        tail -20 /tmp/berry_tests.log
-        local passed=$(grep -E "passed|PASSED" /tmp/berry_tests.log | tail -1)
-        echo -e "${GREEN}✓ Tests passed${NC} ${DIM}$passed${NC}"
+    if python3 -m pytest "$LOCAL_DIR/tests/" -v --tb=short > /tmp/mello_tests.log 2>&1; then
+        tail -20 /tmp/mello_tests.log
+        local passed=$(grep -E "passed|PASSED" /tmp/mello_tests.log | tail -1)
+        echo -e "${GREEN}Tests passed${NC} ${DIM}$passed${NC}"
         deactivate 2>/dev/null || true
         return 0
     else
-        tail -20 /tmp/berry_tests.log
-        echo -e "${RED}✗ Tests failed${NC}"
+        tail -20 /tmp/mello_tests.log
+        echo -e "${RED}Tests failed${NC}"
         echo -e "${YELLOW}Fix tests before syncing, or use -T to skip${NC}"
         deactivate 2>/dev/null || true
         return 1
@@ -141,7 +148,7 @@ sync_files() {
         echo ""
     fi
 
-    echo -e "${BLUE}📦 Syncing...${NC}"
+    echo -e "${BLUE}Syncing...${NC}"
     local output
     output=$(rsync -avz --itemize-changes \
         --exclude '.git' --exclude '.cursor' --exclude 'data' --exclude 'venv' --exclude '__pycache__' \
@@ -153,26 +160,26 @@ sync_files() {
         echo "$output" | grep "^>f" | sed 's/^>f[^ ]* /  /' | head -5
         [ "$changes" -gt 5 ] && echo -e "  ${DIM}... and $((changes - 5)) more${NC}"
     fi
-    echo -e "${GREEN}✓ Synced${NC}"
+    echo -e "${GREEN}Synced${NC}"
 }
 
-# Restart the Berry app via systemd
+# Restart the Mello app via systemd
 restart_app() {
-    echo -e "${BLUE}🔄 Restarting...${NC}"
-    
+    echo -e "${BLUE}Restarting...${NC}"
+
     # Reload systemd config in case service file changed, then restart
-    ssh $PI_HOST "sudo systemctl daemon-reload && sudo systemctl restart berry-native" 2>/dev/null
-    
+    ssh $PI_HOST "sudo systemctl daemon-reload && sudo systemctl restart mello-native" 2>/dev/null
+
     # Wait for service to start
     sleep 1
-    
+
     # Check status
-    if ssh $PI_HOST "systemctl is-active --quiet berry-native" 2>/dev/null; then
-        echo -e "${GREEN}✓ Running${NC}"
+    if ssh $PI_HOST "systemctl is-active --quiet mello-native" 2>/dev/null; then
+        echo -e "${GREEN}Running${NC}"
     else
-        echo -e "${RED}✗ Failed to start${NC}"
-        ssh $PI_HOST "sudo journalctl -u berry-native -n 10 --no-pager" 2>/dev/null || true
-        ssh $PI_HOST "tail -10 /home/berry/berry/berry.log" 2>/dev/null || true
+        echo -e "${RED}Failed to start${NC}"
+        ssh $PI_HOST "sudo journalctl -u mello-native -n 10 --no-pager" 2>/dev/null || true
+        ssh $PI_HOST "tail -10 ~/mello/mello.log" 2>/dev/null || true
     fi
 }
 
@@ -180,8 +187,8 @@ restart_app() {
 start_logs() {
     kill $LOG_PID 2>/dev/null || true
     sleep 0.2
-    
-    ssh $PI_HOST 'tail -f /home/berry/berry/berry.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
+
+    ssh $PI_HOST 'tail -f ~/mello/mello.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
         if [ "$VERBOSE" = true ]; then
             # Verbose mode: show everything, just add colors
             case "$line" in
@@ -245,61 +252,61 @@ sync_files
 echo ""
 
 # Start/setup services on Pi
-echo -e "${BLUE}🚀 Starting Berry...${NC}"
+echo -e "${BLUE}Starting Mello...${NC}"
 
 # Create systemd override for profile mode
 if [ "$PROFILE" = true ]; then
-    ssh $PI_HOST "sudo mkdir -p /etc/systemd/system/berry-native.service.d && echo -e '[Service]\nEnvironment=BERRY_PROFILE=1' | sudo tee /etc/systemd/system/berry-native.service.d/profile.conf > /dev/null"
+    ssh $PI_HOST "sudo mkdir -p /etc/systemd/system/mello-native.service.d && echo -e '[Service]\nEnvironment=MELLO_PROFILE=1' | sudo tee /etc/systemd/system/mello-native.service.d/profile.conf > /dev/null"
 else
-    ssh $PI_HOST "sudo rm -f /etc/systemd/system/berry-native.service.d/profile.conf 2>/dev/null; true"
+    ssh $PI_HOST "sudo rm -f /etc/systemd/system/mello-native.service.d/profile.conf 2>/dev/null; true"
 fi
 
 ssh -t $PI_HOST << 'ENDSSH'
 # Ensure systemd services are linked
-sudo ln -sf ~/berry/pi/systemd/berry-*.service /etc/systemd/system/ 2>/dev/null
+sudo ln -sf ~/mello/pi/systemd/mello-*.service /etc/systemd/system/ 2>/dev/null
 sudo systemctl daemon-reload
 
 # Stop any orphan processes first
-pkill -9 -f "berry.py" 2>/dev/null || true
+pkill -9 -f "mello.py" 2>/dev/null || true
 pkill -9 -f "go-librespot" 2>/dev/null || true
 sleep 0.5
 
 # Start librespot if not running
-if ! systemctl is-active --quiet berry-librespot; then
-    sudo systemctl start berry-librespot
+if ! systemctl is-active --quiet mello-librespot; then
+    sudo systemctl start mello-librespot
     sleep 2
 fi
 
 if pgrep -f "go-librespot" > /dev/null; then
-    echo "✓ go-librespot"
+    echo "go-librespot running"
 else
-    echo "✗ go-librespot failed"
-    journalctl -u berry-librespot -n 3 --no-pager
+    echo "go-librespot failed"
+    journalctl -u mello-librespot -n 3 --no-pager
 fi
 
 # Setup Python environment
-cd ~/berry
+cd ~/mello
 [ ! -d "venv" ] && python3 -m venv venv
 source venv/bin/activate
 pip install -q -r requirements.txt 2>/dev/null
 
 mkdir -p data/images
 
-# Start Berry via systemd
-sudo systemctl restart berry-native
+# Start Mello via systemd
+sudo systemctl restart mello-native
 sleep 1
 
-if systemctl is-active --quiet berry-native; then
-    echo "✓ Berry"
+if systemctl is-active --quiet mello-native; then
+    echo "Mello running"
 else
-    echo "✗ Berry failed"
-    sudo journalctl -u berry-native -n 5 --no-pager
-    cat /home/berry/berry/berry.log 2>/dev/null || true
+    echo "Mello failed"
+    sudo journalctl -u mello-native -n 5 --no-pager
+    cat ~/mello/mello.log 2>/dev/null || true
 fi
 ENDSSH
 
 echo ""
-echo -e "${GREEN}✓ Berry running on Pi${NC}"
+echo -e "${GREEN}Mello running on Pi${NC}"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "  ${GREEN}r${NC}/Enter  Sync + Restart"
@@ -337,7 +344,7 @@ while true; do
             l)
                 echo ""
                 echo -e "${CYAN}━━━ Recent logs ━━━${NC}"
-                ssh $PI_HOST 'tail -20 /home/berry/berry/berry.log' 2>/dev/null
+                ssh $PI_HOST 'tail -20 ~/mello/mello.log' 2>/dev/null
                 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━${NC}"
                 echo ""
                 ;;

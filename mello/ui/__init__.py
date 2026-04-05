@@ -1,5 +1,5 @@
 """
-Berry UI - Rendering and visual components.
+Mello UI - Rendering and visual components.
 """
 from .image_cache import ImageCache
 from .renderer import Renderer

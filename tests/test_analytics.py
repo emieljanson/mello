@@ -6,8 +6,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.managers import analytics as analytics_module
-from berry.models import NowPlaying
+from mello.managers import analytics as analytics_module
+from mello.models import NowPlaying
 
 
 class _FakePosthog:

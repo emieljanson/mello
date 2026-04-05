@@ -1,5 +1,5 @@
 """
-Berry Application - Main application class.
+Mello Application - Main application class.
 """
 import os
 import time
@@ -35,8 +35,8 @@ from .utils import run_async, get_runtime_version_label, set_system_volume
 logger = logging.getLogger(__name__)
 
 
-class Berry:
-    """Main Berry application."""
+class Mello:
+    """Main Mello application."""
     
     def __init__(self, fullscreen: bool = False):
         # Restore display BEFORE pygame takes over DRM device.
@@ -49,7 +49,7 @@ class Berry:
         
         pygame.init()
         pygame.mixer.quit()  # Release audio device for go-librespot
-        pygame.display.set_caption('Berry')
+        pygame.display.set_caption('Mello')
         
         # Initialize display and components
         self._init_display(fullscreen)
@@ -691,7 +691,7 @@ class Berry:
     
     def start(self):
         """Start the application."""
-        logger.info('Starting Berry...')
+        logger.info('Starting Mello...')
         self.tracker.on_app_started(catalog_size=len(self.catalog_manager.items))
         
         # Pre-load images
@@ -786,7 +786,7 @@ class Berry:
         self.events.stop()
         self.evdev_touch.stop()
         pygame.quit()
-        logger.info('Berry stopped')
+        logger.info('Mello stopped')
     
     def _target_fps(self) -> int:
         """Calculate target FPS based on current activity.

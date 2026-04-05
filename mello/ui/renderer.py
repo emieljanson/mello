@@ -1,5 +1,5 @@
 """
-Renderer - All drawing/rendering logic for the Berry UI.
+Renderer - All drawing/rendering logic for the Mello UI.
 """
 import logging
 import time
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class Renderer:
-    """Handles all drawing/rendering for Berry UI."""
+    """Handles all drawing/rendering for Mello UI."""
     
     def __init__(self, screen: pygame.Surface, image_cache: ImageCache, icons: Dict[str, pygame.Surface]):
         self.screen = screen
@@ -244,7 +244,7 @@ class Renderer:
         center_x = SCREEN_WIDTH // 2
         center_y = SCREEN_HEIGHT // 2
         
-        line1 = self._render_text_rotated('Play to Berry via Spotify', self.font_medium, COLORS['text_secondary'])
+        line1 = self._render_text_rotated('Play to Mello via Spotify', self.font_medium, COLORS['text_secondary'])
         line1_rect = line1.get_rect(center=(center_x + 20, center_y))
         self.screen.blit(line1, line1_rect)
         
@@ -638,7 +638,7 @@ class Renderer:
             nav_icon = 'back'
             items = [
                 ('text', '1. Connect to WiFi'),
-                ('text', '    network "Berry-Setup"'),
+                ('text', '    network "Mello-Setup"'),
                 ('spacer',),
                 ('text', '2. Choose your WiFi network'),
                 ('spacer',),

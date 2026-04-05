@@ -8,8 +8,8 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.managers.carousel import SmoothCarousel, PlayTimer
-from berry.models import CatalogItem
+from mello.managers.carousel import SmoothCarousel, PlayTimer
+from mello.models import CatalogItem
 
 
 # ============================================

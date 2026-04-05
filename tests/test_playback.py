@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch, call
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.controllers.playback import PlaybackController
-from berry.models import CatalogItem, NowPlaying
+from mello.controllers.playback import PlaybackController
+from mello.models import CatalogItem, NowPlaying
 
 
 def _make_controller(**overrides):
@@ -110,7 +110,7 @@ class TestStopAll:
         pc.stop_all()
         assert pc._play_in_progress is True
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_execute_play_aborts_when_generation_stale(self, mock_sleep):
         """A stale generation causes _execute_play to bail out early."""
         pc, api, _, _ = _make_controller()
@@ -129,7 +129,7 @@ class TestStopAll:
 
         assert api.play.call_count == 1
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_cancelled_play_skips_pending(self, mock_sleep):
         """After stop_all, pending requests are not handed off."""
         pc, api, _, _ = _make_controller()
@@ -203,7 +203,7 @@ class TestProgressSave:
             track_artist='Artist X',
         )
 
-        with patch('berry.controllers.playback.run_async') as mock_run:
+        with patch('mello.controllers.playback.run_async') as mock_run:
             mock_run.side_effect = lambda fn, *a: fn(*a)
             pc.last_progress_save = 0
             pc.save_progress(np, force=True)
@@ -227,7 +227,7 @@ class TestProgressSave:
             track_artist='Artist X',
         )
 
-        with patch('berry.controllers.playback.run_async') as mock_run:
+        with patch('mello.controllers.playback.run_async') as mock_run:
             mock_run.side_effect = lambda fn, *a: fn(*a)
             pc.last_progress_save = 0
             pc.save_progress(np, force=True)
@@ -297,7 +297,7 @@ class TestLoadingState:
 class TestPlayFailure:
     """Tests for play failure recovery (e.g. no active Spotify session)."""
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_no_session_retries_then_shows_toast(self, mock_sleep):
         """No session returns immediately and shows reconnect toast."""
         pc, api, _, _ = _make_controller()
@@ -312,7 +312,7 @@ class TestPlayFailure:
         assert pc.play_state.loading_since is None
         toast.assert_called_once_with('Connect via Spotify')
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_transient_failure_defers_toast_to_retry(self, mock_sleep):
         """Transient failures (False) keep loader alive for retry window — no immediate toast."""
         pc, api, _, _ = _make_controller()
@@ -343,7 +343,7 @@ class TestPlayFailure:
 class TestLibrespotCrashRecovery:
     """Scenarios: librespot crashes/restarts during sleep, user wakes Pi and tries to play."""
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_play_recovers_after_restart(self, mock_sleep):
         """One transient failure can recover on retry."""
         pc, api, _, _ = _make_controller()
@@ -356,7 +356,7 @@ class TestLibrespotCrashRecovery:
         assert api.play.call_count == 2
         toast.assert_not_called()
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_play_keeps_loader_when_never_recovers(self, mock_sleep):
         """Librespot never comes back — loader stays active for retry window."""
         pc, api, _, _ = _make_controller()
@@ -372,7 +372,7 @@ class TestLibrespotCrashRecovery:
         # Failed play saved for retry window
         assert pc._failed_play is not None
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_play_recovers_from_mixed_failures(self, mock_sleep):
         """Librespot can recover after one transient false response."""
         pc, api, _, _ = _make_controller()
@@ -385,7 +385,7 @@ class TestLibrespotCrashRecovery:
         assert api.play.call_count == 2
         toast.assert_not_called()
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_loader_active_during_retries(self, mock_sleep):
         """Loading state is set between retry attempts so user sees a spinner."""
         pc, api, _, _ = _make_controller()
@@ -449,7 +449,7 @@ class TestPlayQueueing:
         # Original play is still in progress, no new thread started
         assert pc._play_in_progress is True
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_pending_play_executes_after_current_finishes(self, mock_sleep):
         """Queued request runs after current _execute_play completes."""
         pc, api, _, _ = _make_controller()
@@ -458,7 +458,7 @@ class TestPlayQueueing:
         pc._pending_play = ('spotify:album:queued', False, 0)
         pc._play_in_progress = True
 
-        with patch('berry.controllers.playback.run_async') as mock_run:
+        with patch('mello.controllers.playback.run_async') as mock_run:
             mock_run.side_effect = lambda fn, *a: fn(*a)
             pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
 
@@ -470,7 +470,7 @@ class TestPlayQueueing:
 class TestQueuedPlayStaleness:
     """Queued play handoff should drop stale work."""
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_pending_request_dropped_after_generation_change(self, mock_sleep):
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
@@ -486,7 +486,7 @@ class TestQueuedPlayStaleness:
         calls = [c.args[0] for c in api.play.call_args_list]
         assert calls == ['spotify:album:first']
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_play_success_ignored_when_pause_intent_active(self, mock_sleep):
         pc, api, _, volume = _make_controller()
         on_committed = MagicMock()
@@ -511,7 +511,7 @@ class TestRetryBackoffGuards:
         pc.retry_failed()
         assert pc._failed_play is None
 
-    @patch('berry.controllers.playback.run_async')
+    @patch('mello.controllers.playback.run_async')
     def test_pause_command_suppressed_by_cooldown(self, mock_run_async):
         pc, _, _, _ = _make_controller()
         items = [_make_item(uri='spotify:album:x')]
@@ -521,7 +521,7 @@ class TestRetryBackoffGuards:
         # First pause should schedule async call, second is suppressed by cooldown
         assert mock_run_async.call_count == 1
 
-    @patch('berry.controllers.playback.time.sleep')
+    @patch('mello.controllers.playback.time.sleep')
     def test_pending_request_dropped_when_not_current(self, mock_sleep):
         pc, api, _, _ = _make_controller()
         api.play.return_value = True

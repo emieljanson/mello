@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from berry.managers.bluetooth import BluetoothManager, BluetoothDevice
+from mello.managers.bluetooth import BluetoothManager, BluetoothDevice
 
 
 @pytest.fixture
@@ -49,7 +49,7 @@ def bt(settings, callbacks):
 class TestMoveStreamAll:
     """Verify _move_stream moves all sink-inputs, not just the first."""
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_moves_all_streams(self, mock_run, bt):
         """When multiple sink-inputs exist, all should be moved."""
         # pactl list sink-inputs short returns 3 streams
@@ -71,7 +71,7 @@ class TestMoveStreamAll:
         moved_ids = [c[0][0][2] for c in move_calls]
         assert moved_ids == ['42', '43', '44']
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_handles_single_stream(self, mock_run, bt):
         """Single stream should still work."""
         list_result = MagicMock()
@@ -84,7 +84,7 @@ class TestMoveStreamAll:
                       if 'move-sink-input' in c[0][0]]
         assert len(move_calls) == 1
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_handles_no_streams(self, mock_run, bt):
         """No streams — should not crash."""
         list_result = MagicMock()
@@ -104,7 +104,7 @@ class TestMoveStreamAll:
 class TestDeactivateAudioNonBlocking:
     """Verify _deactivate_audio updates state synchronously but offloads subprocess work."""
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_state_updated_before_subprocess(self, mock_run, bt, callbacks):
         """State flags and callbacks should fire before subprocess calls."""
         # Set up: pretend audio is active with a connected device
@@ -143,7 +143,7 @@ class TestDeactivateAudioNonBlocking:
         # Subprocess should have been called (in background thread)
         assert mock_run.called
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_generation_bumped_synchronously(self, mock_run, bt):
         """Audio generation should increment to cancel in-flight activations."""
         bt._audio_active = True
@@ -161,7 +161,7 @@ class TestDeactivateAudioNonBlocking:
 class TestAutoReconnectStrategy:
     """Verify auto-reconnect tries lightweight connect before heavy _reliable_connect."""
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_light_connect_tried_first(self, mock_run, bt, settings):
         """When device is unreachable, only _bt_connect is attempted (no adapter restart)."""
         settings.last_bt_device_mac = 'AA:BB:CC:DD:EE:FF'
@@ -195,7 +195,7 @@ class TestAutoReconnectStrategy:
                          if 'systemctl' in str(c)]
         assert len(restart_calls) == 0
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_escalates_when_connected_but_no_sink(self, mock_run, bt, settings):
         """When light connect succeeds but no sink, should escalate to reliable_connect."""
         settings.last_bt_device_mac = 'AA:BB:CC:DD:EE:FF'
@@ -231,7 +231,7 @@ class TestAutoReconnectStrategy:
         # Should have tried connect more than once (light + reliable_connect attempts)
         assert call_count['connect'] >= 2
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_cooldown_prevents_reconnect(self, mock_run, bt, settings):
         """When cooldown is active, should not attempt any connection."""
         bt._reconnect_cooldown = 3
@@ -247,7 +247,7 @@ class TestAutoReconnectStrategy:
         # No subprocess calls at all
         mock_run.assert_not_called()
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_skips_already_connected(self, mock_run, bt, settings):
         """When device is already connected, should not try to reconnect."""
         settings.last_bt_device_mac = 'AA:BB:CC:DD:EE:FF'
@@ -329,7 +329,7 @@ class TestConnectedDeviceThreadSafety:
 class TestAudioGeneration:
     """Verify generation counter prevents stale activate/deactivate races."""
 
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_activate_then_deactivate_cancels(self, mock_run, bt, callbacks):
         """Deactivating while activate thread is pending should cancel it."""
         bt._connected_device = BluetoothDevice(mac='AA:BB:CC:DD:EE:FF', name='Test')
@@ -377,8 +377,8 @@ class TestSettingsBluetooth:
 class TestAdapterRecovery:
     """Verify monitor clears stale state when adapter is down."""
 
-    @patch('berry.managers.bluetooth.sys')
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.sys')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_adapter_down_clears_connected_device(self, mock_run, mock_sys, bt, callbacks):
         """When adapter is off and recovery fails, connected device is cleared."""
         mock_sys.platform = 'linux'
@@ -405,8 +405,8 @@ class TestAdapterRecovery:
         assert bt._audio_active is False
         callbacks['on_audio_changed'].assert_called_with(False)
 
-    @patch('berry.managers.bluetooth.sys')
-    @patch('berry.managers.bluetooth.subprocess.run')
+    @patch('mello.managers.bluetooth.sys')
+    @patch('mello.managers.bluetooth.subprocess.run')
     def test_adapter_recovery_succeeds_continues_poll(self, mock_run, mock_sys, bt):
         """When adapter recovers, normal polling continues."""
         mock_sys.platform = 'linux'
