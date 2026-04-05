@@ -61,6 +61,7 @@ class BluetoothManager:
 
         self._scan_process: Optional[subprocess.Popen] = None
         self._scanning: bool = False
+        self._scan_stop_event = threading.Event()
 
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -129,7 +130,9 @@ class BluetoothManager:
     # ------------------------------------------------------------------
 
     def start_scan(self):
-        """Start BT discovery in background."""
+        """Start continuous BT discovery in background until stop_scan()."""
+        self._scan_stop_event.clear()
+
         def _do():
             self._restart_adapter()
             with self._lock:
@@ -137,41 +140,45 @@ class BluetoothManager:
             self._on_invalidate()
 
             discovered: dict[str, BluetoothDevice] = {}
-            try:
-                proc = subprocess.Popen(
-                    ['bluetoothctl', '--timeout', str(int(BT_SCAN_DURATION)), 'scan', 'on'],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                )
-                with self._lock:
-                    self._scan_process = proc
+            while not self._scan_stop_event.is_set():
+                try:
+                    proc = subprocess.Popen(
+                        ['bluetoothctl', '--timeout', str(int(BT_SCAN_DURATION)), 'scan', 'on'],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    )
+                    with self._lock:
+                        self._scan_process = proc
 
-                for line in proc.stdout:
-                    line = line.strip()
-                    m = re.match(r'\[NEW\]\s+Device\s+([0-9A-Fa-f:]{17})\s+(.*)', line)
-                    if not m:
-                        m = re.match(r'\[CHG\]\s+Device\s+([0-9A-Fa-f:]{17})\s+Name:\s+(.*)', line)
-                    if m:
-                        mac, name = m.group(1), m.group(2).strip()
-                        if not _MAC_NAME_RE.match(name):
-                            discovered[mac] = BluetoothDevice(mac=mac, name=name)
-                            self._update_discovered(discovered)
-            except Exception as e:
-                logger.warning(f'Bluetooth: scan error: {e}')
-            finally:
-                with self._lock:
-                    self._scan_process = None
-                    self._scanning = False
-                self._filter_audio_devices(discovered)
-                self.refresh_paired()
-                self._on_invalidate()
+                    for line in proc.stdout:
+                        line = line.strip()
+                        m = re.match(r'\[NEW\]\s+Device\s+([0-9A-Fa-f:]{17})\s+(.*)', line)
+                        if not m:
+                            m = re.match(r'\[CHG\]\s+Device\s+([0-9A-Fa-f:]{17})\s+Name:\s+(.*)', line)
+                        if m:
+                            mac, name = m.group(1), m.group(2).strip()
+                            if not _MAC_NAME_RE.match(name):
+                                discovered[mac] = BluetoothDevice(mac=mac, name=name)
+                                self._update_discovered(discovered)
+                except Exception as e:
+                    logger.warning(f'Bluetooth: scan error: {e}')
+                finally:
+                    with self._lock:
+                        self._scan_process = None
+                    self._filter_audio_devices(discovered)
+                    self.refresh_paired()
+                    self._on_invalidate()
+
+            with self._lock:
+                self._scanning = False
+            self._on_invalidate()
 
         threading.Thread(target=_do, daemon=True).start()
 
     def stop_scan(self):
+        self._scan_stop_event.set()
         with self._lock:
             proc = self._scan_process
             self._scan_process = None
-            self._scanning = False
         if proc:
             try:
                 proc.terminate()

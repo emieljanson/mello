@@ -732,14 +732,14 @@ class Renderer:
                 label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
                 items.append(('button', f'bt_paired_{i}', label, color))
             items.append(('separator',))
-        if ctx.bt_discovered_devices or ctx.bt_scanning:
-            hdr = 'Found...' if ctx.bt_scanning else 'Found'
-            items.append(('header', hdr))
+        if ctx.bt_discovered_devices:
+            items.append(('header', 'Found'))
             for i, dev in enumerate(ctx.bt_discovered_devices):
                 label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
                 items.append(('button', f'bt_discovered_{i}', label, COLORS['bg_elevated']))
-            if not ctx.bt_discovered_devices and ctx.bt_scanning:
-                items.append(('placeholder',))
+        elif ctx.bt_scanning:
+            items.append(('header', 'Searching...'))
+            items.append(('placeholder',))
         return items
 
     def _build_volume_content(self, ctx: 'RenderContext') -> list:
