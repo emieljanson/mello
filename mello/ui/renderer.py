@@ -247,7 +247,7 @@ class Renderer:
         # Logo (scaled to ~160px wide, rotated to match landscape orientation)
         logo = self.icons.get('logo')
         if logo:
-            logo_width = 160
+            logo_width = 320
             scale = logo_width / logo.get_width()
             logo_scaled = pygame.transform.smoothscale(
                 logo,
