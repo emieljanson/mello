@@ -12,7 +12,7 @@ class PerformanceMonitor:
     def __init__(self):
         self.frame_times: deque = deque(maxlen=PERF_SAMPLE_SIZE)
     
-    def update(self, dt: float, is_animating: bool):
+    def update(self, dt: float):
         """Record frame delta time."""
         self.frame_times.append(dt)
     

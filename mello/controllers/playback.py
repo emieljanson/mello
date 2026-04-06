@@ -91,24 +91,10 @@ class PlaybackController:
 
         if self._play_in_progress or self.play_state.should_show_loading:
             logger.info('Cancelling in-flight play request')
-            self.stop_all()
-            self.volume.mute()
-            logger.info('Pause tap: immediate local mute (while play/loading)')
-            self._set_pause_override('pause_during_loading')
-            self.play_state.set_pending('pause')
-            self.play_state.stop_loading()
-            self._on_invalidate()
-            self._send_transport('pause')
+            self._execute_pause('pause_during_loading')
         elif now_playing.playing:
             logger.info('Pausing...')
-            self.stop_all()
-            self.volume.mute()
-            logger.info('Pause tap: immediate local mute (while playing)')
-            self._set_pause_override('pause_while_playing')
-            self.play_state.set_pending('pause')
-            self.play_state.stop_loading()
-            self._on_invalidate()
-            self._send_transport('pause')
+            self._execute_pause('pause_while_playing')
         elif now_playing.paused:
             logger.info('Resuming...')
             self._clear_pause_override('resume_tap')
@@ -468,6 +454,17 @@ class PlaybackController:
         self._transport_next_allowed[command] = now + 0.35
         fn = self.api.pause if command == 'pause' else self.api.resume
         run_async(fn)
+
+    def _execute_pause(self, reason: str):
+        """Common pause path: stop in-flight work, mute, override, and send transport."""
+        self.stop_all()
+        self.volume.mute()
+        logger.info(f'Pause tap: immediate local mute ({reason})')
+        self._set_pause_override(reason)
+        self.play_state.set_pending('pause')
+        self.play_state.stop_loading()
+        self._on_invalidate()
+        self._send_transport('pause')
 
     def _set_pause_override(self, reason: str, hold_s: float = 1.2):
         """Keep pause intent active briefly to absorb status/API lag."""

@@ -37,6 +37,8 @@ class LibrespotAPI:
             'play': 0.0,
             'pause': 0.0,
             'resume': 0.0,
+            'next': 0.0,
+            'prev': 0.0,
             'volume': 0.0,
         }
         self._backoff_s = {k: 0.0 for k in self._next_allowed_at}
@@ -167,22 +169,30 @@ class LibrespotAPI:
     
     def next(self) -> bool:
         """Skip to next track."""
+        if not self._allow_request('next'):
+            return False
         try:
             resp = self.session.post(f'{self.base_url}/player/next', timeout=2)
             logger.debug(f'Next: {resp.status_code}')
+            self._record_result('next', resp.ok)
             return resp.ok
         except requests.RequestException as e:
             logger.error('Next error', exc_info=True)
+            self._record_result('next', False)
             return False
-    
+
     def prev(self) -> bool:
         """Skip to previous track."""
+        if not self._allow_request('prev'):
+            return False
         try:
             resp = self.session.post(f'{self.base_url}/player/prev', timeout=2)
             logger.debug(f'Prev: {resp.status_code}')
+            self._record_result('prev', resp.ok)
             return resp.ok
         except requests.RequestException as e:
             logger.error('Prev error', exc_info=True)
+            self._record_result('prev', False)
             return False
     
     def seek(self, position: int) -> bool:

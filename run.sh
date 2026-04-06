@@ -57,8 +57,7 @@ EOF
 
     # Start librespot in background
     go-librespot --config_dir ~/.config/go-librespot > /tmp/librespot.log 2>&1 &
-    LIBRESPOT_PID=$!
-    echo "Started go-librespot (PID: $LIBRESPOT_PID)"
+    echo "Started go-librespot"
 
     # Wait for it to be ready
     for i in {1..10}; do

@@ -66,7 +66,7 @@ class EventListener:
                 # Wait before reconnecting (short delay for fast recovery)
                 time.sleep(1)
     
-    def _on_open(self, ws):
+    def _on_open(self, _ws):
         """Handle WebSocket open - notify app on reconnect."""
         if self._was_connected:
             logger.info('WebSocket reconnected')
@@ -76,7 +76,7 @@ class EventListener:
             logger.debug('WebSocket connected')
             self._was_connected = True
     
-    def _on_message(self, ws, message: str):
+    def _on_message(self, _ws, message: str):
         """Handle incoming WebSocket message."""
         try:
             data = json.loads(message)
@@ -91,13 +91,13 @@ class EventListener:
         except Exception as e:
             logger.warning(f'Error parsing event: {e}')
     
-    def _on_error(self, ws, error):
+    def _on_error(self, _ws, error):
         """Handle WebSocket error."""
         # Log errors for debugging - we'll reconnect anyway
         if error:
             logger.debug(f'WebSocket error: {error}')
     
-    def _on_close(self, ws, close_status, close_msg):
+    def _on_close(self, _ws, close_status, close_msg):
         """Handle WebSocket close."""
         if self._was_connected:
             logger.debug('WebSocket disconnected')

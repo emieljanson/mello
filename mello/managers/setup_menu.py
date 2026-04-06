@@ -19,6 +19,9 @@ from ..models import MenuState
 
 _REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
+# SSIDs to exclude when scanning or forgetting WiFi networks
+_WIFI_SKIP_SSIDS = {'Mello-Setup', 'mello-ap', 'mello-setup'}
+
 logger = logging.getLogger(__name__)
 
 
@@ -375,7 +378,7 @@ class SetupMenu:
                 for line in all_result.stdout.strip().split('\n')
                 if line and '802-11-wireless' in line
             ]
-            skip = {'Mello-Setup', 'mello-ap', 'mello-setup'}
+            skip = _WIFI_SKIP_SSIDS
             seen = set()
             ordered = []
             ssid_map = {}
@@ -601,7 +604,7 @@ class SetupMenu:
                 ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
                 capture_output=True, text=True, timeout=5,
             )
-            skip = {'Mello-Setup', 'mello-ap', 'mello-setup'}
+            skip = _WIFI_SKIP_SSIDS
             for line in result.stdout.strip().splitlines():
                 if '802-11-wireless' in line:
                     name = line.split(':')[0]
