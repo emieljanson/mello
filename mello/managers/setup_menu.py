@@ -74,16 +74,16 @@ class SetupMenu:
 
     def show_wifi(self):
         """Open directly to the WiFi screen (skipping main menu)."""
+        if self.state == MenuState.WIFI_AP:
+            logger.info('show_wifi() ignored — AP mode active')
+            return
         self._show_wifi_screen()
 
     def close(self):
         """Close the setup menu, stopping wifi-connect and BT scan if running."""
         logger.info('Setup menu closed')
         if self._wifi_process:
-            try:
-                self._wifi_process.terminate()
-            except Exception:
-                pass
+            self._kill_wifi_processes()
             self._wifi_process = None
         if self.bluetooth and self.state == MenuState.BT_LIST:
             self.bluetooth.stop_scan()
@@ -101,10 +101,7 @@ class SetupMenu:
                 self.close()
             elif self.state == MenuState.WIFI_AP:
                 if self._wifi_process:
-                    try:
-                        self._wifi_process.terminate()
-                    except Exception:
-                        pass
+                    self._kill_wifi_processes()
                     self._wifi_process = None
                     self._reconnect_to_known_network()
                 self.state = MenuState.WIFI_LIST
@@ -400,6 +397,9 @@ class SetupMenu:
 
     def _start_wifi_ap(self):
         logger.info('Setup menu: starting wifi-connect AP')
+        # Clear _wifi_process BEFORE killing old processes, so update()
+        # won't treat the old process's clean exit (code=0) as success.
+        self._wifi_process = None
         self.state = MenuState.WIFI_AP
         self.scroll_offset = 0
         self._on_invalidate()
@@ -420,6 +420,8 @@ class SetupMenu:
                 )
             except Exception:
                 pass
+            self._kill_wifi_processes()
+            self._delete_stale_ap_profile()
             self._launch_wifi_connect()
 
         threading.Thread(target=_prepare_and_launch, daemon=True).start()
@@ -443,6 +445,44 @@ class SetupMenu:
         except Exception as e:
             logger.error(f'Failed to start wifi-connect: {e}')
 
+    def _kill_wifi_processes(self):
+        """Kill any lingering wifi-connect and dnsmasq processes.
+
+        wifi-connect spawns dnsmasq as a child. When we terminate only the
+        sudo wrapper, the real wifi-connect binary and dnsmasq survive,
+        holding port 80 on 192.168.42.1 and causing the next launch to
+        fail with 'Address already in use'.
+        """
+        for name in ('wifi-connect', 'dnsmasq'):
+            try:
+                subprocess.run(
+                    ['sudo', 'pkill', '-f' if name == 'wifi-connect' else '-x', name],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+                )
+            except Exception:
+                pass
+        logger.info('Killed stale wifi-connect/dnsmasq processes')
+
+    def _delete_stale_ap_profile(self):
+        """Delete leftover Mello-Setup AP profile from NetworkManager.
+
+        When wifi-connect exits, it leaves the AP connection profile behind.
+        On the next launch, wifi-connect sees the old profile and deletes it
+        internally, but this triggers NetworkManager to briefly activate the
+        profile's dnsmasq — which then holds the port when wifi-connect tries
+        to start its own dnsmasq. Deleting the profile upfront avoids this.
+        """
+        try:
+            result = subprocess.run(
+                ['sudo', 'nmcli', 'con', 'delete', 'Mello-Setup'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                logger.info('Deleted stale Mello-Setup AP profile')
+            time.sleep(1)
+        except Exception:
+            pass
+
     def _reconnect_to_known_network(self):
         if self.known_networks:
             ssid = self.known_networks[0]
@@ -464,11 +504,7 @@ class SetupMenu:
         logger.info(f'Setup menu: Reconnect to {ssid} (con: {con_name})')
 
         if self._wifi_process:
-            try:
-                self._wifi_process.terminate()
-                logger.info('wifi-connect terminated')
-            except Exception:
-                pass
+            self._kill_wifi_processes()
             self._wifi_process = None
 
         try:
