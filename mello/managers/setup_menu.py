@@ -213,10 +213,23 @@ class SetupMenu:
 
         def _check():
             try:
+                # Verify git repo is healthy before checking
+                git_dir_check = subprocess.run(
+                    ['git', '-C', _REPO_DIR, 'rev-parse', '--git-dir'],
+                    capture_output=True, timeout=5,
+                )
+                if git_dir_check.returncode != 0:
+                    logger.warning('Git repo broken — triggering auto-update to re-clone')
+                    self._on_toast('Repairing install...')
+                    self._update_checking = False
+                    self._on_invalidate()
+                    self._run_update()
+                    return
+
                 branch = subprocess.run(
                     ['git', '-C', _REPO_DIR, 'rev-parse', '--abbrev-ref', 'HEAD'],
                     capture_output=True, text=True, timeout=5,
-                ).stdout.strip()
+                ).stdout.strip() or 'main'
                 result = subprocess.run(
                     ['git', '-C', _REPO_DIR, 'fetch', 'origin', branch],
                     capture_output=True, timeout=15,

@@ -52,6 +52,72 @@ if ! flock -n 9; then
   exit 0
 fi
 
+REPO_URL="https://github.com/emieljanson/mello.git"
+
+# Ensure we have a healthy git repo.  If .git is missing or fetch fails for
+# non-network reasons (corrupt repo, no remote, manual SCP deploy, etc.),
+# re-clone from scratch while preserving user data.
+_ensure_git_repo() {
+  # Quick health-check: is this a valid git repo with the right remote?
+  if git rev-parse --git-dir >/dev/null 2>&1 \
+     && git remote get-url origin 2>/dev/null | grep -q "emieljanson/mello"; then
+    return 0  # repo looks fine
+  fi
+
+  log "Git repo missing or broken — re-cloning from $REPO_URL"
+  local parent
+  parent="$(dirname "$(pwd)")"
+  local current
+  current="$(basename "$(pwd)")"
+
+  # Backup user data
+  local data_backup="/tmp/mello-reclone-data.$$"
+  if [ -d data ] && [ "$(ls -A data/ 2>/dev/null)" ]; then
+    cp -a data "$data_backup"
+  fi
+
+  # Backup env file
+  local env_backup="/tmp/mello-reclone-env.$$"
+  if [ -f .mello-env ]; then
+    cp .mello-env "$env_backup"
+  fi
+
+  # Re-clone into a temp dir, then swap
+  local tmp_clone="/tmp/mello-reclone-repo.$$"
+  if ! git clone --depth 1 "$REPO_URL" "$tmp_clone" 2>/dev/null; then
+    log "Re-clone failed (network issue?), will retry next run"
+    rm -rf "$tmp_clone" "$data_backup" "$env_backup"
+    exit 0
+  fi
+
+  # Swap: move broken dir out, move clone in
+  cd "$parent"
+  mv "$current" "/tmp/mello-broken-backup.$$"
+  mv "$tmp_clone" "$current"
+  cd "$current"
+
+  # Unshallow so future fetches work normally
+  git fetch --unshallow origin main 2>/dev/null || true
+
+  # Restore user data and env
+  if [ -d "$data_backup" ]; then
+    mkdir -p data
+    cp -a "$data_backup"/. data/ 2>/dev/null || true
+    rm -rf "$data_backup"
+  fi
+  if [ -f "$env_backup" ]; then
+    cp "$env_backup" .mello-env
+    rm -f "$env_backup"
+  fi
+
+  # Clean up broken backup (keep for a bit in case of issues)
+  rm -rf "/tmp/mello-broken-backup.$$"
+
+  log "Re-clone complete, repo is healthy"
+}
+
+_ensure_git_repo
+
 # Always converge to origin/main regardless of local state.
 if ! git fetch origin main 2>/dev/null; then
   log "Fetch failed (network issue?), will retry next run"
