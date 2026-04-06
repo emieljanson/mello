@@ -468,6 +468,46 @@ _migrate_005() {
 }
 
 # ============================================
+# Migration 006: Plymouth boot splash
+# ============================================
+_migrate_006() {
+  local CODE_DIR="$HOME/mello"
+
+  # 1. Install Plymouth
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq plymouth plymouth-themes
+
+  # 2. Copy theme files to system directory
+  local THEME_DIR="/usr/share/plymouth/themes/mello"
+  sudo mkdir -p "$THEME_DIR"
+  sudo cp "$CODE_DIR/pi/plymouth/mello.plymouth" "$THEME_DIR/"
+  sudo cp "$CODE_DIR/pi/plymouth/mello.script" "$THEME_DIR/"
+  sudo cp "$CODE_DIR/pi/plymouth/mello-logo-boot.png" "$THEME_DIR/"
+
+  # 3. Set Mello as the default Plymouth theme
+  sudo plymouth-set-default-theme mello
+
+  # 4. Add plymouth.ignore-serial-consoles to cmdline.txt
+  #    Prevents Plymouth from disabling itself on serial console setups
+  local BOOT_CMDLINE="/boot/firmware/cmdline.txt"
+  [ -f "$BOOT_CMDLINE" ] || BOOT_CMDLINE="/boot/cmdline.txt"
+  if [ -f "$BOOT_CMDLINE" ]; then
+    if ! grep -q "plymouth.ignore-serial-consoles" "$BOOT_CMDLINE"; then
+      sudo sed -i 's/$/ plymouth.ignore-serial-consoles/' "$BOOT_CMDLINE"
+    fi
+  fi
+
+  # 5. Update initramfs to include Plymouth
+  if ls /boot/initrd* &>/dev/null || ls /boot/firmware/initramfs* &>/dev/null; then
+    sudo update-initramfs -u
+  else
+    sudo update-initramfs -c -k "$(uname -r)"
+  fi
+
+  log "Plymouth boot splash installed — takes effect on next reboot"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -475,3 +515,4 @@ run_migration "002" "Install pactl (missing from 001 on Trixie)"
 run_migration "003" "Dynamic username support"
 run_migration "004" "Berry to Mello rebrand"
 run_migration "005" "Tomo to Mello rebrand"
+run_migration "006" "Plymouth boot splash"

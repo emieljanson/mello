@@ -81,6 +81,23 @@ if [ -n "$BOOT_CONFIG" ]; then
     echo "  Quiet boot configured"
     BOOT_CHANGED=true
   fi
+
+  # Plymouth boot splash (Mello logo on black during boot)
+  echo "Installing Plymouth boot splash..."
+  sudo apt-get install -y -qq plymouth plymouth-themes
+  sudo mkdir -p /usr/share/plymouth/themes/mello
+  sudo cp ~/mello/pi/plymouth/* /usr/share/plymouth/themes/mello/
+  sudo plymouth-set-default-theme mello
+  if [ -f "$BOOT_CMDLINE" ] && ! grep -q "plymouth.ignore-serial-consoles" "$BOOT_CMDLINE"; then
+    sudo sed -i 's/$/ plymouth.ignore-serial-consoles/' "$BOOT_CMDLINE"
+  fi
+  if ls /boot/initrd* &>/dev/null || ls /boot/firmware/initramfs* &>/dev/null; then
+    sudo update-initramfs -u
+  else
+    sudo update-initramfs -c -k "$(uname -r)"
+  fi
+  echo "  Plymouth boot splash configured"
+  BOOT_CHANGED=true
 fi
 
 # ============================================

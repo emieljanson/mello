@@ -205,9 +205,28 @@ if [ -f "$CODE_DIR/.mello-env" ]; then
 fi
 
 # ============================================
-# 3. Update systemd services
+# 3. Sync Plymouth boot splash theme (if installed)
+# ============================================
+if [ -d /usr/share/plymouth/themes/mello ]; then
+  PLYMOUTH_CHANGED=false
+  for f in mello-logo-boot.png mello.script mello.plymouth; do
+    if ! diff -q "$CODE_DIR/pi/plymouth/$f" "/usr/share/plymouth/themes/mello/$f" &>/dev/null; then
+      PLYMOUTH_CHANGED=true
+      break
+    fi
+  done
+  if [ "$PLYMOUTH_CHANGED" = true ]; then
+    log "Updating Plymouth boot splash theme"
+    sudo cp "$CODE_DIR/pi/plymouth/"* /usr/share/plymouth/themes/mello/
+    sudo update-initramfs -u
+  fi
+fi
+
+# ============================================
+# 4. Update systemd services
 # ============================================
 log "Updating systemd services"
+
 # Render templated services with install-time user/home/uid
 for tmpl in "$CODE_DIR/pi/systemd/"*.service.template; do
   [ -f "$tmpl" ] || continue
@@ -225,7 +244,7 @@ done
 sudo systemctl daemon-reload
 
 # ============================================
-# 4. Restart services
+# 5. Restart services
 # ============================================
 log "Restarting services"
 sudo systemctl restart mello-librespot mello-native

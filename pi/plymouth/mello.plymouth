@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Mello
+Description=Mello boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/mello
+ScriptFile=/usr/share/plymouth/themes/mello/mello.script
