@@ -2,6 +2,7 @@
 Description=Mello Music Player
 After=mello-touch-fix.service
 Wants=mello-librespot.service
+Conflicts=getty@tty1.service
 
 [Service]
 Type=simple

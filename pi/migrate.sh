@@ -519,6 +519,23 @@ DROPEOF
 }
 
 # ============================================
+# Migration 007: Mask getty@tty1 (missed by older installs)
+# ============================================
+_migrate_007() {
+  # setup.sh masks getty@tty1 so mello-native can own /dev/tty1, but devices
+  # installed before that line was added still have it enabled.  When an
+  # auto-update restarts mello-native, getty can race for the TTY and block
+  # the service's ExecStartPre from completing (timeout → restart loop).
+  if systemctl is-enabled getty@tty1.service &>/dev/null; then
+    sudo systemctl stop getty@tty1.service 2>/dev/null || true
+    sudo systemctl mask getty@tty1.service 2>/dev/null || true
+    log "Masked getty@tty1.service"
+  else
+    log "getty@tty1 already masked, skipping"
+  fi
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -527,3 +544,4 @@ run_migration "003" "Dynamic username support"
 run_migration "004" "Berry to Mello rebrand"
 run_migration "005" "Tomo to Mello rebrand"
 run_migration "006" "Plymouth boot splash"
+run_migration "007" "Mask getty@tty1 (missed by older installs)"
