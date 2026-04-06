@@ -84,7 +84,7 @@ git reset --hard origin/main
 
 # Restore any data files that git pull deleted
 if [ -d "$DATA_BACKUP" ]; then
-  cp -an "$DATA_BACKUP"/. data/ 2>/dev/null || true
+  cp -a "$DATA_BACKUP"/. data/ 2>/dev/null || true
   rm -rf "$DATA_BACKUP"
 fi
 
