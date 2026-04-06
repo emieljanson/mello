@@ -806,7 +806,7 @@ class Mello:
             if dt > spike_threshold and target_fps > 5:
                 logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
             
-            self.perf_monitor.update(dt, is_animating)
+            self.perf_monitor.update(dt)
             self._log_fps_if_due(target_fps)
         
         # Save progress before shutdown

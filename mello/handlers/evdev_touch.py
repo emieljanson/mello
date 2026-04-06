@@ -36,7 +36,8 @@ class EvdevTouchHandler:
         # doesn't reliably wake pygame.event.wait in KMSDRM mode)
         self.wake_event = threading.Event()
 
-        # Touch state
+        # Touch state (written from reader thread, read from main thread)
+        self._touch_lock = threading.Lock()
         self._touch_x = 0
         self._touch_y = 0
         self._touching = False
@@ -128,39 +129,47 @@ class EvdevTouchHandler:
                 
                 # Handle touch position
                 if event.type == ecodes.EV_ABS:
-                    if event.code == ecodes.ABS_X or event.code == ecodes.ABS_MT_POSITION_X:
-                        self._touch_x = event.value
-                    elif event.code == ecodes.ABS_Y or event.code == ecodes.ABS_MT_POSITION_Y:
-                        self._touch_y = event.value
-                
+                    with self._touch_lock:
+                        if event.code == ecodes.ABS_X or event.code == ecodes.ABS_MT_POSITION_X:
+                            self._touch_x = event.value
+                        elif event.code == ecodes.ABS_Y or event.code == ecodes.ABS_MT_POSITION_Y:
+                            self._touch_y = event.value
+
                 # Handle touch down/up
                 elif event.type == ecodes.EV_KEY and event.code == ecodes.BTN_TOUCH:
-                    pos = self._scale_coordinates(self._touch_x, self._touch_y)
-                    
+                    with self._touch_lock:
+                        pos = self._scale_coordinates(self._touch_x, self._touch_y)
+
                     if event.value == 1:  # Touch down
-                        self._touching = True
+                        with self._touch_lock:
+                            self._touching = True
                         self.wake_event.set()
                         pygame.event.post(pygame.event.Event(
                             pygame.MOUSEBUTTONDOWN,
                             {'pos': pos, 'button': 1}
                         ))
                         logger.debug(f'Touch DOWN at {pos}')
-                    
+
                     elif event.value == 0:  # Touch up
-                        self._touching = False
+                        with self._touch_lock:
+                            self._touching = False
                         pygame.event.post(pygame.event.Event(
                             pygame.MOUSEBUTTONUP,
                             {'pos': pos, 'button': 1}
                         ))
                         logger.debug(f'Touch UP at {pos}')
-                
+
                 # Handle touch move (SYN_REPORT indicates end of event batch)
-                elif event.type == ecodes.EV_SYN and self._touching:
-                    pos = self._scale_coordinates(self._touch_x, self._touch_y)
-                    pygame.event.post(pygame.event.Event(
-                        pygame.MOUSEMOTION,
-                        {'pos': pos, 'rel': (0, 0), 'buttons': (1, 0, 0)}
-                    ))
+                elif event.type == ecodes.EV_SYN:
+                    with self._touch_lock:
+                        touching = self._touching
+                        if touching:
+                            pos = self._scale_coordinates(self._touch_x, self._touch_y)
+                    if touching:
+                        pygame.event.post(pygame.event.Event(
+                            pygame.MOUSEMOTION,
+                            {'pos': pos, 'rel': (0, 0), 'buttons': (1, 0, 0)}
+                        ))
         
         except Exception as e:
             if self._running:

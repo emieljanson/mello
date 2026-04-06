@@ -8,6 +8,7 @@ Handles:
 - Progress tracking for resume
 """
 import json
+import os
 import time
 import hashlib
 import logging
@@ -62,6 +63,7 @@ class CatalogManager:
         # Thread locks for file operations
         self._catalog_lock = threading.Lock()
         self._progress_lock = threading.Lock()
+        self._playlist_covers_lock = threading.Lock()
         
         # Ensure images directory exists
         self.images_path.mkdir(parents=True, exist_ok=True)
@@ -111,7 +113,6 @@ class CatalogManager:
                 temp_data = json.loads(temp_path.read_text())
                 if isinstance(temp_data, dict) and 'items' in temp_data:
                     logger.info('Recovering from temp file...')
-                    import os
                     os.replace(temp_path, self.catalog_path)
                     logger.info('Recovery successful')
                 else:
@@ -196,7 +197,6 @@ class CatalogManager:
                 # Write to temp file
                 temp_path.write_text(json.dumps(catalog, indent=2))
                 # Atomic rename (os.replace is atomic on POSIX)
-                import os
                 os.replace(temp_path, self.catalog_path)
             except Exception:
                 # Clean up temp file on error
@@ -379,49 +379,54 @@ class CatalogManager:
     
     def collect_cover_for_playlist(self, context_uri: str, cover_url: str) -> bool:
         """Collect album cover URL for playlist composite (max 4 unique).
-        
+
         Stores URLs for later composite creation. Returns True if a new URL was added.
         """
         if 'playlist' not in context_uri or not cover_url:
             return False
-        
-        if context_uri not in self.playlist_covers:
-            self.playlist_covers[context_uri] = {}
-        
-        covers = self.playlist_covers[context_uri]
-        if len(covers) >= 4:
-            return False  # Already have 4 covers
-        
+
+        with self._playlist_covers_lock:
+            if context_uri not in self.playlist_covers:
+                self.playlist_covers[context_uri] = {}
+
+            covers = self.playlist_covers[context_uri]
+            if len(covers) >= 4:
+                return False  # Already have 4 covers
+
         # Skip if we've already tried this URL recently
         url_key = f'{context_uri}:{cover_url}'
         if url_key in self._tried_cover_urls:
             return False
-        
+
         # Cleanup if cache is too large (prevent memory growth)
         if len(self._tried_cover_urls) > self._max_tried_urls:
             logger.debug(f'Clearing tried URLs cache ({len(self._tried_cover_urls)} entries)')
             self._tried_cover_urls.clear()
-        
+
         self._tried_cover_urls.add(url_key)
-        
+
         try:
-            # Download to get hash for deduplication
+            # Download to get hash for deduplication (outside lock — network I/O)
             response = requests.get(cover_url, timeout=10)
             response.raise_for_status()
             buffer = response.content
             hash_full = hashlib.md5(buffer).hexdigest()
             hash_short = hash_full[:8]
-            
-            # Skip if already have this hash for this context
-            if hash_short in covers:
-                logger.debug(f'Cover already collected (same album): {len(covers)}/4')
-                return False
-            
-            # Store URL and buffer for later composite creation
-            covers[hash_short] = {'url': cover_url, 'buffer': buffer}
-            logger.info(f'Collected cover {len(covers)}/4 for playlist')
-            
-            # Create composite if we have enough covers
+
+            with self._playlist_covers_lock:
+                # Re-check under lock
+                covers = self.playlist_covers.get(context_uri, {})
+
+                # Skip if already have this hash for this context
+                if hash_short in covers:
+                    logger.debug(f'Cover already collected (same album): {len(covers)}/4')
+                    return False
+
+                # Store URL and buffer for later composite creation
+                covers[hash_short] = {'url': cover_url, 'buffer': buffer}
+                logger.info(f'Collected cover {len(covers)}/4 for playlist')
+
+            # Create composite if we have enough covers (outside lock)
             if len(covers) >= 4:
                 self._update_playlist_covers_if_needed(context_uri)
             
@@ -439,16 +444,16 @@ class CatalogManager:
         
         Generates 4 variants like regular images for fast runtime loading.
         """
-        if context_uri not in self.playlist_covers:
-            return None
-        
-        covers = self.playlist_covers[context_uri]
-        if not covers:
-            return None
-        
-        try:
-            # Get cover buffers
+        with self._playlist_covers_lock:
+            if context_uri not in self.playlist_covers:
+                return None
+            covers = self.playlist_covers[context_uri]
+            if not covers:
+                return None
+            # Snapshot buffers under lock
             cover_buffers = [c['buffer'] for c in covers.values()]
+
+        try:
             
             # Pad to 4 by repeating
             while len(cover_buffers) < 4 and cover_buffers:
@@ -514,7 +519,8 @@ class CatalogManager:
         
         Will update existing composites if new unique covers are collected.
         """
-        covers = self.playlist_covers.get(context_uri, {})
+        with self._playlist_covers_lock:
+            covers = self.playlist_covers.get(context_uri, {})
         if len(covers) < 4:
             return  # Wait until we have 4 covers
         
@@ -545,9 +551,10 @@ class CatalogManager:
     
     def get_collected_covers(self, context_uri: str) -> Optional[List[str]]:
         """Get collected cover image paths for a playlist."""
-        if context_uri in self.playlist_covers:
-            return list(self.playlist_covers[context_uri].values())
-        return None
+        with self._playlist_covers_lock:
+            if context_uri in self.playlist_covers:
+                return list(self.playlist_covers[context_uri].values())
+            return None
     
     # ============================================
     # SAVE & DELETE
@@ -595,8 +602,9 @@ class CatalogManager:
                     local_image = image_url
             
             # For playlists: create composite from collected covers
-            if not local_image and item_data.get('type') == 'playlist' and uri in self.playlist_covers:
-                covers = self.playlist_covers[uri]
+            if not local_image and item_data.get('type') == 'playlist':
+                with self._playlist_covers_lock:
+                    covers = self.playlist_covers.get(uri, {})
                 if covers:
                     local_image = self._create_composite_from_collected(uri)
                     if local_image:
@@ -685,7 +693,6 @@ class CatalogManager:
             temp_path = self.progress_path.with_suffix('.json.tmp')
             try:
                 temp_path.write_text(json.dumps(data, indent=2))
-                import os
                 os.replace(temp_path, self.progress_path)
             except Exception:
                 if temp_path.exists():
