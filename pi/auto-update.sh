@@ -76,11 +76,14 @@ _ensure_git_repo() {
     cp -a data "$data_backup"
   fi
 
-  # Backup env file
+  # Backup env file (support transitional names)
   local env_backup="/tmp/mello-reclone-env.$$"
-  if [ -f .mello-env ]; then
-    cp .mello-env "$env_backup"
-  fi
+  for env_file in .mello-env .tomo-env .berry-env; do
+    if [ -f "$env_file" ]; then
+      cp "$env_file" "$env_backup"
+      break
+    fi
+  done
 
   # Re-clone into a temp dir, then swap
   local tmp_clone="/tmp/mello-reclone-repo.$$"
@@ -93,7 +96,12 @@ _ensure_git_repo() {
   # Swap: move broken dir out, move clone in
   cd "$parent"
   mv "$current" "/tmp/mello-broken-backup.$$"
-  mv "$tmp_clone" "$current"
+  if ! mv "$tmp_clone" "$current"; then
+    log "Swap failed — restoring original directory"
+    mv "/tmp/mello-broken-backup.$$" "$current"
+    rm -rf "$tmp_clone" "$data_backup" "$env_backup"
+    exit 1
+  fi
   cd "$current"
 
   # Unshallow so future fetches work normally
