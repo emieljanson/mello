@@ -45,4 +45,5 @@ class RenderContext:
     update_checking: bool = False
     update_available: bool = False
     update_running: bool = False
+    has_network: bool = True
 

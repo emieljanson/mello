@@ -63,6 +63,7 @@ class Renderer:
         # Button hit rectangles (updated during draw)
         self.add_button_rect: Optional[Tuple[int, int, int, int]] = None
         self.delete_button_rect: Optional[Tuple[int, int, int, int]] = None
+        self.settings_button_rect: Optional[Tuple[int, int, int, int]] = None
         
         # Menu button rects (updated when menu is drawn)
         self.menu_button_rects: Dict[str, pygame.Rect] = {}
@@ -125,12 +126,14 @@ class Renderer:
         if ctx.menu_state != MenuState.CLOSED:
             self.add_button_rect = None
             self.delete_button_rect = None
+            self.settings_button_rect = None
             self._draw_menu_frame(ctx)
             return None
-        
+
         # Clear button hit rects
         self.add_button_rect = None
         self.delete_button_rect = None
+        self.settings_button_rect = None
         
         current_item = ctx.items[ctx.selected_index] if ctx.selected_index < len(ctx.items) else None
         current_track_key = self._get_track_key(
@@ -161,7 +164,7 @@ class Renderer:
         # Empty state
         if not ctx.items:
             self._draw_background()
-            self._draw_empty_state()
+            self._draw_empty_state(ctx)
             self._needs_full_redraw = True
             return None
         
@@ -239,7 +242,7 @@ class Renderer:
         text_surface = font.render(text, True, color)
         return pygame.transform.rotate(text_surface, -90)  # -90 = 90° CW
     
-    def _draw_empty_state(self):
+    def _draw_empty_state(self, ctx: RenderContext):
         """Draw idle screen when catalog is empty (portrait mode)."""
         center_x = SCREEN_WIDTH // 2
         center_y = SCREEN_HEIGHT // 2
@@ -257,13 +260,35 @@ class Renderer:
             logo_rect = logo_rotated.get_rect(center=(center_x + 80, center_y))
             self.screen.blit(logo_rotated, logo_rect)
 
-        line1 = self._render_text_rotated('Play to Mello via Spotify', self.font_medium, COLORS['text_secondary'])
-        line1_rect = line1.get_rect(center=(center_x - 30, center_y))
-        self.screen.blit(line1, line1_rect)
+        if not ctx.has_network:
+            # No internet: show message + tappable Settings button
+            line1 = self._render_text_rotated('No internet connection', self.font_medium, COLORS['text_secondary'])
+            line1_rect = line1.get_rect(center=(center_x - 30, center_y))
+            self.screen.blit(line1, line1_rect)
 
-        line2 = self._render_text_rotated('Tap + to save', self.font_medium, COLORS['text_secondary'])
-        line2_rect = line2.get_rect(center=(center_x - 60, center_y))
-        self.screen.blit(line2, line2_rect)
+            # Settings button with rounded-rect background
+            btn_text = self._render_text_rotated('Settings', self.font_medium, COLORS['text_primary'])
+            btn_text_rect = btn_text.get_rect(center=(center_x - 70, center_y))
+            pad_x, pad_y = 14, 10
+            btn_bg = pygame.Rect(
+                btn_text_rect.x - pad_x,
+                btn_text_rect.y - pad_y,
+                btn_text_rect.width + pad_x * 2,
+                btn_text_rect.height + pad_y * 2,
+            )
+            pygame.draw.rect(self.screen, COLORS['accent'], btn_bg, border_radius=12)
+            self.screen.blit(btn_text, btn_text_rect)
+            self.settings_button_rect = (btn_bg.x, btn_bg.y, btn_bg.width, btn_bg.height)
+        else:
+            # Normal empty state: Spotify instructions
+            self.settings_button_rect = None
+            line1 = self._render_text_rotated('Play to Mello via Spotify', self.font_medium, COLORS['text_secondary'])
+            line1_rect = line1.get_rect(center=(center_x - 30, center_y))
+            self.screen.blit(line1, line1_rect)
+
+            line2 = self._render_text_rotated('Tap + to save', self.font_medium, COLORS['text_secondary'])
+            line2_rect = line2.get_rect(center=(center_x - 60, center_y))
+            self.screen.blit(line2, line2_rect)
     
     def _draw_track_info(self, item: Optional[CatalogItem], ctx: RenderContext):
         """Draw track name and artist (portrait mode - at user's top)."""
