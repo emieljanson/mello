@@ -336,6 +336,7 @@ class Mello:
             'headphone': 'headphone.png',
             'close': 'close.png',
             'back': 'back.png',
+            'logo': 'mello-logo.png',
         }
         for name, filename in icon_files.items():
             try:
