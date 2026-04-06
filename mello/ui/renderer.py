@@ -254,15 +254,15 @@ class Renderer:
                 (logo_width, int(logo.get_height() * scale)),
             )
             logo_rotated = pygame.transform.rotate(logo_scaled, -90)
-            logo_rect = logo_rotated.get_rect(center=(center_x + 60, center_y))
+            logo_rect = logo_rotated.get_rect(center=(center_x + 80, center_y))
             self.screen.blit(logo_rotated, logo_rect)
 
         line1 = self._render_text_rotated('Play to Mello via Spotify', self.font_medium, COLORS['text_secondary'])
-        line1_rect = line1.get_rect(center=(center_x - 20, center_y))
+        line1_rect = line1.get_rect(center=(center_x - 30, center_y))
         self.screen.blit(line1, line1_rect)
 
         line2 = self._render_text_rotated('Tap + to save', self.font_medium, COLORS['text_secondary'])
-        line2_rect = line2.get_rect(center=(center_x - 50, center_y))
+        line2_rect = line2.get_rect(center=(center_x - 60, center_y))
         self.screen.blit(line2, line2_rect)
     
     def _draw_track_info(self, item: Optional[CatalogItem], ctx: RenderContext):
