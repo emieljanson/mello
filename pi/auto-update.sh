@@ -110,6 +110,15 @@ _ensure_git_repo() {
     rm -f "$env_backup"
   fi
 
+  # Recreate venv (pygame is installed via apt, so --system-site-packages
+  # is required for the venv to see it).
+  log "Recreating venv"
+  rm -rf venv
+  python3 -m venv --system-site-packages venv
+  source venv/bin/activate
+  pip install -q --disable-pip-version-check -r requirements.txt
+  deactivate
+
   # Clean up broken backup (keep for a bit in case of issues)
   rm -rf "/tmp/mello-broken-backup.$$"
 
