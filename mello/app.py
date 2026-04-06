@@ -24,7 +24,7 @@ from .config import (
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
-from .models import CatalogItem, NowPlaying, LibrespotStatus
+from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
 from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
@@ -1928,7 +1928,9 @@ class Mello:
             self._cover_collect_context = None
         
         was_awake = not self.sleep_manager.is_sleeping
-        self.sleep_manager.check_sleep(self.now_playing.playing)
+        # Don't sleep while the setup menu is open (e.g. WiFi AP mode)
+        menu_open = self.setup_menu.state != MenuState.CLOSED
+        self.sleep_manager.check_sleep(self.now_playing.playing or menu_open)
         if was_awake and self.sleep_manager.is_sleeping:
             self.bluetooth.pause_monitoring()
             idle = time.time() - self.sleep_manager.last_activity
