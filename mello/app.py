@@ -317,6 +317,10 @@ class Mello:
         
         # Startup gate: blocks auto-play until _initial_connect completes
         self._startup_ready = False
+
+        # Cached network status (avoid shelling out to nmcli every frame)
+        self._cached_has_network: bool = True
+        self._network_check_time: float = 0.0
         
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -1260,7 +1264,13 @@ class Mello:
             if bx <= x <= bx + bw and by <= y <= by + bh:
                 self._delete_current_item()
                 return True
-        
+
+        if self.renderer.settings_button_rect:
+            bx, by, bw, bh = self.renderer.settings_button_rect
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                self.setup_menu.open()
+                return True
+
         return False
     
     def _handle_touch_up(self, pos):
@@ -1536,6 +1546,14 @@ class Mello:
             return result.stdout.strip().lower().startswith('connected')
         except Exception:
             return True
+
+    def _get_cached_network_status(self) -> bool:
+        """Return cached network status, refreshing every 10 seconds."""
+        now = time.time()
+        if now - self._network_check_time >= 10:
+            self._cached_has_network = self._has_network_connection()
+            self._network_check_time = now
+        return self._cached_has_network
 
     def _initial_connect(self):
         """Initial connection with fast retries then slower backoff.
@@ -2142,6 +2160,7 @@ class Mello:
             update_available=self.setup_menu._update_available,
             update_running=self.setup_menu._update_running,
             reset_confirm_pending=self.setup_menu._reset_confirm_pending,
+            has_network=self._get_cached_network_status(),
         )
         return self.renderer.draw(ctx)
 
