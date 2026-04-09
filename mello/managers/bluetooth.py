@@ -688,6 +688,10 @@ class BluetoothManager:
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'],
                            timeout=5, capture_output=True)
             time.sleep(2)
+            # hci0 down triggers an RF soft-block on some Debian installs (Trixie).
+            # rfkill unblock is needed before hci0 up can power on the adapter.
+            subprocess.run(['sudo', '/usr/sbin/rfkill', 'unblock', 'bluetooth'],
+                           timeout=5, capture_output=True)
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'],
                            timeout=5, capture_output=True)
             time.sleep(1)

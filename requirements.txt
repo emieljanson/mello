@@ -6,4 +6,5 @@ websocket-client>=1.7.0
 Pillow>=10.0.0
 numpy>=1.24.0
 evdev>=1.7.0; sys_platform == 'linux'
+dbus-fast>=2.0.0; sys_platform == 'linux'
 posthog>=3.0.0

@@ -564,17 +564,17 @@ _migrate_009() {
     log "sudoers file not found, skipping"
     return
   fi
-  # Already has hci0 down → already migrated
-  if sudo grep -q 'hciconfig hci0 down' "$SUDOERS"; then
-    log "sudoers already has hci0 down, skipping"
+  # Already has rfkill → fully migrated
+  if sudo grep -q 'rfkill' "$SUDOERS"; then
+    log "sudoers already has rfkill, skipping"
     return
   fi
-  # Replace the hciconfig entries with both /usr/bin and /usr/sbin paths for up+down
+  # Replace the hciconfig entries with both /usr/bin and /usr/sbin paths for up+down + rfkill
   local TMP="/tmp/mello-sudoers-009.$$"
-  sudo sed 's|/usr/bin/hciconfig hci0 up.*|/usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up, /usr/bin/hciconfig hci0 down, /usr/sbin/hciconfig hci0 down|' "$SUDOERS" > "$TMP"
+  sudo sed 's|/usr/bin/hciconfig hci0 up.*|/usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up, /usr/bin/hciconfig hci0 down, /usr/sbin/hciconfig hci0 down, /usr/sbin/rfkill unblock bluetooth|' "$SUDOERS" > "$TMP"
   if sudo visudo -cf "$TMP"; then
     sudo install -m 440 "$TMP" "$SUDOERS"
-    log "sudoers updated: added hciconfig hci0 down + /usr/sbin paths"
+    log "sudoers updated: added hciconfig down, /usr/sbin paths, rfkill"
   else
     log "ERROR: sudoers validation failed, skipping"
   fi
