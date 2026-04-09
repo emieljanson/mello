@@ -1,8 +1,17 @@
 #!/bin/bash
 # Mello One-Line Installer
 # Usage: curl -sSL https://raw.githubusercontent.com/emieljanson/mello/main/install.sh | bash
+# Options: --no-analytics  Disable anonymous usage data
 
 set -e
+
+# Parse flags to pass through to setup.sh
+SETUP_FLAGS=""
+for arg in "$@"; do
+  case "$arg" in
+    --no-analytics) SETUP_FLAGS="$SETUP_FLAGS --no-analytics" ;;
+  esac
+done
 
 echo ""
 echo "Mello Installer"
@@ -32,4 +41,4 @@ echo ""
 echo "Running setup..."
 cd ~/mello/pi
 chmod +x setup.sh
-./setup.sh
+./setup.sh $SETUP_FLAGS

@@ -45,6 +45,12 @@ curl -sSL https://raw.githubusercontent.com/emieljanson/mello/main/install.sh | 
 sudo reboot
 ```
 
+To install without anonymous usage analytics:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/emieljanson/mello/main/install.sh | bash -s -- --no-analytics
+```
+
 ### 3. Connect Spotify
 
 1. Open Spotify on your phone
