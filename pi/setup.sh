@@ -4,6 +4,14 @@
 
 set -euo pipefail
 
+# Parse flags
+NO_ANALYTICS=false
+for arg in "$@"; do
+  case "$arg" in
+    --no-analytics) NO_ANALYTICS=true ;;
+  esac
+done
+
 # Detect installing user (used for systemd services, permissions, sudoers)
 MELLO_USER="$USER"
 MELLO_HOME="$HOME"
@@ -243,20 +251,11 @@ mkdir -p data/images
 # ============================================
 # 8. Anonymous usage data
 # ============================================
-echo ""
-echo "Mello collects anonymous usage data (play/pause sessions,"
-echo "   sleep/wake events) to help improve the project."
-echo "   No personal data or music choices are shared."
-echo ""
-read -rp "   Share anonymous usage data? [Y/n] " ANALYTICS_CHOICE
-ANALYTICS_CHOICE="${ANALYTICS_CHOICE:-Y}"
-
-if [[ "$ANALYTICS_CHOICE" =~ ^[Nn] ]]; then
+if [ "$NO_ANALYTICS" = true ]; then
   SHARE_USAGE=false
-  echo "  Usage data sharing disabled"
+  echo "Usage data sharing disabled (--no-analytics)"
 else
   SHARE_USAGE=true
-  echo "  Usage data sharing enabled — thank you!"
 fi
 
 # Write to settings.json (merge with existing if present)

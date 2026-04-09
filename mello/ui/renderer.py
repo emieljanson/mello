@@ -511,7 +511,7 @@ class Renderer:
         """Draw a tinted icon button on the cover. Returns (x, y, w, h) hit rect."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
         btn_size, icon_size, margin = 100, 72, 16
-        touch_padding = 30
+        touch_padding = 60
         circle_radius = int(icon_size * (42 / 56) / 2)
         btn_x = cover_x + margin
         btn_y = cover_y + cover_h - btn_size - margin
