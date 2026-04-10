@@ -103,6 +103,7 @@ class SetupMenu:
             if self.state == MenuState.MAIN:
                 self.close()
             elif self.state == MenuState.WIFI_AP:
+                self._restore_wifi_autoconnect()
                 if self._wifi_process:
                     self._kill_wifi_processes()
                     self._wifi_process = None
@@ -195,6 +196,7 @@ class SetupMenu:
             ret = self._wifi_process.poll()
             if ret is not None:
                 self._wifi_process = None
+                self._restore_wifi_autoconnect()
                 if ret == 0:
                     logger.info('wifi-connect exited (code=0)')
                     self._on_toast('WiFi connected!')
@@ -429,6 +431,16 @@ class SetupMenu:
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f'WiFi rescan failed: {e}')
+            # Disable autoconnect BEFORE disconnect — disconnect fails when
+            # wlan0 is already disconnected (exit code 6) and won't suppress
+            # autoconnect, letting NM reclaim wlan0 from the AP.
+            try:
+                subprocess.run(
+                    ['sudo', 'nmcli', 'device', 'set', 'wlan0', 'autoconnect', 'no'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+                )
+            except Exception:
+                pass
             try:
                 subprocess.run(
                     ['sudo', 'nmcli', 'device', 'disconnect', 'wlan0'],
@@ -496,6 +508,16 @@ class SetupMenu:
             if result.returncode == 0:
                 logger.info('Deleted stale Mello-Setup AP profile')
             time.sleep(1)
+        except Exception:
+            pass
+
+    def _restore_wifi_autoconnect(self):
+        """Re-enable NM autoconnect on wlan0 after leaving AP mode."""
+        try:
+            subprocess.run(
+                ['sudo', 'nmcli', 'device', 'set', 'wlan0', 'autoconnect', 'yes'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+            )
         except Exception:
             pass
 
@@ -610,7 +632,7 @@ class SetupMenu:
                     name = line.split(':')[0]
                     if name and name not in skip:
                         subprocess.run(
-                            ['nmcli', 'con', 'delete', name],
+                            ['sudo', 'nmcli', 'con', 'delete', name],
                             capture_output=True, timeout=5,
                         )
             logger.info('WiFi networks forgotten')
