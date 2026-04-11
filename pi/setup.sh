@@ -169,7 +169,6 @@ if [ ! -f ~/.config/go-librespot/config.yml ]; then
 device_name: "Mello"
 device_type: "speaker"
 audio_backend: "alsa"
-audio_device: "pipewire"
 external_volume: true
 initial_volume: 100
 bitrate: 320

@@ -582,6 +582,27 @@ _migrate_009() {
 }
 
 # ============================================
+# Migration 010: Remove go-librespot audio_device (use default sink)
+# ============================================
+_migrate_010() {
+  # Migration 008 set audio_device to "pipewire", but this is an ALSA PCM name
+  # that only works with audio_backend: "alsa". Some devices ended up with
+  # audio_backend: "pulseaudio" where "pipewire" is not a valid sink name,
+  # causing go-librespot to get stuck in buffering state.
+  # Removing audio_device entirely lets go-librespot use the system default
+  # sink, which the Bluetooth manager already configures correctly.
+  local CONFIG="$HOME/.config/go-librespot/config.yml"
+  if [ -f "$CONFIG" ]; then
+    if grep -q 'audio_device:' "$CONFIG"; then
+      sed -i '/^audio_device:/d' "$CONFIG"
+      log "go-librespot config: removed audio_device (will use default sink)"
+    else
+      log "go-librespot config: audio_device already absent, skipping"
+    fi
+  fi
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -593,3 +614,4 @@ run_migration "006" "Plymouth boot splash"
 run_migration "007" "Mask getty@tty1 (missed by older installs)"
 run_migration "008" "Route go-librespot audio through PipeWire"
 run_migration "009" "Update sudoers for hciconfig down+up"
+run_migration "010" "Remove go-librespot audio_device (use default sink)"
