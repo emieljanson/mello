@@ -1,5 +1,3 @@
-![Mello](assets/mello.png)
-
 # Mello
 
 A distraction free Spotify speaker for kids
