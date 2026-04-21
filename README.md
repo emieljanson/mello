@@ -1,6 +1,6 @@
 # Mello
 
-A distraction free Spotify player for kids
+A distraction free Spotify speaker for kids
 
 Kids swipe through album covers and tap to play. Parents control the music library from Spotify on their phone.
 
