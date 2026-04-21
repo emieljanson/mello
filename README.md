@@ -1,7 +1,6 @@
 # Mello
 
-A simple, screen-based music player for kids — built on a Raspberry Pi with a touchscreen.
-
+A distraction free Spotify player for kids
 Kids swipe through album covers and tap to play. Parents control the music library from Spotify on their phone.
 
 <!-- TODO: Add photo of Mello device here -->
