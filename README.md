@@ -4,7 +4,11 @@ A distraction free Spotify speaker for kids
 
 Kids swipe through album covers and tap to play. Parents control the music library from Spotify on their phone.
 
-<!-- TODO: Add photo of Mello device here -->
+![Mello](assets/mello.png)
+
+### Build Video
+
+[![Build video](https://img.youtube.com/vi/4tn8OtKkvs8/maxresdefault.jpg)](https://youtu.be/4tn8OtKkvs8)
 
 ## Features
 
@@ -21,12 +25,14 @@ Kids swipe through album covers and tap to play. Parents control the music libra
 
 ## Hardware
 
-My setup:
-
-- Raspberry Pi 3B (newer models should work too)
-- [Raspberry Pi Touch Display 2](https://www.raspberrypi.com/products/raspberry-pi-touch-display-2/) (5")
-- [WM8960 Audio HAT](https://www.waveshare.com/wm8960-audio-hat.htm)
-- SD card (16GB+)
+| Part | Link |
+|------|------|
+| Raspberry Pi 3 Model B | [Amazon](https://www.amazon.com/dp/B07BDR5PDW) |
+| Raspberry Pi Touch Display 2 (5") | [Amazon](https://www.amazon.com/dp/B0FMYFKDLZ) |
+| WM8960 Audio HAT | [Amazon](https://www.amazon.com/dp/B07KN8424G) |
+| 5.1V 3A USB-C Power Supply | [Amazon](https://www.amazon.com/dp/B07RLG6THK) |
+| USB-C Panel Mount Bushing | [Amazon](https://www.amazon.com/dp/B0CDC1X4BY) |
+| Micro SD Card (16GB+) | — |
 
 ## Quick Start
 
