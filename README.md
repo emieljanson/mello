@@ -1,10 +1,10 @@
+![Mello](assets/mello.png)
+
 # Mello
 
 A distraction free Spotify speaker for kids
 
 Kids swipe through album covers and tap to play. Parents control the music library from Spotify on their phone.
-
-![Mello](assets/mello.png)
 
 ### Build Video
 
