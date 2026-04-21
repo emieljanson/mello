@@ -8,7 +8,7 @@ Kids swipe through album covers and tap to play. Parents control the music libra
 
 ### Build Video
 
-[![Build video](https://img.youtube.com/vi/4tn8OtKkvs8/maxresdefault.jpg)](https://youtu.be/4tn8OtKkvs8)
+<a href="https://youtu.be/4tn8OtKkvs8"><img src="assets/videothumb.png" width="440" alt="Build video"></a>
 
 ## Features
 
@@ -25,12 +25,14 @@ Kids swipe through album covers and tap to play. Parents control the music libra
 
 ## Hardware
 
+Print the case from [MakerWorld](https://makerworld.com/en/models/2692843-distraction-free-spotify-player-for-kids).
+
 | Part | Link |
 |------|------|
 | Raspberry Pi 3 Model B | [Amazon](https://www.amazon.com/dp/B07BDR5PDW) |
 | Raspberry Pi Touch Display 2 (5") | [Amazon](https://www.amazon.com/dp/B0FMYFKDLZ) |
 | WM8960 Audio HAT | [Amazon](https://www.amazon.com/dp/B07KN8424G) |
-| 5.1V 3A USB-C Power Supply | [Amazon](https://www.amazon.com/dp/B07RLG6THK) |
+| 5.1V 3A USB-C Power Supply | [Amazon](https://www.amazon.com/dp/B0CLV6WB4L) |
 | USB-C Panel Mount Bushing | [Amazon](https://www.amazon.com/dp/B0CDC1X4BY) |
 | Micro SD Card (16GB+) | — |
 
