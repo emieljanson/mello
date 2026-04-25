@@ -85,11 +85,17 @@ _ensure_git_repo() {
     fi
   done
 
+  # Backup .env (POSTHOG_API_KEY and any other user secrets)
+  local dotenv_backup="/tmp/mello-reclone-dotenv.$$"
+  if [ -f .env ]; then
+    cp .env "$dotenv_backup"
+  fi
+
   # Re-clone into a temp dir, then swap
   local tmp_clone="/tmp/mello-reclone-repo.$$"
   if ! git clone --depth 1 "$REPO_URL" "$tmp_clone" 2>/dev/null; then
     log "Re-clone failed (network issue?), will retry next run"
-    rm -rf "$tmp_clone" "$data_backup" "$env_backup"
+    rm -rf "$tmp_clone" "$data_backup" "$env_backup" "$dotenv_backup"
     exit 0
   fi
 
@@ -99,7 +105,7 @@ _ensure_git_repo() {
   if ! mv "$tmp_clone" "$current"; then
     log "Swap failed — restoring original directory"
     mv "/tmp/mello-broken-backup.$$" "$current"
-    rm -rf "$tmp_clone" "$data_backup" "$env_backup"
+    rm -rf "$tmp_clone" "$data_backup" "$env_backup" "$dotenv_backup"
     exit 1
   fi
   cd "$current"
@@ -116,6 +122,10 @@ _ensure_git_repo() {
   if [ -f "$env_backup" ]; then
     cp "$env_backup" .mello-env
     rm -f "$env_backup"
+  fi
+  if [ -f "$dotenv_backup" ]; then
+    cp "$dotenv_backup" .env
+    rm -f "$dotenv_backup"
   fi
 
   # Recreate venv (pygame is installed via apt, so --system-site-packages
