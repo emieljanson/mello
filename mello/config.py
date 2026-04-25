@@ -179,9 +179,13 @@ AUTO_PAUSE_FADE_DURATION = 5.0  # Fade out over 5 seconds
 # Shared write-only ingest key for anonymous usage data.
 # PostHog ingest keys are write-only by design and safe to embed in client code.
 # Users who run their own PostHog project can override via .env.
-POSTHOG_SHARED_API_KEY = 'phc_REPLACE_WITH_YOUR_POSTHOG_INGEST_KEY'
+# If left as the placeholder, analytics stays disabled. PostHog's /batch
+# endpoint returns 200 for unknown keys and silently drops events, so a
+# fake key would be indistinguishable from a real one in the app logs.
+POSTHOG_SHARED_API_KEY = 'phc_RScIdDyiRQI7BjV9jBOitWHkIEtJx7jKq6hIrHEPUtm'
 
-POSTHOG_API_KEY = os.environ.get('POSTHOG_API_KEY', '') or POSTHOG_SHARED_API_KEY
+_shared_key = '' if POSTHOG_SHARED_API_KEY.startswith('phc_REPLACE') else POSTHOG_SHARED_API_KEY
+POSTHOG_API_KEY = os.environ.get('POSTHOG_API_KEY', '') or _shared_key
 POSTHOG_HOST = os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
 ANALYTICS_DISTINCT_ID = os.environ.get('ANALYTICS_DISTINCT_ID', '').strip()
 ANALYTICS_INCLUDE_CONTENT = os.environ.get('ANALYTICS_INCLUDE_CONTENT', '0').lower() in ('1', 'true', 'yes')
