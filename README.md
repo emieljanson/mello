@@ -13,8 +13,11 @@ Kids swipe through album covers and tap to play. Parents control the music libra
 - **Spotify Connect** — Add albums and playlists from your Spotify app, Mello plays them
 - **Album carousel** — Large cover art with smooth swipe navigation
 - **Simple controls** — Play, pause, skip. That's it
-- **Auto-sleep** — Screen turns off after 2 minutes of inactivity
-- **Auto-pause** — Music stops after 30 minutes (configurable) to prevent all-day playback
+- **Auto-sleep** — Screen dims to a clock after 2 minutes of inactivity
+- **Auto-pause** — Music stops after 30 minutes (configurable), with a visible warning before it does
+- **Quiet hours** — Set a bedtime and the device stays asleep until morning
+- **OK to wake** — Moon on the sleep clock means stay in bed, sun means you're allowed up
+- **Bedtime album** — Allow one record to stay playable at bedtime, and nothing else
 - **Progress memory** — Remembers where each album left off for up to 96 hours
 - **Bluetooth** — Connect wireless headphones or speakers
 - **WiFi setup** — Creates a hotspot for easy configuration if WiFi drops
@@ -95,8 +98,27 @@ Once open, you'll see a scrollable menu with these sections:
 - **Volume levels** — Set separate volume levels (low/mid/high) for the built-in speaker and Bluetooth output
 
 ### Playback settings
-- **Auto-pause** — How long Mello plays before automatically pausing (15, 30, 60, or 120 minutes). Tap to cycle through options. Default: 30 minutes
+- **Auto-pause** — How long Mello plays before automatically pausing (15, 30, 60, or 120 minutes). Tap to cycle through options. Default: 30 minutes. An amber bar appears along the top of the cover for the last 5 minutes, shrinking as the time runs out, so the music stopping isn't a surprise
 - **Remember progress** — How long Mello remembers where each album left off (12, 24, 48, or 96 hours). Tap to cycle. Default: 96 hours
+- **Bedtime** — When quiet hours start (18:30 through 21:00, or Off). Tap to cycle. Default: Off
+- **Wake** — When quiet hours end (06:00 through 08:00). Only shown once a bedtime is set. Tap to cycle. Default: 07:00
+- **Bedtime album** — Pick one album that stays playable during quiet hours, or None. Only shown once a bedtime is set. Default: None
+
+### Quiet hours
+
+With a bedtime set, Mello pauses the music at that time and keeps the screen asleep on its dim clock until the wake time. Taps are ignored, so there's no play button for a child to find.
+
+Three deliberate exceptions:
+
+- **Press and hold the screen for 3 seconds** to override until morning — the parent's way in.
+- **Casting from Spotify on your phone still works**, so you can start music yourself.
+- **A bedtime album**, if you set one. Then taps *do* wake the screen, but the carousel holds nothing except that one record — so a lullaby album still works at bedtime while everything else stays out of reach. If that album is already playing when bedtime arrives, Mello leaves it alone.
+
+### OK to wake
+
+While the screen is asleep, the clock shows a **moon** during quiet hours and a **sun** for 90 minutes after the wake time. For a child too young to read a clock, that's the whole point: moon means stay in bed, sun means you're allowed up. Outside those windows (a midday nap, say) the clock shows no symbol at all.
+
+Quiet hours needs a correct clock. The Pi has no battery-backed clock, so it gets the time from the network at boot — if it can't reach the network, quiet hours stays off rather than guessing, and the sleep clock hides itself instead of showing a wrong time. Make sure the Pi's timezone is right (`sudo raspi-config` → Localisation Options).
 
 ### System
 - **Check for updates** — Manually check for and install updates (Mello also updates automatically each night)

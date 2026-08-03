@@ -247,3 +247,45 @@ class TestSettingsIntegration:
 
         with patch('time.time', return_value=mgr._play_start_time + 45 * 60):
             assert mgr.check(is_playing=True) is False
+
+
+class TestRemainingSeconds:
+    """The wind-down bar needs a live countdown, or it can't warn anyone."""
+
+    def _manager(self, timeout=1800):
+        return AutoPauseManager(on_pause=MagicMock(), get_volume=lambda: 90,
+                                get_timeout=lambda: timeout)
+
+    def test_none_before_playback_starts(self):
+        assert self._manager().remaining_seconds() is None
+
+    def test_counts_down_from_the_timeout(self):
+        mgr = self._manager(timeout=1800)
+        with patch('time.time', return_value=1000.0):
+            mgr.on_play('spotify:album:x')
+            assert mgr.remaining_seconds() == 1800
+        with patch('time.time', return_value=1000.0 + 1500):
+            assert mgr.remaining_seconds() == 300
+
+    def test_never_negative(self):
+        mgr = self._manager(timeout=60)
+        with patch('time.time', return_value=1000.0):
+            mgr.on_play('spotify:album:x')
+        with patch('time.time', return_value=1000.0 + 5000):
+            assert mgr.remaining_seconds() == 0
+
+    def test_none_after_stop(self):
+        mgr = self._manager()
+        with patch('time.time', return_value=1000.0):
+            mgr.on_play('spotify:album:x')
+            mgr.on_stop()
+            assert mgr.remaining_seconds() is None
+
+    def test_follows_a_changed_timeout_setting(self):
+        timeout = [1800]
+        mgr = AutoPauseManager(on_pause=MagicMock(), get_volume=lambda: 90,
+                               get_timeout=lambda: timeout[0])
+        with patch('time.time', return_value=1000.0):
+            mgr.on_play('spotify:album:x')
+            timeout[0] = 900
+            assert mgr.remaining_seconds() == 900

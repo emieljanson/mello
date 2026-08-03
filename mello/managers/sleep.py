@@ -7,21 +7,21 @@ import time
 import logging
 from typing import Optional
 
-from ..config import SLEEP_TIMEOUT
+from ..config import SLEEP_TIMEOUT, SLEEP_CLOCK_BRIGHTNESS
 
 logger = logging.getLogger(__name__)
 
 
 class SleepManager:
     """Manages deep sleep mode for power saving and screen burn-in prevention.
-    
+
     Sleep saves power by:
-    - Turning off DSI backlight
-    - Turning off HDMI/DSI via DRM DPMS
+    - Dimming the DSI backlight to a clock-readable level (or off if
+      brightness control is unavailable)
     - Dropping CPU to minimum frequency (600MHz)
     - Turning off activity LED
     """
-    
+
     BACKLIGHT_DIR = '/sys/class/backlight'
     DRM_DIR = '/sys/class/drm'
     CPU_GOVERNOR_PATH = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
@@ -34,13 +34,19 @@ class SleepManager:
         self.sleep_disabled_reason: Optional[str] = None
         self.last_activity = time.time()
         self.backlight_path = self._detect_backlight()
+        self.brightness_path, self.max_brightness = self._detect_brightness()
         self.drm_dpms_path = self._detect_drm_connector()
         self._saved_governor: Optional[str] = None
         self._saved_led_trigger: Optional[str] = None
         self._sleep_started_at: Optional[float] = None
-        
+        self._saved_brightness: Optional[str] = None
+
         if self.backlight_path:
             logger.info(f'Backlight: {self.backlight_path}')
+        if self.brightness_path:
+            logger.info(f'Brightness: {self.brightness_path} (max={self.max_brightness})')
+        else:
+            logger.info('No brightness control: sleep will blank the screen instead of dimming')
         if self.drm_dpms_path:
             logger.info(f'DRM DPMS: {self.drm_dpms_path}')
         if not self.backlight_path and not self.drm_dpms_path:
@@ -66,6 +72,14 @@ class SleepManager:
             if tmp.backlight_path or tmp.drm_dpms_path:
                 tmp._set_display(True)
                 logger.info(f'Display restored at startup (bl={tmp.backlight_path is not None}, dpms={tmp.drm_dpms_path is not None})')
+
+            # A crash while dimmed for the sleep clock would otherwise leave the
+            # panel dim forever, since the saved level died with the process.
+            brightness_path, max_brightness = tmp._detect_brightness()
+            if brightness_path and max_brightness > 0:
+                tmp.brightness_path = brightness_path
+                tmp._write_sysfs(brightness_path, str(max_brightness))
+                logger.info(f'Brightness restored to max ({max_brightness}) at startup')
         except Exception as e:
             logger.warning(f'Display restore failed: {e}')
     
@@ -79,6 +93,21 @@ class SleepManager:
             pass
         return None
     
+    def _detect_brightness(self) -> tuple:
+        """Detect backlight brightness control. Returns (path, max_value)."""
+        try:
+            backlights = os.listdir(self.BACKLIGHT_DIR)
+            if not backlights:
+                return None, 0
+            base = f'{self.BACKLIGHT_DIR}/{backlights[0]}'
+            path = f'{base}/brightness'
+            if not os.path.exists(path):
+                return None, 0
+            raw_max = self._read_sysfs(f'{base}/max_brightness')
+            return path, int(raw_max) if raw_max else 0
+        except Exception:
+            return None, 0
+
     def _detect_drm_connector(self) -> Optional[str]:
         """Detect the active DRM connector for DPMS control (KMS-compatible)."""
         try:
@@ -151,10 +180,16 @@ class SleepManager:
         logger.info(f'Entering sleep mode... diag_before={self._display_diag()}')
         self.is_sleeping = True
         self._sleep_started_at = time.time()
-        self._set_display(False)
+        dimmed = self._dim_backlight()
+        if not dimmed:
+            # No brightness control: fall back to blanking (the clock won't show)
+            self._set_display(False)
         self._set_low_power_cpu(True)
         self._set_led(False)
-        logger.info(f'Sleep mode active (display off, CPU low, LED off, WiFi kept awake) diag_after={self._display_diag()}')
+        logger.info(
+            f'Sleep mode active (display={"dim" if dimmed else "off"}, CPU low, '
+            f'LED off, WiFi kept awake) diag_after={self._display_diag()}'
+        )
     
     def wake_up(self, reason: str = 'activity'):
         """Wake from sleep mode - restore full power."""
@@ -168,9 +203,45 @@ class SleepManager:
         self.last_activity = time.time()
         self._set_led(True)
         self._set_low_power_cpu(False)
+        self._restore_brightness()
         self._set_display(True)
         logger.info(f'Awake (display on, CPU normal, LED on) diag_after={self._display_diag()}')
-    
+
+    def _dim_backlight(self) -> bool:
+        """Dim the backlight for the sleep clock. Returns True if dimming worked.
+
+        Keeps bl_power on — blanking the panel would hide the clock entirely.
+        """
+        if not self.brightness_path or self.max_brightness <= 0:
+            return False
+
+        target = max(1, int(self.max_brightness * SLEEP_CLOCK_BRIGHTNESS))
+        try:
+            self._saved_brightness = self._read_sysfs(self.brightness_path)
+            self._set_display(True)  # ensure the panel is powered before dimming
+            self._write_sysfs(self.brightness_path, str(target))
+            actual = self._read_sysfs(self.brightness_path)
+            if actual is None or actual.strip() != str(target):
+                logger.warning(f'Dim failed: wanted={target}, actual={actual}')
+                return False
+            logger.info(f'Backlight dimmed to {target}/{self.max_brightness}')
+            return True
+        except (IOError, OSError, PermissionError) as e:
+            logger.warning(f'Dim failed: {e}')
+            return False
+
+    def _restore_brightness(self):
+        """Restore the pre-sleep brightness level."""
+        if not self.brightness_path or self._saved_brightness is None:
+            return
+        try:
+            self._write_sysfs(self.brightness_path, self._saved_brightness)
+            logger.info(f'Backlight restored to {self._saved_brightness}')
+        except (IOError, OSError, PermissionError) as e:
+            logger.warning(f'Brightness restore failed: {e}')
+        finally:
+            self._saved_brightness = None
+
     def _set_display(self, on: bool):
         """Turn display on/off via backlight only.
 

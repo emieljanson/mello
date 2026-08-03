@@ -68,6 +68,12 @@ class AutoPauseManager:
         
         return False
     
+    def remaining_seconds(self) -> Optional[float]:
+        """Seconds until auto-pause fires, or None when no timer is running."""
+        if not self._play_start_time or self._is_fading:
+            return None
+        return max(0.0, self._get_timeout() - (time.time() - self._play_start_time))
+
     def restore_volume_if_needed(self):
         """Restore volume after auto-pause (call when user resumes)."""
         if self._should_restore_volume:

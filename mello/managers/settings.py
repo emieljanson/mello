@@ -4,19 +4,35 @@ Settings Manager - Persistent user-configurable values stored in settings.json.
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
-from ..config import SETTINGS_PATH, DEFAULT_VOLUME_LEVELS, VOLUME_RANGE
+from ..config import (SETTINGS_PATH, DEFAULT_VOLUME_LEVELS, VOLUME_RANGE,
+                      VOLUME_ADJUST_STEP)
 
 logger = logging.getLogger(__name__)
 
 # Defaults (matching existing config.py values)
 DEFAULT_AUTO_PAUSE_MINUTES = 30
 DEFAULT_PROGRESS_EXPIRY_HOURS = 96
+DEFAULT_QUIET_START = None       # None = quiet hours off
+DEFAULT_QUIET_END = 7 * 60       # 07:00
 
 # Allowed options for the setup menu
 AUTO_PAUSE_OPTIONS = [15, 30, 60, 120]  # minutes
 PROGRESS_EXPIRY_OPTIONS = [12, 24, 48, 96]  # hours
+
+# Bedtime window, as minutes since midnight. Tap-to-cycle like the other rows:
+# the screen has no keyboard, so a short list of plausible times beats a picker.
+QUIET_START_OPTIONS = [None, 18 * 60 + 30, 19 * 60, 19 * 60 + 30,
+                       20 * 60, 20 * 60 + 30, 21 * 60]
+QUIET_END_OPTIONS = [6 * 60, 6 * 60 + 30, 7 * 60, 7 * 60 + 30, 8 * 60]
+
+
+def format_time(minutes: Optional[int]) -> str:
+    """Render minutes-since-midnight as 'HH:MM', or 'Off' for None."""
+    if minutes is None:
+        return 'Off'
+    return f'{minutes // 60:02d}:{minutes % 60:02d}'
 
 
 class Settings:
@@ -26,6 +42,9 @@ class Settings:
         self._path = path or SETTINGS_PATH
         self._auto_pause_minutes = DEFAULT_AUTO_PAUSE_MINUTES
         self._progress_expiry_hours = DEFAULT_PROGRESS_EXPIRY_HOURS
+        self._quiet_start: Optional[int] = DEFAULT_QUIET_START
+        self._quiet_end: int = DEFAULT_QUIET_END
+        self._bedtime_uri: Optional[str] = None
         self._last_bt_device_mac: Optional[str] = None
         self._volume_overrides: Optional[list] = None  # None = use defaults
         self._share_usage_data: bool = True  # Set once during install, not changeable via UI
@@ -37,6 +56,9 @@ class Settings:
                 data = json.loads(self._path.read_text())
                 self._auto_pause_minutes = data.get('auto_pause_minutes', DEFAULT_AUTO_PAUSE_MINUTES)
                 self._progress_expiry_hours = data.get('progress_expiry_hours', DEFAULT_PROGRESS_EXPIRY_HOURS)
+                self._quiet_start = data.get('quiet_hours_start', DEFAULT_QUIET_START)
+                self._quiet_end = data.get('quiet_hours_end', DEFAULT_QUIET_END)
+                self._bedtime_uri = data.get('bedtime_uri')
                 self._last_bt_device_mac = data.get('last_bt_device_mac')
                 self._volume_overrides = data.get('volume_levels')
                 if 'share_usage_data' in data:
@@ -51,6 +73,9 @@ class Settings:
             data = {
                 'auto_pause_minutes': self._auto_pause_minutes,
                 'progress_expiry_hours': self._progress_expiry_hours,
+                'quiet_hours_start': self._quiet_start,
+                'quiet_hours_end': self._quiet_end,
+                'bedtime_uri': self._bedtime_uri,
                 'last_bt_device_mac': self._last_bt_device_mac,
                 'share_usage_data': self._share_usage_data,
             }
@@ -99,6 +124,48 @@ class Settings:
         logger.info(f'Progress expiry set to {self._progress_expiry_hours} hours')
         return self._progress_expiry_hours
 
+    # --- Quiet hours ---
+
+    @property
+    def quiet_hours(self) -> Tuple[Optional[int], int]:
+        """Bedtime window as (start, end) minutes since midnight. Start None = off."""
+        return self._quiet_start, self._quiet_end
+
+    @property
+    def quiet_start_label(self) -> str:
+        return format_time(self._quiet_start)
+
+    @property
+    def quiet_end_label(self) -> str:
+        return format_time(self._quiet_end)
+
+    def cycle_quiet_start(self) -> Optional[int]:
+        """Advance the bedtime start (including Off) and save."""
+        idx = QUIET_START_OPTIONS.index(self._quiet_start) if self._quiet_start in QUIET_START_OPTIONS else 0
+        self._quiet_start = QUIET_START_OPTIONS[(idx + 1) % len(QUIET_START_OPTIONS)]
+        self._save()
+        logger.info(f'Quiet hours start set to {format_time(self._quiet_start)}')
+        return self._quiet_start
+
+    def cycle_quiet_end(self) -> int:
+        """Advance the wake time and save."""
+        idx = QUIET_END_OPTIONS.index(self._quiet_end) if self._quiet_end in QUIET_END_OPTIONS else 0
+        self._quiet_end = QUIET_END_OPTIONS[(idx + 1) % len(QUIET_END_OPTIONS)]
+        self._save()
+        logger.info(f'Quiet hours end set to {format_time(self._quiet_end)}')
+        return self._quiet_end
+
+    # --- Bedtime album (the one thing still playable during quiet hours) ---
+
+    @property
+    def bedtime_uri(self) -> Optional[str]:
+        return self._bedtime_uri
+
+    def set_bedtime_uri(self, uri: Optional[str]):
+        self._bedtime_uri = uri
+        self._save()
+        logger.info(f'Bedtime album set to {uri or "none"}')
+
     # --- Bluetooth ---
 
     @property
@@ -128,12 +195,17 @@ class Settings:
         return result
 
     def adjust_volume(self, level_index: int, output_type: str, delta: int) -> int:
-        """Adjust a volume value by delta (+1 or -1). Returns new value."""
+        """Nudge a volume value one step in the direction of delta (+1 or -1).
+
+        delta is a direction, not a magnitude: one tap moves VOLUME_ADJUST_STEP
+        percentage points so retuning a preset isn't dozens of taps.
+        """
         levels = self.get_volume_levels()
         if level_index < 0 or level_index >= len(levels):
             return 0
         lo, hi = VOLUME_RANGE.get(output_type, (0, 100))
-        new_val = max(lo, min(hi, levels[level_index][output_type] + delta))
+        step = VOLUME_ADJUST_STEP if delta > 0 else -VOLUME_ADJUST_STEP
+        new_val = max(lo, min(hi, levels[level_index][output_type] + step))
         # Initialize overrides from current effective values
         if self._volume_overrides is None:
             self._volume_overrides = [

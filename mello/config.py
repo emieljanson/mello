@@ -73,6 +73,7 @@ COLORS = {
     'text_secondary': (160, 160, 160),
     'text_muted': (96, 96, 96),
     'error': (232, 80, 80),
+    'warning': (245, 176, 66),  # amber — auto-pause winding down
 }
 
 # ============================================
@@ -124,8 +125,11 @@ DEFAULT_VOLUME_LEVELS = [
     {'speaker': 98, 'bt': 65, 'icon': 'volume_high'},
 ]
 
-# Valid ranges for volume adjustment (+/- 1% per tap)
+# Valid ranges for volume adjustment
 VOLUME_RANGE = {'speaker': (50, 100), 'bt': (5, 100)}
+
+# Percentage points per +/- tap. 1 meant ~30 taps to retune a preset.
+VOLUME_ADJUST_STEP = 5
 
 # ============================================
 # BLUETOOTH
@@ -150,6 +154,40 @@ SYNC_COOLDOWN = 5.0  # Block sync for 5s after play timer fires
 PROGRESS_SAVE_INTERVAL = 10  # Save progress every 10 seconds
 PROGRESS_EXPIRY_HOURS = 96  # Expire saved progress after 96 hours
 CONTEXT_SWITCH_WATCHDOG_TIMEOUT = 60.0  # Hard failsafe for stuck context-switch loading
+
+# ============================================
+# SLEEP CLOCK (dim clock instead of a black screen)
+# ============================================
+
+# Backlight level while sleeping, as a fraction of max_brightness.
+# Low enough for a dark bedroom, high enough to read across a room.
+SLEEP_CLOCK_BRIGHTNESS = 0.06
+
+# The clock creeps around the screen so a static glyph never sits on the same
+# pixels all night (LCD image retention). Total travel in pixels, each axis.
+SLEEP_CLOCK_DRIFT = 60
+
+# ============================================
+# QUIET HOURS (bedtime — device stays asleep)
+# ============================================
+
+# Hold anywhere on the sleeping screen this long to override quiet hours.
+# Deliberately longer than a child's patience, short enough for a parent.
+QUIET_HOURS_WAKE_HOLD = 3.0
+
+# How long the sun stays up after the wake time. This is the "OK to wake"
+# signal for a child who can't read a clock: moon = stay in bed, sun = get up.
+# Long enough to cover a slow morning, short enough that a midday nap-time
+# sleep shows a plain clock instead.
+WAKE_WINDOW_MINUTES = 90
+
+# ============================================
+# AUTO-PAUSE COUNTDOWN
+# ============================================
+
+# Show the "winding down" bar only for the last stretch before auto-pause.
+# A bar that sits there for 30 minutes is noise; the point is a warning.
+AUTO_PAUSE_WARN_SECONDS = 5 * 60
 
 # ============================================
 # TOUCH & GESTURES

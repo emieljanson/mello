@@ -122,6 +122,8 @@ class SetupMenu:
 
         if self.state == MenuState.VOLUME_LEVELS:
             self._handle_volume_tap(button_rects, x, y)
+        elif self.state == MenuState.BEDTIME_LIST:
+            self._handle_bedtime_tap(button_rects, x, y)
         elif self.state == MenuState.BT_LIST:
             self._handle_bt_tap(button_rects, x, y)
         elif self.state == MenuState.WIFI_LIST:
@@ -156,6 +158,18 @@ class SetupMenu:
             elif 'progress_expiry' in button_rects and button_rects['progress_expiry'].collidepoint(x, y):
                 hours = self.settings.cycle_progress_expiry()
                 self._on_toast(f'Remember progress: {hours} hrs')
+                self._on_invalidate()
+            elif 'quiet_start' in button_rects and button_rects['quiet_start'].collidepoint(x, y):
+                self.settings.cycle_quiet_start()
+                self._on_toast(f'Bedtime: {self.settings.quiet_start_label}')
+                self._on_invalidate()
+            elif 'quiet_end' in button_rects and button_rects['quiet_end'].collidepoint(x, y):
+                self.settings.cycle_quiet_end()
+                self._on_toast(f'Wake: {self.settings.quiet_end_label}')
+                self._on_invalidate()
+            elif 'bedtime_album' in button_rects and button_rects['bedtime_album'].collidepoint(x, y):
+                self.state = MenuState.BEDTIME_LIST
+                self.scroll_offset = 0
                 self._on_invalidate()
             elif 'volume' in button_rects and button_rects['volume'].collidepoint(x, y):
                 self.state = MenuState.VOLUME_LEVELS
@@ -301,6 +315,29 @@ class SetupMenu:
                         self._on_volume_preview(level_idx, output_type, new_val)
                     self._on_invalidate()
                 break
+
+    def _handle_bedtime_tap(self, button_rects: dict, x: int, y: int):
+        """Pick (or clear) the album that stays playable during quiet hours."""
+        if 'bedtime_none' in button_rects and button_rects['bedtime_none'].collidepoint(x, y):
+            self.settings.set_bedtime_uri(None)
+            self._on_toast('Bedtime album: none')
+            self.state = MenuState.MAIN
+            self.scroll_offset = 0
+            self._on_invalidate()
+            return
+
+        items = self.catalog_manager.items
+        for key, rect in button_rects.items():
+            if not key.startswith('bedtime_pick_') or not rect.collidepoint(x, y):
+                continue
+            idx = int(key.rsplit('_', 1)[1])
+            if 0 <= idx < len(items):
+                self.settings.set_bedtime_uri(items[idx].uri)
+                self._on_toast(f'Bedtime album: {items[idx].name}')
+                self.state = MenuState.MAIN
+                self.scroll_offset = 0
+                self._on_invalidate()
+            break
 
     def _show_bt_screen(self):
         logger.info('Setup menu: Bluetooth screen')
