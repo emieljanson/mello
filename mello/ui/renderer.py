@@ -796,34 +796,32 @@ class Renderer:
                 items.append(('vol_row', i, output_type, name, val))
         return items
 
+    # Physical-x extent each row kind occupies, GAP excluded (a GAP is added
+    # after every row). Rows are anchored at their LOW x edge and extend +x, so
+    # the cursor must clear the *next* row's extent — hence extents, not advances.
+    def _menu_row_extent(self, kind: str) -> int:
+        H, GAP = self._MENU_BTN_H, self._MENU_BTN_GAP
+        if kind in ('button', 'vol_row', 'placeholder'):
+            return H
+        if kind == 'header':
+            return 30
+        if kind == 'text':
+            return 35 - GAP
+        if kind == 'spacer':
+            return 15 - GAP
+        if kind == 'footer':
+            return 30 - GAP
+        return 0  # separator: contributes its GAP only
+
     def _draw_menu_content(self, items: list, scroll_offset: int = 0):
         """Draw content items in the scrollable zone between title and back button."""
         H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
         content_top = self._MENU_CONTENT_TOP
         content_bot = self._MENU_CONTENT_BOT
 
-        # First pass: calculate total content height
-        total_height = 0
-        for item in items:
-            kind = item[0]
-            if kind == 'button':
-                total_height += H + GAP
-            elif kind == 'separator':
-                total_height += GAP
-            elif kind == 'header':
-                total_height += 30
-            elif kind == 'text':
-                total_height += 35
-            elif kind == 'spacer':
-                total_height += 15
-            elif kind == 'vol_row':
-                total_height += H + GAP
-            elif kind == 'placeholder':
-                total_height += H + GAP
-            elif kind == 'footer':
-                total_height += 30
-        if total_height > 0:
-            total_height -= GAP  # remove trailing gap
+        # First pass: total span = sum of extents plus one GAP between rows
+        extents = [self._menu_row_extent(item[0]) for item in items]
+        total_height = sum(extents) + max(0, len(extents) - 1) * GAP
 
         available = content_top - content_bot
         self.menu_content_overflow = max(0, total_height - available)
@@ -832,37 +830,38 @@ class Renderer:
         clip = pygame.Rect(content_bot, 0, SCREEN_WIDTH - content_bot, SCREEN_HEIGHT)
         self.screen.set_clip(clip)
 
-        # Draw items with scroll offset applied
-        x = content_top + scroll_offset
+        # `top` is the high-x edge of the next row's slot; each row anchors at
+        # top - extent so it never paints over the row above it.
+        top = content_top + scroll_offset + (extents[0] if extents else 0)
 
         btn_w_vol = 70  # +/- button width for volume rows
         label_w_vol = W - btn_w_vol * 2 - 10
 
-        for item in items:
+        for item, extent in zip(items, extents):
             kind = item[0]
+            x = top - extent
+            mid = x + extent // 2
+            top = x - GAP
 
             if kind == 'button':
                 _, btn_id, label, color = item
                 btn = pygame.Rect(x, Y, H, W)
                 self._draw_menu_button(btn, label, color)
                 self.menu_button_rects[btn_id] = btn
-                x -= H + GAP
 
             elif kind == 'separator':
-                x -= GAP
+                pass
 
             elif kind == 'header':
                 hdr = self._render_text_rotated(item[1], self.font_small, COLORS['text_muted'])
-                self.screen.blit(hdr, hdr.get_rect(center=(x, CAROUSEL_CENTER_Y)))
-                x -= 30
+                self.screen.blit(hdr, hdr.get_rect(center=(mid, CAROUSEL_CENTER_Y)))
 
             elif kind == 'text':
                 surf = self._render_text_rotated(item[1], self.font_medium, COLORS['text_secondary'])
-                self.screen.blit(surf, surf.get_rect(center=(x, CAROUSEL_CENTER_Y)))
-                x -= 35
+                self.screen.blit(surf, surf.get_rect(center=(mid, CAROUSEL_CENTER_Y)))
 
             elif kind == 'spacer':
-                x -= 15
+                pass
 
             elif kind == 'vol_row':
                 _, i, output_type, name, val = item
@@ -880,15 +879,12 @@ class Renderer:
                 self._draw_menu_button(plus_rect, '+', COLORS['bg_elevated'])
                 self.menu_button_rects[f'vol_plus_{i}_{output_type}'] = plus_rect
 
-                x -= H + GAP
-
             elif kind == 'placeholder':
-                x -= H + GAP
+                pass
 
             elif kind == 'footer':
                 surf = self._render_text_rotated(item[1], self.font_small, COLORS['text_muted'])
-                self.screen.blit(surf, surf.get_rect(center=(x, CAROUSEL_CENTER_Y)))
-                x -= 30
+                self.screen.blit(surf, surf.get_rect(center=(mid, CAROUSEL_CENTER_Y)))
 
         # Remove clip
         self.screen.set_clip(None)
