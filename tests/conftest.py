@@ -2,9 +2,19 @@
 Pytest configuration and shared fixtures for Mello tests.
 """
 import json
+import os
 import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+# Load real pygame headless before any test installs its `sys.modules.setdefault`
+# stub, so tests that actually render get the real thing regardless of file order.
+os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+try:
+    import pygame  # noqa: F401
+    import pygame.gfxdraw  # noqa: F401
+except ImportError:
+    pass
 
 
 @pytest.fixture
