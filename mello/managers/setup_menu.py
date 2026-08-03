@@ -157,6 +157,14 @@ class SetupMenu:
                 hours = self.settings.cycle_progress_expiry()
                 self._on_toast(f'Remember progress: {hours} hrs')
                 self._on_invalidate()
+            elif 'quiet_start' in button_rects and button_rects['quiet_start'].collidepoint(x, y):
+                self.settings.cycle_quiet_start()
+                self._on_toast(f'Bedtime: {self.settings.quiet_start_label}')
+                self._on_invalidate()
+            elif 'quiet_end' in button_rects and button_rects['quiet_end'].collidepoint(x, y):
+                self.settings.cycle_quiet_end()
+                self._on_toast(f'Wake: {self.settings.quiet_end_label}')
+                self._on_invalidate()
             elif 'volume' in button_rects and button_rects['volume'].collidepoint(x, y):
                 self.state = MenuState.VOLUME_LEVELS
                 self.scroll_offset = 0

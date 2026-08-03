@@ -13,8 +13,9 @@ Kids swipe through album covers and tap to play. Parents control the music libra
 - **Spotify Connect** — Add albums and playlists from your Spotify app, Mello plays them
 - **Album carousel** — Large cover art with smooth swipe navigation
 - **Simple controls** — Play, pause, skip. That's it
-- **Auto-sleep** — Screen turns off after 2 minutes of inactivity
+- **Auto-sleep** — Screen dims to a clock after 2 minutes of inactivity
 - **Auto-pause** — Music stops after 30 minutes (configurable) to prevent all-day playback
+- **Quiet hours** — Set a bedtime and the device stays asleep until morning
 - **Progress memory** — Remembers where each album left off for up to 96 hours
 - **Bluetooth** — Connect wireless headphones or speakers
 - **WiFi setup** — Creates a hotspot for easy configuration if WiFi drops
@@ -97,6 +98,16 @@ Once open, you'll see a scrollable menu with these sections:
 ### Playback settings
 - **Auto-pause** — How long Mello plays before automatically pausing (15, 30, 60, or 120 minutes). Tap to cycle through options. Default: 30 minutes
 - **Remember progress** — How long Mello remembers where each album left off (12, 24, 48, or 96 hours). Tap to cycle. Default: 96 hours
+- **Bedtime** — When quiet hours start (18:30 through 21:00, or Off). Tap to cycle. Default: Off
+- **Wake** — When quiet hours end (06:00 through 08:00). Only shown once a bedtime is set. Tap to cycle. Default: 07:00
+
+### Quiet hours
+
+With a bedtime set, Mello pauses the music at that time and keeps the screen asleep on its dim clock until the wake time. Taps are ignored, so there's no play button for a child to find.
+
+Two deliberate exceptions: **press and hold the screen for 3 seconds** to override until morning (the parent's way in), and casting from Spotify on your phone still works, so you can start music yourself.
+
+Quiet hours needs a correct clock. The Pi has no battery-backed clock, so it gets the time from the network at boot — if it can't reach the network, quiet hours stays off rather than guessing, and the sleep clock hides itself instead of showing a wrong time. Make sure the Pi's timezone is right (`sudo raspi-config` → Localisation Options).
 
 ### System
 - **Check for updates** — Manually check for and install updates (Mello also updates automatically each night)

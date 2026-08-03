@@ -84,6 +84,12 @@ class EvdevTouchHandler:
         return True
 
     @property
+    def is_touching(self) -> bool:
+        """True while a finger is down (used for hold-to-wake during quiet hours)."""
+        with self._touch_lock:
+            return self._touching
+
+    @property
     def is_available(self) -> bool:
         """True when a touchscreen device was found and the reader is running."""
         return self._healthy and self._device is not None

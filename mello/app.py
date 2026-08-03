@@ -3,6 +3,7 @@ Mello Application - Main application class.
 """
 import os
 import time
+import datetime
 import signal
 import logging
 import subprocess
@@ -21,13 +22,15 @@ from .config import (
     CAROUSEL_TOUCH_MARGIN, MAX_SWIPE_JUMP, VELOCITY_THRESHOLDS,
     ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
     CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
+    SLEEP_CLOCK_DRIFT, QUIET_HOURS_WAKE_HOLD,
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
 from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
 from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
-from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
+from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager, QuietHours
+from .managers.quiet_hours import clock_is_trusted
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label, set_system_volume
@@ -227,6 +230,9 @@ class Mello:
         
         # Managers
         self.sleep_manager = SleepManager()
+        self.quiet_hours = QuietHours(self.settings)
+        self._quiet_touch_start: Optional[float] = None  # hold-to-wake timer
+        self._sleep_clock_minute: Optional[int] = None    # last minute drawn while asleep
         if not touch_available and not self.mock_mode:
             self._disable_sleep_for_touch(
                 self.evdev_touch.consume_failure_reason() or 'touchscreen unavailable at startup'
@@ -862,17 +868,34 @@ class Mello:
             self._check_touch_health()
             # Sleep mode: wait for touch/key to wake up
             if self.sleep_manager.is_sleeping:
+                # Keep the dim clock current (redraws only when the minute rolls over)
+                self._draw_sleep_clock_if_due()
+                # _update() doesn't run while asleep, so refresh bedtime here or
+                # the window would never open — and worse, never close.
+                self.quiet_hours.update()
+                quiet = self.quiet_hours.active
                 # Primary wake: evdev threading.Event (reliable across threads)
                 # Fallback: pygame.event.wait with timeout (catches KEYDOWN/QUIT)
                 self.evdev_touch.wake_event.wait(0.2)
                 if self.evdev_touch.wake_event.is_set():
                     self.evdev_touch.wake_event.clear()
-                    self._wake_from_sleep('evdev_touch')
-                    pygame.event.clear()  # Discard stale events from sleep
-                    continue
+                    if not quiet:
+                        self._wake_from_sleep('evdev_touch')
+                        pygame.event.clear()  # Discard stale events from sleep
+                        continue
+                # Bedtime: taps are ignored so there's no play button to reach.
+                # Checked every iteration — the finger stays down between events.
+                if quiet:
+                    self._check_quiet_hours_hold()
+                    if not self.sleep_manager.is_sleeping:
+                        pygame.event.clear()  # Drop the hold so it can't tap the UI
+                        continue
                 # Check for keyboard/quit events that bypass evdev
                 for event in pygame.event.get():
                     if event.type == pygame.KEYDOWN:
+                        # Keyboard is a parent/dev path, so it overrides bedtime
+                        if quiet:
+                            self.quiet_hours.override()
                         self._wake_from_sleep(f'key:{event.key}')
                         pygame.event.clear()
                         break
@@ -1273,6 +1296,8 @@ class Mello:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 logger.debug(f'Event: MOUSEBUTTONDOWN at {event.pos}')
                 if self.sleep_manager.is_sleeping:
+                    if self.quiet_hours.active:
+                        continue  # bedtime: taps don't wake (hold-to-wake only)
                     self._user_activated_playback = True
                     self._wake_from_sleep(f'pygame_touch:{event.pos}')
                     continue
@@ -1749,6 +1774,69 @@ class Mello:
         )
         self.sleep_manager.wake_up(reason)
         self._on_wake()
+
+    def _sleep_clock_state(self) -> tuple:
+        """Clock text and drift offset for the sleeping screen."""
+        if not self.sleep_manager.is_sleeping:
+            return None, (0, 0)
+
+        now = datetime.datetime.now()
+        if not clock_is_trusted(now):
+            # No RTC: showing a confidently wrong time is worse than showing none
+            return None, (0, 0)
+
+        # Creep through a 3x3 grid of positions, moving every 10 minutes, so the
+        # glyph never sits on the same pixels all night (LCD image retention).
+        slot = (now.hour * 60 + now.minute) // 10
+        step = SLEEP_CLOCK_DRIFT // 2
+        drift = (((slot % 3) - 1) * step, (((slot // 3) % 3) - 1) * step)
+        return f'{now.hour:02d}:{now.minute:02d}', drift
+
+    def _draw_sleep_clock_if_due(self):
+        """Redraw the sleeping screen when the displayed minute changes.
+
+        Once a minute keeps the CPU in powersave — the clock is the only thing
+        on screen, so there is nothing else that needs animating.
+        """
+        minute = datetime.datetime.now().minute
+        if minute == self._sleep_clock_minute:
+            return
+        self._sleep_clock_minute = minute
+
+        dirty_rects = self._draw()
+        if dirty_rects:
+            pygame.display.update(dirty_rects)
+        else:
+            pygame.display.flip()
+
+    def _check_quiet_hours_hold(self):
+        """Wake up if a parent holds the sleeping screen long enough."""
+        if not self.evdev_touch.is_touching:
+            self._quiet_touch_start = None
+            return
+
+        if self._quiet_touch_start is None:
+            self._quiet_touch_start = time.time()
+            return
+
+        if time.time() - self._quiet_touch_start >= QUIET_HOURS_WAKE_HOLD:
+            self._quiet_touch_start = None
+            self.quiet_hours.override()
+            self._wake_from_sleep('quiet_hours_hold')
+
+    def _on_quiet_hours_start(self, menu_open: bool):
+        """Bedtime just began: stop the music and let the screen fall asleep."""
+        if self.now_playing.playing:
+            # ponytail: hard pause, not auto-pause's 5s fade. Reuse the fade if a
+            # mid-song cut bothers the kid. No tracker event — bedtime isn't
+            # auto-pause, and mislabelling would pollute upstream analytics.
+            logger.info('Quiet hours: pausing playback')
+            run_async(self.api.pause)
+
+        if not menu_open:
+            # Expire the sleep timer so the normal sleep path — with its
+            # bluetooth/analytics bookkeeping — takes the screen down.
+            self.sleep_manager.last_activity = 0
 
     def _log_sleep_wait_if_due(self):
         """Log periodic sleeping heartbeat so black-screen reports have context."""
@@ -2233,11 +2321,17 @@ class Mello:
         was_awake = not self.sleep_manager.is_sleeping
         # Don't sleep while the setup menu is open (e.g. WiFi AP mode)
         menu_open = self.setup_menu.state != MenuState.CLOSED
+
+        # Quiet hours: at bedtime, stop the music and send the screen to bed
+        if self.quiet_hours.update():
+            self._on_quiet_hours_start(menu_open)
+
         self.sleep_manager.check_sleep(self.now_playing.playing or menu_open)
         if was_awake and self.sleep_manager.is_sleeping:
             self.bluetooth.pause_monitoring()
             idle = time.time() - self.sleep_manager.last_activity
             self.tracker.on_sleep(idle)
+            self._sleep_clock_minute = None  # force an immediate clock draw
         
         self.playback.update_loading_state(
             self.now_playing, self.carousel.settled, self._pending_focus_uri is not None
@@ -2372,6 +2466,7 @@ class Mello:
 
         # Snapshot BT state once to avoid race with monitor thread
         bt_dev = self.bluetooth.connected_device
+        sleep_clock_text, sleep_clock_drift = self._sleep_clock_state()
 
         ctx = RenderContext(
             items=items,
@@ -2396,6 +2491,11 @@ class Mello:
             menu_current_network=self.setup_menu.current_network,
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
+            quiet_start_label=self.settings.quiet_start_label,
+            quiet_end_label=self.settings.quiet_end_label,
+            quiet_hours_active=self.quiet_hours.active,
+            sleep_clock_text=sleep_clock_text,
+            sleep_clock_drift=sleep_clock_drift,
             app_version_label=self.app_version_label,
             bt_connected=bt_dev is not None,
             bt_audio_active=self._bt_audio_active,

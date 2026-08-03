@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 class Renderer:
     """Handles all drawing/rendering for Mello UI."""
-    
+
+    # Near-white: the backlight is already at a few percent while sleeping,
+    # so dimming the glyph too would make it unreadable across a room.
+    _SLEEP_CLOCK_COLOR = (205, 205, 205)
+
     def __init__(self, screen: pygame.Surface, image_cache: ImageCache, icons: Dict[str, pygame.Surface]):
         self.screen = screen
         self.image_cache = image_cache
@@ -41,6 +45,7 @@ class Renderer:
         self.font_large = pygame.font.Font(None, 42)
         self.font_medium = pygame.font.Font(None, 32)
         self.font_small = pygame.font.Font(None, 24)
+        self.font_clock = pygame.font.Font(None, 170)  # sleep clock, readable across a room
         
         # Caches
         self._bg_cache: Optional[pygame.Surface] = None
@@ -116,9 +121,11 @@ class Renderer:
         
         Returns list of dirty rects for partial update, or None for full flip.
         """
-        # Sleep mode - show black screen only
+        # Sleep mode - dim clock (plain black if the clock can't be shown)
         if ctx.is_sleeping:
             self.screen.fill((0, 0, 0))
+            if ctx.sleep_clock_text:
+                self._draw_sleep_clock(ctx)
             self._needs_full_redraw = True
             return None
         
@@ -237,6 +244,29 @@ class Renderer:
         
         self.screen.blit(self._bg_cache, (0, 0))
     
+    def _draw_sleep_clock(self, ctx: 'RenderContext'):
+        """Draw the dim sleep clock, with a moon while quiet hours are enforced.
+
+        The position drifts slowly so a static glyph never sits on the same
+        pixels all night (LCD image retention). The backlight does the actual
+        dimming, so the glyph itself stays near-white to survive it.
+        """
+        dx, dy = ctx.sleep_clock_drift
+        cx = SCREEN_WIDTH // 2 + dx
+        cy = CAROUSEL_CENTER_Y + dy
+
+        surf = self._render_text_rotated(
+            ctx.sleep_clock_text or '', self.font_clock, self._SLEEP_CLOCK_COLOR)
+        self.screen.blit(surf, surf.get_rect(center=(cx, cy)))
+
+        if ctx.quiet_hours_active:
+            # Crescent: a dim disc with an offset black disc carved out of it.
+            # Sits "below" the clock from the user's view (small physical X).
+            moon_x = cx - surf.get_width() // 2 - 45
+            radius = 20
+            draw_aa_circle(self.screen, self._SLEEP_CLOCK_COLOR, (moon_x, cy), radius)
+            draw_aa_circle(self.screen, (0, 0, 0), (moon_x + 8, cy - 8), radius)
+
     def _render_text_rotated(self, text: str, font: pygame.font.Font, color: tuple) -> pygame.Surface:
         """Render text rotated 90° CW for portrait display mode."""
         text_surface = font.render(text, True, color)
@@ -732,7 +762,12 @@ class Renderer:
             ('button', 'auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
             ('button', 'progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
             ('separator',),
+            ('button', 'quiet_start', f'Bedtime: {ctx.quiet_start_label}', COLORS['bg_elevated']),
         ]
+        # Wake time is meaningless with no bedtime set
+        if ctx.quiet_start_label != 'Off':
+            items.append(('button', 'quiet_end', f'Wake: {ctx.quiet_end_label}', COLORS['bg_elevated']))
+        items.append(('separator',))
         # Dynamic update button
         if ctx.update_running:
             items.append(('button', 'check_update', 'Updating...', COLORS['bg_elevated']))

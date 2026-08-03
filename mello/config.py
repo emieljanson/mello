@@ -124,8 +124,11 @@ DEFAULT_VOLUME_LEVELS = [
     {'speaker': 98, 'bt': 65, 'icon': 'volume_high'},
 ]
 
-# Valid ranges for volume adjustment (+/- 1% per tap)
+# Valid ranges for volume adjustment
 VOLUME_RANGE = {'speaker': (50, 100), 'bt': (5, 100)}
+
+# Percentage points per +/- tap. 1 meant ~30 taps to retune a preset.
+VOLUME_ADJUST_STEP = 5
 
 # ============================================
 # BLUETOOTH
@@ -150,6 +153,26 @@ SYNC_COOLDOWN = 5.0  # Block sync for 5s after play timer fires
 PROGRESS_SAVE_INTERVAL = 10  # Save progress every 10 seconds
 PROGRESS_EXPIRY_HOURS = 96  # Expire saved progress after 96 hours
 CONTEXT_SWITCH_WATCHDOG_TIMEOUT = 60.0  # Hard failsafe for stuck context-switch loading
+
+# ============================================
+# SLEEP CLOCK (dim clock instead of a black screen)
+# ============================================
+
+# Backlight level while sleeping, as a fraction of max_brightness.
+# Low enough for a dark bedroom, high enough to read across a room.
+SLEEP_CLOCK_BRIGHTNESS = 0.06
+
+# The clock creeps around the screen so a static glyph never sits on the same
+# pixels all night (LCD image retention). Total travel in pixels, each axis.
+SLEEP_CLOCK_DRIFT = 60
+
+# ============================================
+# QUIET HOURS (bedtime — device stays asleep)
+# ============================================
+
+# Hold anywhere on the sleeping screen this long to override quiet hours.
+# Deliberately longer than a child's patience, short enough for a parent.
+QUIET_HOURS_WAKE_HOLD = 3.0
 
 # ============================================
 # TOUCH & GESTURES

@@ -32,6 +32,11 @@ class RenderContext:
     menu_current_network: Optional[str] = None
     auto_pause_minutes: int = 30
     progress_expiry_hours: int = 96
+    quiet_start_label: str = 'Off'
+    quiet_end_label: str = '07:00'
+    quiet_hours_active: bool = False
+    sleep_clock_text: Optional[str] = None   # 'HH:MM', None hides the sleep clock
+    sleep_clock_drift: tuple = (0, 0)        # px offset, moves to avoid retention
     app_version_label: str = ''
     bt_connected: bool = False          # A BT audio device is connected
     bt_audio_active: bool = False       # Audio is routed to BT (headphone icon purple)

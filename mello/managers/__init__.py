@@ -9,6 +9,7 @@ from .setup_menu import SetupMenu
 from .settings import Settings
 from .analytics import UsageTracker
 from .bluetooth import BluetoothManager, BluetoothDevice
+from .quiet_hours import QuietHours
 
-__all__ = ['SleepManager', 'SmoothCarousel', 'PlayTimer', 'PerformanceMonitor', 'AutoPauseManager', 'SetupMenu', 'Settings', 'UsageTracker', 'BluetoothManager', 'BluetoothDevice']
+__all__ = ['SleepManager', 'SmoothCarousel', 'PlayTimer', 'PerformanceMonitor', 'AutoPauseManager', 'SetupMenu', 'Settings', 'UsageTracker', 'BluetoothManager', 'BluetoothDevice', 'QuietHours']
 

@@ -8,7 +8,10 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mello.managers.settings import Settings, DEFAULT_AUTO_PAUSE_MINUTES, DEFAULT_PROGRESS_EXPIRY_HOURS
+from mello.managers.settings import (Settings, DEFAULT_AUTO_PAUSE_MINUTES,
+                                     DEFAULT_PROGRESS_EXPIRY_HOURS,
+                                     QUIET_START_OPTIONS, QUIET_END_OPTIONS)
+from mello.config import VOLUME_ADJUST_STEP, VOLUME_RANGE
 
 
 @pytest.fixture
@@ -93,3 +96,59 @@ class TestSettingsCorruption:
         s = Settings(path=settings_path)
         assert s.auto_pause_minutes == 60
         assert s.progress_expiry_hours == DEFAULT_PROGRESS_EXPIRY_HOURS
+
+
+class TestQuietHoursSettings:
+    def test_defaults_to_off(self, settings_path):
+        s = Settings(path=settings_path)
+        assert s.quiet_hours == (None, 7 * 60)
+        assert s.quiet_start_label == 'Off'
+        assert s.quiet_end_label == '07:00'
+
+    def test_cycle_start_wraps_through_off(self, settings_path):
+        s = Settings(path=settings_path)
+        seen = [s.cycle_quiet_start() for _ in range(len(QUIET_START_OPTIONS))]
+        assert seen[-1] is None            # cycles back to Off
+        assert 19 * 60 + 30 in seen
+
+    def test_cycle_end_wraps(self, settings_path):
+        s = Settings(path=settings_path)
+        start = s.quiet_hours[1]
+        seen = [s.cycle_quiet_end() for _ in range(len(QUIET_END_OPTIONS))]
+        assert seen[-1] == start                    # a full cycle returns home
+        assert sorted(seen) == sorted(QUIET_END_OPTIONS)  # and visits every option
+
+    def test_persisted_across_reload(self, settings_path):
+        s = Settings(path=settings_path)
+        s.cycle_quiet_start()
+        s.cycle_quiet_end()
+        expected = s.quiet_hours
+        assert Settings(path=settings_path).quiet_hours == expected
+
+    def test_unknown_stored_value_recovers(self, settings_path):
+        settings_path.write_text(json.dumps({'quiet_hours_start': 12345}))
+        s = Settings(path=settings_path)
+        assert s.cycle_quiet_start() == QUIET_START_OPTIONS[1]
+
+
+class TestVolumeAdjustStep:
+    def test_one_tap_moves_a_full_step(self, settings_path):
+        s = Settings(path=settings_path)
+        before = s.get_volume_levels()[2]['speaker']
+        assert s.adjust_volume(2, 'speaker', -1) == before - VOLUME_ADJUST_STEP
+
+    def test_clamped_to_range(self, settings_path):
+        s = Settings(path=settings_path)
+        lo, hi = VOLUME_RANGE['speaker']
+        for _ in range(50):
+            s.adjust_volume(0, 'speaker', -1)
+        assert s.get_volume_levels()[0]['speaker'] == lo
+        for _ in range(50):
+            s.adjust_volume(0, 'speaker', 1)
+        assert s.get_volume_levels()[0]['speaker'] == hi
+
+    def test_bt_and_speaker_are_independent(self, settings_path):
+        s = Settings(path=settings_path)
+        bt_before = s.get_volume_levels()[1]['bt']
+        s.adjust_volume(1, 'speaker', -1)
+        assert s.get_volume_levels()[1]['bt'] == bt_before
