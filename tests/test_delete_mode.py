@@ -34,6 +34,8 @@ def _make_app(rect=(10, 10, 50, 50)) -> Mello:
     app = Mello.__new__(Mello)
     app.catalog_manager = SimpleNamespace(items=[item])
     app.temp_item = None
+    app.quiet_hours = SimpleNamespace(active=False)
+    app.settings = SimpleNamespace(bedtime_uri=None)
     app.selected_index = 0
     app.delete_mode_id = item.id
     app._delete_button_rect = rect

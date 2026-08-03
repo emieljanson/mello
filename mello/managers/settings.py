@@ -44,6 +44,7 @@ class Settings:
         self._progress_expiry_hours = DEFAULT_PROGRESS_EXPIRY_HOURS
         self._quiet_start: Optional[int] = DEFAULT_QUIET_START
         self._quiet_end: int = DEFAULT_QUIET_END
+        self._bedtime_uri: Optional[str] = None
         self._last_bt_device_mac: Optional[str] = None
         self._volume_overrides: Optional[list] = None  # None = use defaults
         self._share_usage_data: bool = True  # Set once during install, not changeable via UI
@@ -57,6 +58,7 @@ class Settings:
                 self._progress_expiry_hours = data.get('progress_expiry_hours', DEFAULT_PROGRESS_EXPIRY_HOURS)
                 self._quiet_start = data.get('quiet_hours_start', DEFAULT_QUIET_START)
                 self._quiet_end = data.get('quiet_hours_end', DEFAULT_QUIET_END)
+                self._bedtime_uri = data.get('bedtime_uri')
                 self._last_bt_device_mac = data.get('last_bt_device_mac')
                 self._volume_overrides = data.get('volume_levels')
                 if 'share_usage_data' in data:
@@ -73,6 +75,7 @@ class Settings:
                 'progress_expiry_hours': self._progress_expiry_hours,
                 'quiet_hours_start': self._quiet_start,
                 'quiet_hours_end': self._quiet_end,
+                'bedtime_uri': self._bedtime_uri,
                 'last_bt_device_mac': self._last_bt_device_mac,
                 'share_usage_data': self._share_usage_data,
             }
@@ -151,6 +154,17 @@ class Settings:
         self._save()
         logger.info(f'Quiet hours end set to {format_time(self._quiet_end)}')
         return self._quiet_end
+
+    # --- Bedtime album (the one thing still playable during quiet hours) ---
+
+    @property
+    def bedtime_uri(self) -> Optional[str]:
+        return self._bedtime_uri
+
+    def set_bedtime_uri(self, uri: Optional[str]):
+        self._bedtime_uri = uri
+        self._save()
+        logger.info(f'Bedtime album set to {uri or "none"}')
 
     # --- Bluetooth ---
 

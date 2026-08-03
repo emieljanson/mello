@@ -73,6 +73,7 @@ COLORS = {
     'text_secondary': (160, 160, 160),
     'text_muted': (96, 96, 96),
     'error': (232, 80, 80),
+    'warning': (245, 176, 66),  # amber — auto-pause winding down
 }
 
 # ============================================
@@ -173,6 +174,20 @@ SLEEP_CLOCK_DRIFT = 60
 # Hold anywhere on the sleeping screen this long to override quiet hours.
 # Deliberately longer than a child's patience, short enough for a parent.
 QUIET_HOURS_WAKE_HOLD = 3.0
+
+# How long the sun stays up after the wake time. This is the "OK to wake"
+# signal for a child who can't read a clock: moon = stay in bed, sun = get up.
+# Long enough to cover a slow morning, short enough that a midday nap-time
+# sleep shows a plain clock instead.
+WAKE_WINDOW_MINUTES = 90
+
+# ============================================
+# AUTO-PAUSE COUNTDOWN
+# ============================================
+
+# Show the "winding down" bar only for the last stretch before auto-pause.
+# A bar that sits there for 30 minutes is noise; the point is a warning.
+AUTO_PAUSE_WARN_SECONDS = 5 * 60
 
 # ============================================
 # TOUCH & GESTURES

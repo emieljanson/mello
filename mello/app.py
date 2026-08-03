@@ -233,6 +233,7 @@ class Mello:
         self.quiet_hours = QuietHours(self.settings)
         self._quiet_touch_start: Optional[float] = None  # hold-to-wake timer
         self._sleep_clock_minute: Optional[int] = None    # last minute drawn while asleep
+        self._bedtime_filtered = False                    # carousel narrowed to bedtime album
         if not touch_available and not self.mock_mode:
             self._disable_sleep_for_touch(
                 self.evdev_touch.consume_failure_reason() or 'touchscreen unavailable at startup'
@@ -772,11 +773,28 @@ class Mello:
     
     @property
     def display_items(self) -> List[CatalogItem]:
-        """Return catalog items + tempItem if present."""
+        """Return catalog items + tempItem if present.
+
+        During quiet hours this narrows to the bedtime album, so the only thing
+        a child can reach at bedtime is the one record you allowed.
+        """
         items = self.catalog_manager.items
+        bedtime_item = self.bedtime_item
+        if bedtime_item is not None:
+            return [bedtime_item]
         if self.temp_item:
             return items + [self.temp_item]
         return items
+
+    @property
+    def bedtime_item(self) -> Optional[CatalogItem]:
+        """The bedtime album, but only while quiet hours is being enforced."""
+        if not self.quiet_hours.active:
+            return None
+        uri = self.settings.bedtime_uri
+        if not uri:
+            return None
+        return next((i for i in self.catalog_manager.items if i.uri == uri), None)
     
     @property
     def now_playing(self) -> NowPlaying:
@@ -873,7 +891,7 @@ class Mello:
                 # _update() doesn't run while asleep, so refresh bedtime here or
                 # the window would never open — and worse, never close.
                 self.quiet_hours.update()
-                quiet = self.quiet_hours.active
+                quiet = self.bedtime_locked
                 # Primary wake: evdev threading.Event (reliable across threads)
                 # Fallback: pygame.event.wait with timeout (catches KEYDOWN/QUIT)
                 self.evdev_touch.wake_event.wait(0.2)
@@ -1296,7 +1314,7 @@ class Mello:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 logger.debug(f'Event: MOUSEBUTTONDOWN at {event.pos}')
                 if self.sleep_manager.is_sleeping:
-                    if self.quiet_hours.active:
+                    if self.bedtime_locked:
                         continue  # bedtime: taps don't wake (hold-to-wake only)
                     self._user_activated_playback = True
                     self._wake_from_sleep(f'pygame_touch:{event.pos}')
@@ -1792,6 +1810,27 @@ class Mello:
         drift = (((slot % 3) - 1) * step, (((slot // 3) % 3) - 1) * step)
         return f'{now.hour:02d}:{now.minute:02d}', drift
 
+    def _sleep_icon(self) -> Optional[str]:
+        """Which glyph belongs on the sleep clock: moon at bedtime, sun after."""
+        if not self.sleep_manager.is_sleeping:
+            return None
+        if self.quiet_hours.active:
+            return 'moon'
+        if self.quiet_hours.in_wake_window():
+            return 'sun'
+        return None
+
+    def _bedtime_label(self) -> str:
+        """Name of the chosen bedtime album for the settings row."""
+        uri = self.settings.bedtime_uri
+        if not uri:
+            return 'None'
+        item = next((i for i in self.catalog_manager.items if i.uri == uri), None)
+        if item is None:
+            return 'None'  # album was deleted since it was picked
+        name = item.name or 'Unknown'
+        return name if len(name) <= 14 else name[:12] + '..'
+
     def _draw_sleep_clock_if_due(self):
         """Redraw the sleeping screen when the displayed minute changes.
 
@@ -1824,8 +1863,34 @@ class Mello:
             self.quiet_hours.override()
             self._wake_from_sleep('quiet_hours_hold')
 
+    @property
+    def bedtime_locked(self) -> bool:
+        """True when taps must not wake the screen at all.
+
+        Bedtime with an allowed album still wakes — it just wakes to a carousel
+        holding nothing but that album.
+        """
+        return self.quiet_hours.active and self.bedtime_item is None
+
+    def _sync_bedtime_filter(self):
+        """Reset focus when the carousel narrows to (or widens from) bedtime."""
+        filtered = self.bedtime_item is not None
+        if filtered == self._bedtime_filtered:
+            return
+        self._bedtime_filtered = filtered
+        self.selected_index = 0
+        self.carousel.scroll_x = 0
+        self._update_carousel_max_index()
+        self.renderer.invalidate()
+        logger.info(f'Bedtime carousel filter {"on" if filtered else "off"}')
+
     def _on_quiet_hours_start(self, menu_open: bool):
         """Bedtime just began: stop the music and let the screen fall asleep."""
+        bedtime_uri = self.settings.bedtime_uri
+        if bedtime_uri and self.now_playing.context_uri == bedtime_uri:
+            logger.info('Quiet hours: bedtime album playing, leaving it alone')
+            return
+
         if self.now_playing.playing:
             # ponytail: hard pause, not auto-pause's 5s fade. Reuse the fade if a
             # mid-song cut bothers the kid. No tracker event — bedtime isn't
@@ -2325,6 +2390,7 @@ class Mello:
         # Quiet hours: at bedtime, stop the music and send the screen to bed
         if self.quiet_hours.update():
             self._on_quiet_hours_start(menu_open)
+        self._sync_bedtime_filter()
 
         self.sleep_manager.check_sleep(self.now_playing.playing or menu_open)
         if was_awake and self.sleep_manager.is_sleeping:
@@ -2493,9 +2559,13 @@ class Mello:
             progress_expiry_hours=self.settings.progress_expiry_hours,
             quiet_start_label=self.settings.quiet_start_label,
             quiet_end_label=self.settings.quiet_end_label,
-            quiet_hours_active=self.quiet_hours.active,
             sleep_clock_text=sleep_clock_text,
             sleep_clock_drift=sleep_clock_drift,
+            sleep_icon=self._sleep_icon(),
+            bedtime_label=self._bedtime_label(),
+            bedtime_uri=self.settings.bedtime_uri,
+            catalog_items=self.catalog_manager.items,
+            auto_pause_remaining=self.auto_pause.remaining_seconds(),
             app_version_label=self.app_version_label,
             bt_connected=bt_dev is not None,
             bt_audio_active=self._bt_audio_active,

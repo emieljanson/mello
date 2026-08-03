@@ -18,7 +18,7 @@ from ..config import (
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     TRACK_INFO_X, CAROUSEL_X, CONTROLS_X, CAROUSEL_CENTER_Y,
     BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING, PROGRESS_BAR_WIDTH,
-    DEFAULT_VOLUME_LEVELS,
+    DEFAULT_VOLUME_LEVELS, AUTO_PAUSE_WARN_SECONDS,
 )
 
 # Headphone button Y position — symmetric to volume button on the opposite side.
@@ -196,7 +196,8 @@ class Renderer:
                 self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
             self._static_layer.blit(self.screen, (0, 0))
             
-            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
+            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
+                                ctx.is_loading, ctx.auto_pause_remaining)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -209,7 +210,8 @@ class Renderer:
             self.screen.blit(self._static_layer, 
                            self._carousel_rect.topleft, 
                            self._carousel_rect)
-            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
+            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
+                                ctx.is_loading, ctx.auto_pause_remaining)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -220,7 +222,8 @@ class Renderer:
                 self.screen.blit(self._static_layer,
                                self._carousel_rect.topleft,
                                self._carousel_rect)
-                self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
+                self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
+                                ctx.is_loading, ctx.auto_pause_remaining)
                 return [self._carousel_rect]
             return []
     
@@ -259,13 +262,33 @@ class Renderer:
             ctx.sleep_clock_text or '', self.font_clock, self._SLEEP_CLOCK_COLOR)
         self.screen.blit(surf, surf.get_rect(center=(cx, cy)))
 
-        if ctx.quiet_hours_active:
-            # Crescent: a dim disc with an offset black disc carved out of it.
-            # Sits "below" the clock from the user's view (small physical X).
-            moon_x = cx - surf.get_width() // 2 - 45
-            radius = 20
-            draw_aa_circle(self.screen, self._SLEEP_CLOCK_COLOR, (moon_x, cy), radius)
-            draw_aa_circle(self.screen, (0, 0, 0), (moon_x + 8, cy - 8), radius)
+        if ctx.sleep_icon:
+            # Sits "below" the clock from the user's view (small physical X)
+            icon_x = cx - surf.get_width() // 2 - 45
+            self._draw_sleep_icon(ctx.sleep_icon, icon_x, cy)
+
+    def _draw_sleep_icon(self, icon: str, x: int, y: int):
+        """Draw the moon (bedtime) or sun (ok to wake) below the sleep clock.
+
+        This is the whole point of the clock for a child who can't read one:
+        moon means stay in bed, sun means you're allowed up.
+        """
+        colour = self._SLEEP_CLOCK_COLOR
+        radius = 20
+
+        if icon == 'moon':
+            # Crescent: a disc with an offset black disc carved out of it
+            draw_aa_circle(self.screen, colour, (x, y), radius)
+            draw_aa_circle(self.screen, (0, 0, 0), (x + 8, y - 8), radius)
+            return
+
+        # Sun: a disc with bold rays. Sized to read from across a dark room at
+        # a few percent backlight — thin rays vanish at that brightness.
+        draw_aa_circle(self.screen, colour, (x, y), radius - 4)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            start = (x + dx * (radius + 2), y + dy * (radius + 2))
+            end = (x + dx * (radius + 14), y + dy * (radius + 14))
+            pygame.draw.line(self.screen, colour, start, end, 5)
 
     def _render_text_rotated(self, text: str, font: pygame.font.Font, color: tuple) -> pygame.Surface:
         """Render text rotated 90° CW for portrait display mode."""
@@ -376,8 +399,9 @@ class Renderer:
         if self._text_cache.get('artist_surface'):
             self.screen.blit(self._text_cache['artist_surface'], self._text_cache['artist_rect'])
     
-    def _draw_carousel(self, items: List[CatalogItem], scroll_x: float, 
-                       now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False):
+    def _draw_carousel(self, items: List[CatalogItem], scroll_x: float,
+                       now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False,
+                       auto_pause_remaining: Optional[float] = None):
         """Draw album cover carousel (portrait mode - covers along Y axis)."""
         # Portrait mode: covers laid out along Y axis (user's horizontal)
         center_y = CAROUSEL_CENTER_Y  # 640
@@ -425,6 +449,8 @@ class Renderer:
         
         if center_cover_rect and center_item:
             self._draw_cover_progress(center_cover_rect, center_item, now_playing)
+            self._draw_auto_pause_warning(center_cover_rect, center_item, now_playing,
+                                          auto_pause_remaining)
             
             if loading:
                 self._draw_loading_spinner(center_cover_rect)
@@ -476,6 +502,40 @@ class Renderer:
         progress_surf.blit(self._progress_cache[mask_key], (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
         self.screen.blit(progress_surf, (cover_x, cover_y))
     
+    def _draw_auto_pause_warning(self, cover_rect: tuple, item: CatalogItem,
+                                 now_playing: NowPlaying, remaining: Optional[float]):
+        """Draw a shrinking bar on the cover's far edge as auto-pause approaches.
+
+        Auto-pause is otherwise invisible — the music just stops, which reads as
+        "broken" to a small child. This gives them a few minutes of warning.
+        """
+        if remaining is None or remaining > AUTO_PAUSE_WARN_SECONDS:
+            return
+        if now_playing.context_uri != item.uri:
+            return
+
+        cover_x, cover_y, cover_w, cover_h = cover_rect
+        fraction = max(0.0, min(1.0, remaining / AUTO_PAUSE_WARN_SECONDS))
+        fill_height = int(cover_h * fraction)
+        if fill_height <= 0:
+            return
+
+        mask_key = f'_progress_mask_{cover_w}'
+        if mask_key not in self._progress_cache:
+            radius = max(12, cover_w // 25)
+            mask = pygame.Surface((cover_w, cover_h), pygame.SRCALPHA)
+            pygame.draw.rect(mask, (255, 255, 255, 255), (0, 0, cover_w, cover_h), border_radius=radius)
+            self._progress_cache[mask_key] = mask
+
+        surf = pygame.Surface((cover_w, cover_h), pygame.SRCALPHA)
+        # Far edge from the track progress bar (user sees this as the top edge),
+        # shrinking towards the middle as the time runs out.
+        bar_x = cover_w - PROGRESS_BAR_WIDTH
+        pygame.draw.rect(surf, COLORS['warning'],
+                         (bar_x, (cover_h - fill_height) // 2, PROGRESS_BAR_WIDTH, fill_height))
+        surf.blit(self._progress_cache[mask_key], (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        self.screen.blit(surf, (cover_x, cover_y))
+
     def _lighten_color(self, color: tuple, amount: float = 0.3) -> tuple:
         """Make a color lighter by blending with white."""
         r, g, b = color[:3]
@@ -720,6 +780,10 @@ class Renderer:
             title = 'Volume'
             nav_icon = 'back'
             items = self._build_volume_content(ctx)
+        elif ctx.menu_state == MenuState.BEDTIME_LIST:
+            title = 'Bedtime'
+            nav_icon = 'back'
+            items = self._build_bedtime_content(ctx)
         else:
             return
 
@@ -764,9 +828,11 @@ class Renderer:
             ('separator',),
             ('button', 'quiet_start', f'Bedtime: {ctx.quiet_start_label}', COLORS['bg_elevated']),
         ]
-        # Wake time is meaningless with no bedtime set
+        # Wake time and bedtime album are meaningless with no bedtime set
         if ctx.quiet_start_label != 'Off':
             items.append(('button', 'quiet_end', f'Wake: {ctx.quiet_end_label}', COLORS['bg_elevated']))
+            items.append(('button', 'bedtime_album', f'Bedtime album: {ctx.bedtime_label}',
+                          COLORS['bg_elevated']))
         items.append(('separator',))
         # Dynamic update button
         if ctx.update_running:
@@ -783,6 +849,22 @@ class Renderer:
         ]
         if ctx.app_version_label:
             items.append(('footer', f'Version: {ctx.app_version_label}'))
+        return items
+
+    def _build_bedtime_content(self, ctx: 'RenderContext') -> list:
+        """Pick the one album that stays playable during quiet hours."""
+        none_color = COLORS['accent'] if not ctx.bedtime_uri else COLORS['bg_elevated']
+        items: list = [('button', 'bedtime_none', 'None', none_color)]
+
+        for i, item in enumerate(ctx.catalog_items):
+            is_current = item.uri == ctx.bedtime_uri
+            color = COLORS['accent'] if is_current else COLORS['bg_elevated']
+            name = item.name or 'Unknown'
+            display = name if len(name) <= 20 else name[:18] + '..'
+            items.append(('button', f'bedtime_pick_{i}', display, color))
+
+        if not ctx.catalog_items:
+            items.append(('footer', 'No albums saved yet'))
         return items
 
     def _build_wifi_content(self, ctx: 'RenderContext') -> list:

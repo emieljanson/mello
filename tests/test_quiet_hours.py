@@ -121,3 +121,52 @@ def test_bedtime_off_is_never_active():
     quiet = QuietHours(FakeSettings(None, 7 * 60))
     assert quiet.update(at(2, 0)) is False
     assert quiet.active is False
+
+
+# --- OK-to-wake window (the sun) ---
+
+class TestWakeWindow:
+    def _quiet(self, monkeypatch):
+        monkeypatch.setattr('os.path.exists', lambda p: True)  # clock is synced
+        return QuietHours(FakeSettings(19 * 60 + 30, 7 * 60))
+
+    @pytest.mark.parametrize('now, expected', [
+        (at(6, 59), False),   # still bedtime
+        (at(7, 0), True),     # sun comes up exactly at the wake time
+        (at(8, 29), True),    # inside the 90-minute window
+        (at(8, 30), False),   # window closed
+        (at(13, 0), False),   # midday nap shows a plain clock, not a sun
+    ])
+    def test_sun_follows_wake_time(self, monkeypatch, now, expected):
+        assert self._quiet(monkeypatch).in_wake_window(now) is expected
+
+    def test_no_sun_without_a_bedtime(self, monkeypatch):
+        monkeypatch.setattr('os.path.exists', lambda p: True)
+        quiet = QuietHours(FakeSettings(None, 7 * 60))
+        assert quiet.in_wake_window(at(7, 30)) is False
+
+    def test_no_sun_on_unsynced_clock(self, monkeypatch):
+        monkeypatch.setattr('os.path.exists', lambda p: False)
+        quiet = QuietHours(FakeSettings(19 * 60 + 30, 7 * 60))
+        assert quiet.in_wake_window(datetime.datetime(1970, 1, 1, 7, 30)) is False
+
+    def test_sun_and_moon_never_overlap(self, monkeypatch):
+        """The two signals must be mutually exclusive or they'd contradict."""
+        monkeypatch.setattr('os.path.exists', lambda p: True)
+        quiet = QuietHours(FakeSettings(19 * 60 + 30, 7 * 60))
+        for hour in range(24):
+            for minute in (0, 30):
+                now = at(hour, minute)
+                quiet.update(now)
+                assert not (quiet.active and quiet.in_wake_window(now)), f'{hour}:{minute}'
+
+
+# --- Wake window across a wrapping bedtime ---
+
+def test_sun_wraps_past_midnight_for_a_late_wake(monkeypatch):
+    """A 23:00 wake time means the sun window runs into the next morning."""
+    monkeypatch.setattr('os.path.exists', lambda p: True)
+    quiet = QuietHours(FakeSettings(12 * 60, 23 * 60))
+    assert quiet.in_wake_window(at(23, 30)) is True
+    assert quiet.in_wake_window(at(0, 15)) is True     # 00:15 is within 90 min of 23:00
+    assert quiet.in_wake_window(at(1, 0)) is False

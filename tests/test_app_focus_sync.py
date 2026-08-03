@@ -32,6 +32,8 @@ def _make_mello(items: list[CatalogItem], now_playing: NowPlaying) -> Mello:
     app = Mello.__new__(Mello)
     app.catalog_manager = SimpleNamespace(items=items)
     app.temp_item = None
+    app.quiet_hours = SimpleNamespace(active=False)
+    app.settings = SimpleNamespace(bedtime_uri=None)
     app.selected_index = 0
     app.carousel = SimpleNamespace(set_target=MagicMock(), settled=True)
     app.touch = SimpleNamespace(dragging=False)

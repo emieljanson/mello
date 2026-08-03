@@ -10,6 +10,8 @@ import logging
 import os
 from typing import Optional
 
+from ..config import WAKE_WINDOW_MINUTES
+
 logger = logging.getLogger(__name__)
 
 # systemd-timesyncd creates this once NTP has actually set the clock.
@@ -68,6 +70,19 @@ class QuietHours:
         self._in_window = False
         self._overridden = False
         self._active = False
+
+    def in_wake_window(self, now: Optional[datetime.datetime] = None) -> bool:
+        """True for a stretch after the wake time — the 'OK to wake' sun.
+
+        Only meaningful when a bedtime is set: without one there is no morning
+        boundary to signal.
+        """
+        start, end = self.settings.quiet_hours
+        if start is None or end is None:
+            return False
+        if not clock_is_trusted(now):
+            return False
+        return is_within(end, (end + WAKE_WINDOW_MINUTES) % (24 * 60), now)
 
     @property
     def active(self) -> bool:
