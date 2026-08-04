@@ -52,7 +52,7 @@ if ! flock -n 9; then
   exit 0
 fi
 
-REPO_URL="https://github.com/emieljanson/mello.git"
+REPO_URL="https://github.com/jeremypele/mello.git"
 
 # Ensure we have a healthy git repo.  If .git is missing or fetch fails for
 # non-network reasons (corrupt repo, no remote, manual SCP deploy, etc.),
@@ -60,7 +60,7 @@ REPO_URL="https://github.com/emieljanson/mello.git"
 _ensure_git_repo() {
   # Quick health-check: is this a valid git repo with the right remote?
   if git rev-parse --git-dir >/dev/null 2>&1 \
-     && git remote get-url origin 2>/dev/null | grep -q "emieljanson/mello"; then
+     && git remote get-url origin 2>/dev/null | grep -q "jeremypele/mello"; then
     return 0  # repo looks fine
   fi
 

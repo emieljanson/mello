@@ -50,14 +50,14 @@ Use the [Raspberry Pi Imager](https://www.raspberrypi.com/software/):
 
 ```bash
 ssh <your-user>@<your-hostname>.local
-curl -sSL https://raw.githubusercontent.com/emieljanson/mello/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/jeremypele/mello/main/install.sh | bash
 sudo reboot
 ```
 
 To install without anonymous usage analytics:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/emieljanson/mello/main/install.sh | bash -s -- --no-analytics
+curl -sSL https://raw.githubusercontent.com/jeremypele/mello/main/install.sh | bash -s -- --no-analytics
 ```
 
 ### 3. Connect Spotify
