@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mello One-Line Installer
-# Usage: curl -sSL https://raw.githubusercontent.com/emieljanson/mello/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/jeremypele/mello/main/install.sh | bash
 # Options: --no-analytics  Disable anonymous usage data
 
 set -e
@@ -34,7 +34,7 @@ fi
 
 # Clone repository
 echo "Downloading Mello..."
-git clone https://github.com/emieljanson/mello.git ~/mello
+git clone https://github.com/jeremypele/mello.git ~/mello
 
 # Run setup
 echo ""
