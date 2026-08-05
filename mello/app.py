@@ -14,7 +14,7 @@ import pygame
 
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    LIBRESPOT_URL, LIBRESPOT_WS,
+    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, TRACKS_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
@@ -221,6 +221,8 @@ class Mello:
             cache_dir=TRACKS_DIR,
             token_url=f'{LIBRESPOT_URL}/token',
             mock_mode=self.mock_mode,
+            client_id=SPOTIFY_CLIENT_ID,
+            client_secret=SPOTIFY_CLIENT_SECRET,
         )
         self._track_focus_uri: Optional[str] = None   # album we're dwelling on
         self._track_focus_since: float = 0.0
@@ -2786,6 +2788,8 @@ class Mello:
             track_list=track_list,
             track_listable=parse_context(focused_context) is not None,
             track_cooldown_s=self.track_lists.cooldown_remaining(),
+            track_unavailable=self.track_lists.is_unavailable(focused_context),
+            track_shared_quota=not self.track_lists.uses_own_credentials(),
             track_list_index=track_index,
             app_version_label=self.app_version_label,
             bt_connected=bt_dev is not None,

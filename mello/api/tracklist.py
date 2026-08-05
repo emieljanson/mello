@@ -6,13 +6,22 @@ way to know what comes next is Spotify's Web API. The daemon will mint an
 access token for its own session (POST /token), which means no developer app
 registration and no credentials of our own.
 
+That borrowed token authenticates as go-librespot's client ID, which every
+librespot/spotifyd/go-librespot install on earth shares — and the Web API rate
+limit is per client ID. In practice that quota is permanently exhausted: every
+request comes back 429 on the first try, so borrowing is a fallback, not a
+plan.
+
+The fix is your own Spotify app (client ID + secret in .env), which gets its
+own quota. See docs/spotify-api.md. Client credentials are enough — album,
+playlist and show track lists are public catalog data.
+
 Requests go straight to api.spotify.com rather than through the daemon's
-/web-api proxy, because that proxy discards Spotify's Retry-After header and
-we need it: go-librespot ships a client ID shared by every installation, so
-throttling is frequent — though the cooldown is seconds, not hours.
+/web-api proxy, because that proxy discards Spotify's Retry-After header.
 
 Every list is cached on disk forever. An album only has to succeed once.
 """
+import base64
 import json
 import logging
 import re
@@ -27,6 +36,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 API_BASE = 'https://api.spotify.com/v1'
+ACCOUNTS_TOKEN_URL = 'https://accounts.spotify.com/api/token'
 
 # Spotify caps page size at 50 for album tracks, 100 for playlist items.
 PAGE_SIZE = 50
@@ -46,6 +56,9 @@ MAX_COOLDOWN = 15 * 60
 
 # Assumed cooldown when a 429 arrives with no usable Retry-After.
 DEFAULT_COOLDOWN = 60
+
+# Refresh an app token this many seconds before it actually expires.
+TOKEN_EXPIRY_MARGIN = 60
 
 
 @dataclass
@@ -93,18 +106,24 @@ def _parse_items(kind: str, items: list) -> List[Track]:
 class TrackListStore:
     """Fetches and caches the track list for each saved context."""
 
-    def __init__(self, cache_dir: Path, token_url: str, mock_mode: bool = False):
+    def __init__(self, cache_dir: Path, token_url: str, mock_mode: bool = False,
+                 client_id: str = '', client_secret: str = ''):
         self.cache_dir = Path(cache_dir)
         self.token_url = token_url
         self.mock_mode = mock_mode
+        self.client_id = client_id
+        self.client_secret = client_secret
 
         self._lock = threading.Lock()
         self._lists: Dict[str, List[Track]] = {}
         self._in_flight: set = set()
         self._failed: set = set()   # don't hammer a context that can't be fetched
+        self._unavailable: set = set()  # Spotify refuses these (404) — never retry
         # Spotify throttles per client ID, and go-librespot's is shared by every
         # install — so a 429 applies to every context, not just this one.
         self._blocked_until: float = 0.0
+        self._app_token: Optional[str] = None
+        self._app_token_expires: float = 0.0
 
         if not mock_mode:
             try:
@@ -158,7 +177,18 @@ class TrackListStore:
         if self.cooldown_remaining() > 0:
             return False
         with self._lock:
-            return context_uri not in self._in_flight and context_uri not in self._failed
+            return (context_uri not in self._in_flight
+                    and context_uri not in self._failed
+                    and context_uri not in self._unavailable)
+
+    def is_unavailable(self, context_uri: str) -> bool:
+        """True when Spotify has refused to share this list (404)."""
+        with self._lock:
+            return context_uri in self._unavailable
+
+    def uses_own_credentials(self) -> bool:
+        """True when we have our own Spotify app, not go-librespot's shared one."""
+        return bool(self.client_id and self.client_secret)
 
     def fetch(self, context_uri: str) -> Optional[List[Track]]:
         """Fetch and cache a context's tracks. Blocking — call from a worker."""
@@ -201,6 +231,58 @@ class TrackListStore:
             self._failed.clear()
 
     def _access_token(self) -> Optional[str]:
+        """Our own app token when configured, else one borrowed from the daemon."""
+        if self.uses_own_credentials():
+            token = self._client_credentials_token()
+            if token:
+                return token
+            # Fall through: a bad secret shouldn't be worse than no secret.
+        return self._borrowed_token()
+
+    def _client_credentials_token(self) -> Optional[str]:
+        """Token for our own Spotify app. Cached until it nearly expires.
+
+        Client credentials give no user context, which is all we need: album,
+        playlist and show track lists are public catalog data.
+        """
+        with self._lock:
+            if self._app_token and time.time() < self._app_token_expires:
+                return self._app_token
+
+        basic = base64.b64encode(
+            f'{self.client_id}:{self.client_secret}'.encode()).decode()
+        try:
+            resp = requests.post(
+                ACCOUNTS_TOKEN_URL,
+                data={'grant_type': 'client_credentials'},
+                headers={'Authorization': f'Basic {basic}'},
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    f'Spotify app token rejected ({resp.status_code}) — '
+                    f'check SPOTIFY_CLIENT_ID/SECRET in .env'
+                )
+                return None
+            data = resp.json()
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f'Spotify app token request failed: {e}')
+            return None
+
+        token = data.get('access_token')
+        if not isinstance(token, str) or not token:
+            return None
+        try:
+            lifetime = float(data.get('expires_in') or 3600)
+        except (TypeError, ValueError):
+            lifetime = 3600
+        with self._lock:
+            self._app_token = token
+            self._app_token_expires = time.time() + max(30.0, lifetime - TOKEN_EXPIRY_MARGIN)
+        logger.info('Spotify app token obtained (own client ID, own rate limit)')
+        return token
+
+    def _borrowed_token(self) -> Optional[str]:
         """Borrow an access token from the daemon's own Spotify session."""
         try:
             resp = requests.post(self.token_url, timeout=5)
@@ -233,8 +315,9 @@ class TrackListStore:
         params = {'limit': PAGE_SIZE, 'offset': 0}
         tracks: List[Track] = []
 
+        context_uri = f'spotify:{kind}:{spotify_id}'
         while url and len(tracks) < MAX_TRACKS:
-            payload = self._get_json(url, headers, params)
+            payload = self._get_json(url, headers, params, context_uri)
             if payload is None:
                 return None  # give up on this context for now; retried later
             tracks.extend(_parse_items(kind, payload.get('items') or []))
@@ -245,7 +328,8 @@ class TrackListStore:
 
         return tracks[:MAX_TRACKS]
 
-    def _get_json(self, url: str, headers: dict, params: Optional[dict]) -> Optional[dict]:
+    def _get_json(self, url: str, headers: dict, params: Optional[dict],
+                  context_uri: str = '') -> Optional[dict]:
         """GET with bounded retries that honour Spotify's Retry-After."""
         for attempt in range(MAX_ATTEMPTS):
             try:
@@ -275,6 +359,22 @@ class TrackListStore:
 
             if resp.status_code == 401:
                 logger.info('Track list token rejected (401), will refetch a token next time')
+                with self._lock:
+                    self._app_token = None   # force a fresh one next attempt
+                return None
+
+            if resp.status_code == 404:
+                # Spotify's own algorithmic and editorial playlists (the
+                # 37i9dQZF1D... ones) are not readable by third-party apps.
+                # No amount of retrying changes that, so stop asking.
+                if context_uri:
+                    with self._lock:
+                        self._unavailable.add(context_uri)
+                logger.info(
+                    f'Track list unavailable: Spotify returned 404 for '
+                    f'{context_uri[:45] or url} (its own editorial playlists '
+                    f'are closed to third-party apps)'
+                )
                 return None
 
             logger.warning(f'Track list request returned {resp.status_code}')

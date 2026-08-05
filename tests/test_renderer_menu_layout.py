@@ -66,7 +66,41 @@ def test_menu_rows_do_not_overlap():
         top = x - r._MENU_BTN_GAP
 
 
+def _track_context(**kwargs):
+    ctx = _bt_context()
+    ctx.menu_state = MenuState.TRACK_LIST
+    ctx.track_list = []
+    for key, value in kwargs.items():
+        setattr(ctx, key, value)
+    return ctx
+
+
+def _words(items):
+    return ' '.join(i[1] for i in items if i[0] in ('text', 'footer'))
+
+
+def test_empty_list_explains_which_problem_it_is():
+    """Three different dead ends, three different things to do about them."""
+    r = _renderer()
+
+    # Spotify refuses this list outright: don't promise a retry.
+    refused = _words(r._build_track_list_content(_track_context(track_unavailable=True)))
+    assert 'private' in refused
+    assert 'Retrying' not in refused
+
+    # Shared client ID: the wait is not the fix, an own key is.
+    shared = _words(r._build_track_list_content(
+        _track_context(track_cooldown_s=52, track_shared_quota=True)))
+    assert 'own' in shared and 'key' in shared
+
+    # Own key, genuinely throttled: waiting really is the fix.
+    mine = _words(r._build_track_list_content(
+        _track_context(track_cooldown_s=52, track_shared_quota=False)))
+    assert 'Retrying in 52 sec' in mine
+
+
 if __name__ == '__main__':
     test_bt_headers_render_visible_pixels()
     test_menu_rows_do_not_overlap()
+    test_empty_list_explains_which_problem_it_is()
     print('ok')

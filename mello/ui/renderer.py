@@ -958,11 +958,27 @@ class Renderer:
     def _build_track_list_content(self, ctx: 'RenderContext') -> list:
         """The full track list, current song in accent. Tap one to jump to it."""
         if not ctx.track_list:
+            if ctx.track_unavailable:
+                # Spotify's own algorithmic playlists are closed to third-party
+                # apps. Retrying is pointless, so don't imply that it might work.
+                return [('text', 'No list for this one'),
+                        ('spacer',),
+                        ('text', "Spotify keeps its own"),
+                        ('text', 'playlists private'),
+                        ('spacer',),
+                        ('footer', 'Albums and your playlists work')]
             if ctx.track_cooldown_s > 0:
-                # Spotify rate-limits go-librespot's shared client ID. Say so
-                # with the wait, rather than looking broken.
                 mins = int(ctx.track_cooldown_s // 60)
                 wait = f'{mins} min' if mins else f'{int(ctx.track_cooldown_s)} sec'
+                if ctx.track_shared_quota:
+                    # The shared client ID's quota is permanently spent, so
+                    # "retrying" is not really a plan. Name the actual fix.
+                    return [('text', 'Spotify limit reached'),
+                            ('spacer',),
+                            ('text', 'Needs your own'),
+                            ('text', 'Spotify app key'),
+                            ('spacer',),
+                            ('footer', 'See docs/spotify-api.md')]
                 return [('text', 'Spotify is busy'),
                         ('spacer',),
                         ('text', f'Retrying in {wait}'),

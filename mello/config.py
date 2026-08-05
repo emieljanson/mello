@@ -34,6 +34,13 @@ SCREEN_HEIGHT = 1280
 LIBRESPOT_URL = os.environ.get('LIBRESPOT_URL', 'http://localhost:3678')
 LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
 
+# Your own Spotify app, for track lists (see docs/spotify-api.md).
+# Without these we borrow go-librespot's token, whose client ID is shared by
+# every librespot install worldwide — its Web API quota is permanently spent,
+# so track lists just 429 forever. Optional, but nothing else fixes that.
+SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID', '').strip()
+SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET', '').strip()
+
 # ============================================
 # PATHS
 # ============================================
