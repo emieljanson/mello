@@ -44,6 +44,7 @@ class RenderContext:
     prev_track_name: Optional[str] = None    # peek under the cover: what just played
     next_track_name: Optional[str] = None    # peek under the cover: what's coming
     track_list: list = field(default_factory=list)   # full list for the track screen
+    track_listable: bool = False             # focused album *can* have a list (button shows)
     track_list_index: Optional[int] = None           # position of the playing track
     app_version_label: str = ''
     bt_connected: bool = False          # A BT audio device is connected
