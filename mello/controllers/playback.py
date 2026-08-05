@@ -120,8 +120,13 @@ class PlaybackController:
             self.volume.unmute()
             self.play_item(item.uri)
 
-    def play_item(self, uri: str, from_beginning: bool = False, epoch: int = 0):
-        """Queue a play request (non-blocking). Only the latest request runs."""
+    def play_item(self, uri: str, from_beginning: bool = False, epoch: int = 0,
+                  skip_to_uri: Optional[str] = None):
+        """Queue a play request (non-blocking). Only the latest request runs.
+
+        skip_to_uri starts the context at a specific track, for tapping an
+        entry in the track list. It overrides saved progress.
+        """
         self.last_user_play_time = time.time()
         self.last_user_play_uri = uri
         self._clear_pause_override('new_play_intent')
@@ -134,13 +139,13 @@ class PlaybackController:
                 if uri == self._playing_uri and not from_beginning:
                     logger.debug(f'Already loading {uri}, skipping duplicate')
                     return
-                self._pending_play = (uri, from_beginning, epoch)
+                self._pending_play = (uri, from_beginning, epoch, skip_to_uri)
                 logger.debug(f'Queued play request: {uri}')
                 return
             self._play_in_progress = True
             self._playing_uri = uri
 
-        run_async(self._execute_play, uri, from_beginning, epoch)
+        run_async(self._execute_play, uri, from_beginning, epoch, skip_to_uri)
 
     def retry_failed(self):
         """Retry a previously failed play request (call on reconnect)."""
@@ -298,7 +303,8 @@ class PlaybackController:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _execute_play(self, uri: str, from_beginning: bool, epoch: int):
+    def _execute_play(self, uri: str, from_beginning: bool, epoch: int,
+                      explicit_skip_to_uri: Optional[str] = None):
         """Execute the play request (runs in thread pool).
 
         Captures _play_generation at start so it can bail out early when
@@ -321,7 +327,11 @@ class PlaybackController:
 
             skip_to_uri = None
             saved_progress = None
-            if not from_beginning:
+            if explicit_skip_to_uri:
+                # Track picked from the list: start there, ignoring saved progress.
+                skip_to_uri = explicit_skip_to_uri
+                logger.info(f'  Explicit track requested: {skip_to_uri}')
+            elif not from_beginning:
                 saved_progress = self.catalog_manager.get_progress(uri)
                 if saved_progress:
                     skip_to_uri = saved_progress.get('uri')
@@ -443,7 +453,7 @@ class PlaybackController:
                     should_execute_pending = False
                 if should_execute_pending:
                     logger.debug(f'Executing queued request: {pending[0]}')
-                    self.play_item(pending[0], pending[1], pending[2])
+                    self.play_item(pending[0], pending[1], pending[2], pending[3])
 
     def _emit_toast(self, message: str, cooldown_s: float = 6.0):
         """Emit toast with small cooldown to prevent spam loops."""

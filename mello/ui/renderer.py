@@ -69,6 +69,7 @@ class Renderer:
         self.add_button_rect: Optional[Tuple[int, int, int, int]] = None
         self.delete_button_rect: Optional[Tuple[int, int, int, int]] = None
         self.settings_button_rect: Optional[Tuple[int, int, int, int]] = None
+        self.track_list_button_rect: Optional[Tuple[int, int, int, int]] = None
         
         # Menu button rects (updated when menu is drawn)
         self.menu_button_rects: Dict[str, pygame.Rect] = {}
@@ -134,6 +135,7 @@ class Renderer:
             self.add_button_rect = None
             self.delete_button_rect = None
             self.settings_button_rect = None
+            self.track_list_button_rect = None
             self._draw_menu_frame(ctx)
             return None
 
@@ -141,6 +143,7 @@ class Renderer:
         self.add_button_rect = None
         self.delete_button_rect = None
         self.settings_button_rect = None
+        self.track_list_button_rect = None
         
         current_item = ctx.items[ctx.selected_index] if ctx.selected_index < len(ctx.items) else None
         current_track_key = self._get_track_key(
@@ -189,6 +192,7 @@ class Renderer:
             # Full redraw
             self._draw_background()
             self._draw_track_info(current_item, ctx)
+            self._draw_track_peek(ctx)
             self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button,
                                 bt_connected=ctx.bt_connected, bt_audio_active=ctx.bt_audio_active)
             
@@ -197,7 +201,7 @@ class Renderer:
             self._static_layer.blit(self.screen, (0, 0))
             
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
-                                ctx.is_loading, ctx.auto_pause_remaining)
+                                ctx.is_loading, ctx.auto_pause_remaining, bool(ctx.track_list))
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -211,7 +215,7 @@ class Renderer:
                            self._carousel_rect.topleft, 
                            self._carousel_rect)
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
-                                ctx.is_loading, ctx.auto_pause_remaining)
+                                ctx.is_loading, ctx.auto_pause_remaining, bool(ctx.track_list))
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -223,7 +227,7 @@ class Renderer:
                                self._carousel_rect.topleft,
                                self._carousel_rect)
                 self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
-                                ctx.is_loading, ctx.auto_pause_remaining)
+                                ctx.is_loading, ctx.auto_pause_remaining, bool(ctx.track_list))
                 return [self._carousel_rect]
             return []
     
@@ -343,6 +347,43 @@ class Renderer:
             line2_rect = line2.get_rect(center=(center_x - 60, center_y))
             self.screen.blit(line2, line2_rect)
     
+    # Peek line sits between the artist (TRACK_INFO_X - 35) and the cover's
+    # top edge (CAROUSEL_X + COVER_SIZE) — about 45px of clear space.
+    _TRACK_PEEK_X = 610
+
+    def _draw_track_peek(self, ctx: RenderContext):
+        """One line showing what Previous and Next will actually give you.
+
+        Skip buttons are guesswork without it — the point is knowing what's
+        coming before you press.
+        """
+        if not (ctx.prev_track_name or ctx.next_track_name):
+            return
+
+        margin = 90
+        if ctx.prev_track_name:
+            surf = self._render_text_rotated(
+                f'‹ {self._clip_peek(ctx.prev_track_name)}',
+                self.font_small, COLORS['text_secondary'])
+            rect = surf.get_rect()
+            rect.centerx = self._TRACK_PEEK_X
+            rect.top = margin
+            self.screen.blit(surf, rect)
+
+        if ctx.next_track_name:
+            surf = self._render_text_rotated(
+                f'{self._clip_peek(ctx.next_track_name)} ›',
+                self.font_small, COLORS['text_secondary'])
+            rect = surf.get_rect()
+            rect.centerx = self._TRACK_PEEK_X
+            rect.bottom = SCREEN_HEIGHT - margin
+            self.screen.blit(surf, rect)
+
+    @staticmethod
+    def _clip_peek(name: str, limit: int = 22) -> str:
+        """Keep a peek entry short enough that prev and next never collide."""
+        return name if len(name) <= limit else name[:limit - 2] + '..'
+
     def _draw_track_info(self, item: Optional[CatalogItem], ctx: RenderContext):
         """Draw track name and artist (portrait mode - at user's top)."""
         if not item:
@@ -401,7 +442,8 @@ class Renderer:
     
     def _draw_carousel(self, items: List[CatalogItem], scroll_x: float,
                        now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False,
-                       auto_pause_remaining: Optional[float] = None):
+                       auto_pause_remaining: Optional[float] = None,
+                       has_track_list: bool = False):
         """Draw album cover carousel (portrait mode - covers along Y axis)."""
         # Portrait mode: covers laid out along Y axis (user's horizontal)
         center_y = CAROUSEL_CENTER_Y  # 640
@@ -459,6 +501,10 @@ class Renderer:
                 self._draw_add_button(center_cover_rect)
             elif delete_mode_id == center_item.id:
                 self._draw_delete_button(center_cover_rect)
+            elif has_track_list:
+                # Shown for whichever album is focused, playing or not — the
+                # list describes the cover you're looking at.
+                self._draw_track_list_button(center_cover_rect)
     
     def _draw_cover_progress(self, cover_rect: tuple, item: CatalogItem, now_playing: NowPlaying):
         """Draw progress bar at the edge of the cover (portrait mode - left edge = user's bottom)."""
@@ -597,13 +643,18 @@ class Renderer:
             rect = icon.get_rect(center=center)
             self.screen.blit(icon, rect)
     
-    def _draw_overlay_button(self, cover_rect: tuple, icon_name: str, tint: tuple) -> tuple:
-        """Draw a tinted icon button on the cover. Returns (x, y, w, h) hit rect."""
+    def _draw_overlay_button(self, cover_rect: tuple, icon_name: str, tint: tuple,
+                             far_x: bool = False) -> tuple:
+        """Draw a tinted icon button on the cover. Returns (x, y, w, h) hit rect.
+
+        far_x puts it in the opposite corner along the physical x axis, so the
+        track-list button never lands on top of add/delete.
+        """
         cover_x, cover_y, cover_w, cover_h = cover_rect
         btn_size, icon_size, margin = 100, 72, 16
         touch_padding = 60
         circle_radius = int(icon_size * (42 / 56) / 2)
-        btn_x = cover_x + margin
+        btn_x = cover_x + cover_w - btn_size - margin if far_x else cover_x + margin
         btn_y = cover_y + cover_h - btn_size - margin
         center = (btn_x + btn_size // 2, btn_y + btn_size // 2)
         
@@ -628,6 +679,35 @@ class Renderer:
     def _draw_delete_button(self, cover_rect: tuple):
         """Draw - button on cover for delete mode."""
         self.delete_button_rect = self._draw_overlay_button(cover_rect, 'minus', COLORS['error'])
+
+    def _draw_track_list_button(self, cover_rect: tuple):
+        """Draw the track-list button in the corner opposite add/delete.
+
+        No list icon ships in icons/, so the three bars are drawn rather than
+        adding an asset for six lines of geometry.
+        """
+        cover_x, cover_y, cover_w, cover_h = cover_rect
+        btn_size, margin, touch_padding = 100, 16, 60
+        # Diagonally opposite add/delete, so muscle memory never confuses the
+        # two even though they're mutually exclusive on screen.
+        btn_x = cover_x + cover_w - btn_size - margin
+        btn_y = cover_y + margin
+        center = (btn_x + btn_size // 2, btn_y + btn_size // 2)
+
+        draw_aa_circle(self.screen, (255, 255, 255), center, 27)
+
+        # Bars run along physical y so they read as horizontal lines once the
+        # display is rotated into the user's landscape view.
+        bar_len, gap, thickness = 26, 9, 4
+        for i in (-1, 0, 1):
+            bx = center[0] + i * gap
+            pygame.draw.line(self.screen, COLORS['accent'],
+                             (bx, center[1] - bar_len // 2),
+                             (bx, center[1] + bar_len // 2), thickness)
+
+        self.track_list_button_rect = (btn_x - touch_padding, btn_y - touch_padding,
+                                       btn_size + touch_padding * 2,
+                                       btn_size + touch_padding * 2)
     
     def _generate_spinner_frames(self, size: int, num_frames: int = 30) -> List[pygame.Surface]:
         """Generate pre-rendered spinner frames for smooth animation with ease-in-out."""
@@ -780,6 +860,10 @@ class Renderer:
             title = 'Volume'
             nav_icon = 'back'
             items = self._build_volume_content(ctx)
+        elif ctx.menu_state == MenuState.TRACK_LIST:
+            title = 'Tracks'
+            nav_icon = 'back'
+            items = self._build_track_list_content(ctx)
         elif ctx.menu_state == MenuState.BEDTIME_LIST:
             title = 'Bedtime'
             nav_icon = 'back'
@@ -865,6 +949,23 @@ class Renderer:
 
         if not ctx.catalog_items:
             items.append(('footer', 'No albums saved yet'))
+        return items
+
+    def _build_track_list_content(self, ctx: 'RenderContext') -> list:
+        """The full track list, current song in accent. Tap one to jump to it."""
+        if not ctx.track_list:
+            return [('text', 'Track list not loaded yet'),
+                    ('spacer',),
+                    ('footer', 'Play this album and try again')]
+
+        items: list = []
+        for i, track in enumerate(ctx.track_list):
+            is_current = i == ctx.track_list_index
+            color = COLORS['accent'] if is_current else COLORS['bg_elevated']
+            name = track.name or 'Unknown'
+            label = f'{i + 1}. {name}'
+            display = label if len(label) <= 22 else label[:20] + '..'
+            items.append(('button', f'track_{i}', display, color))
         return items
 
     def _build_wifi_content(self, ctx: 'RenderContext') -> list:

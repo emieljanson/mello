@@ -15,7 +15,7 @@ import pygame
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
     LIBRESPOT_URL, LIBRESPOT_WS,
-    CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR,
+    CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, TRACKS_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
@@ -23,11 +23,12 @@ from .config import (
     ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
     CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
     SLEEP_CLOCK_DRIFT, QUIET_HOURS_WAKE_HOLD,
+    TRACK_LIST_FETCH_DELAY, TRACK_LIST_RETRY_INTERVAL,
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
 from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
-from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
+from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager, TrackListStore
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager, QuietHours
 from .managers.quiet_hours import clock_is_trusted
@@ -214,6 +215,15 @@ class Mello:
             get_progress_expiry=lambda: self.settings.progress_expiry_hours,
         )
         self.catalog_manager.load()
+
+        self.track_lists = TrackListStore(
+            cache_dir=TRACKS_DIR,
+            token_url=f'{LIBRESPOT_URL}/token',
+            mock_mode=self.mock_mode,
+        )
+        self._track_focus_uri: Optional[str] = None   # album we're dwelling on
+        self._track_focus_since: float = 0.0
+        self._track_retry_at: float = 0.0
         
         # UI Components
         self.image_cache = ImageCache(IMAGES_DIR)
@@ -381,6 +391,7 @@ class Mello:
             on_library_cleared=self._on_library_cleared,
             bluetooth_manager=self.bluetooth,
             on_volume_preview=self._preview_volume,
+            on_play_track=self._play_track_at_index,
         )
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
@@ -543,6 +554,97 @@ class Mello:
             logger.warning(f'Play failed for current focus: uri={uri[:40]} epoch={epoch}')
         else:
             logger.info(f'Play failed for stale request: uri={uri[:40]} epoch={epoch}')
+
+    def _focused_context(self) -> tuple:
+        """(context_uri, reference_track_uri) that the track list describes.
+
+        Follows the cover on screen rather than the speaker, so browsing an
+        album shows that album's tracks. When the focused album isn't the one
+        playing, the reference track is whatever pressing play would start —
+        the saved resume point, or the first track.
+        """
+        items = self.display_items
+        if not items or self.selected_index >= len(items):
+            return None, None
+
+        item = items[self.selected_index]
+        if item.is_temp:
+            return None, None   # not saved yet, so there's nothing to list
+
+        live = (self.now_playing.context_uri == item.uri
+                and (self.now_playing.playing or self.now_playing.paused))
+        if live:
+            return item.uri, self.now_playing.track_uri
+
+        progress = self.catalog_manager.get_progress(item.uri)
+        resume_uri = progress.get('uri') if progress else None
+        if not resume_uri:
+            tracks = self.track_lists.get(item.uri)
+            resume_uri = tracks[0].uri if tracks else None
+        return item.uri, resume_uri
+
+    def _maybe_fetch_track_list(self):
+        """Fetch the focused album's track list once the carousel settles.
+
+        Dwell-gated: swiping past twenty covers must not fire twenty requests
+        into a rate limit shared by every go-librespot install.
+        """
+        now = time.time()
+        if now - self._track_retry_at > TRACK_LIST_RETRY_INTERVAL:
+            self._track_retry_at = now
+            self.track_lists.retry_failed()
+
+        context_uri, _ = self._focused_context()
+        if not context_uri:
+            self._track_focus_uri = None
+            return
+
+        if context_uri != self._track_focus_uri:
+            self._track_focus_uri = context_uri
+            self._track_focus_since = now
+            return
+
+        if not self.carousel.settled or self.touch.dragging:
+            return
+        if now - self._track_focus_since < TRACK_LIST_FETCH_DELAY:
+            return
+        if not self.track_lists.wants_fetch(context_uri):
+            return
+
+        run_async(self._fetch_track_list_async, context_uri)
+
+    def _fetch_track_list_async(self, context_uri: str):
+        """Worker: fetch a track list, then refresh the screen if it landed."""
+        try:
+            tracks = self.track_lists.fetch(context_uri)
+        except Exception as e:
+            logger.warning(f'Track list fetch failed for {context_uri[:45]}: {e}')
+            return
+        if tracks:
+            self.renderer.invalidate()
+
+    def _play_track_at_index(self, index: int):
+        """Play a track picked from the list, by its position in that list."""
+        context_uri, _ = self._focused_context()
+        tracks, _ = self._track_list_view()
+        if not context_uri or index < 0 or index >= len(tracks):
+            logger.warning(f'Track tap ignored | index={index} | list_size={len(tracks)}')
+            return
+
+        track = tracks[index]
+        logger.info(f'Track picked from list: {index + 1}. {track.name}')
+        self._user_activated_playback = True
+        self.volume.unmute()
+        self.playback.play_item(context_uri, skip_to_uri=track.uri)
+
+    def _track_list_view(self) -> tuple:
+        """(tracks, reference_index) for the focused album — for the list screen."""
+        context_uri, reference_uri = self._focused_context()
+        if not context_uri:
+            return [], None
+        tracks = self.track_lists.get(context_uri) or []
+        index = self.track_lists.index_of(context_uri, reference_uri)
+        return tracks, index
 
     def _playback_is_live(self) -> bool:
         """True when audio is running or a play request is still in flight.
@@ -1438,6 +1540,12 @@ class Mello:
                 self._save_temp_item()
                 return True
         
+        if self.renderer.track_list_button_rect:
+            bx, by, bw, bh = self.renderer.track_list_button_rect
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                self.setup_menu.show_track_list()
+                return True
+
         if self.renderer.delete_button_rect:
             bx, by, bw, bh = self.renderer.delete_button_rect
             if bx <= x <= bx + bw and by <= y <= by + bh:
@@ -2416,6 +2524,7 @@ class Mello:
         if self.quiet_hours.update():
             self._on_quiet_hours_start(menu_open)
         self._sync_bedtime_filter()
+        self._maybe_fetch_track_list()
 
         self.sleep_manager.check_sleep(self.now_playing.playing or menu_open)
         if was_awake and self.sleep_manager.is_sleeping:
@@ -2558,6 +2667,9 @@ class Mello:
         # Snapshot BT state once to avoid race with monitor thread
         bt_dev = self.bluetooth.connected_device
         sleep_clock_text, sleep_clock_drift = self._sleep_clock_state()
+        focused_context, focused_track = self._focused_context()
+        prev_track, next_track = self.track_lists.neighbours(focused_context, focused_track)
+        track_list, track_index = self._track_list_view()
 
         ctx = RenderContext(
             items=items,
@@ -2591,6 +2703,10 @@ class Mello:
             bedtime_uri=self.settings.bedtime_uri,
             catalog_items=self.catalog_manager.items,
             auto_pause_remaining=self.auto_pause.remaining_seconds(),
+            prev_track_name=prev_track.name if prev_track else None,
+            next_track_name=next_track.name if next_track else None,
+            track_list=track_list,
+            track_list_index=track_index,
             app_version_label=self.app_version_label,
             bt_connected=bt_dev is not None,
             bt_audio_active=self._bt_audio_active,

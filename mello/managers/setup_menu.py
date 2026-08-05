@@ -37,6 +37,7 @@ class SetupMenu:
         on_library_cleared: Callable[[], None],
         bluetooth_manager=None,
         on_volume_preview: Optional[Callable[[int, str, int], None]] = None,
+        on_play_track: Optional[Callable[[int], None]] = None,
     ):
         self.catalog_manager = catalog_manager
         self.settings = settings
@@ -45,6 +46,7 @@ class SetupMenu:
         self._on_library_cleared = on_library_cleared
         self.bluetooth = bluetooth_manager
         self._on_volume_preview = on_volume_preview
+        self._on_play_track = on_play_track
 
         self.state = MenuState.CLOSED
         self.scroll_offset: int = 0  # pixels scrolled in current menu screen
@@ -102,6 +104,10 @@ class SetupMenu:
         if 'close' in button_rects and button_rects['close'].collidepoint(x, y):
             if self.state == MenuState.MAIN:
                 self.close()
+            elif self.state == MenuState.TRACK_LIST:
+                # Opened from the cover, not from Settings — back returns to the
+                # carousel, not to a settings screen the user never opened.
+                self.close()
             elif self.state == MenuState.WIFI_AP:
                 self._restore_wifi_autoconnect()
                 if self._wifi_process:
@@ -124,6 +130,8 @@ class SetupMenu:
             self._handle_volume_tap(button_rects, x, y)
         elif self.state == MenuState.BEDTIME_LIST:
             self._handle_bedtime_tap(button_rects, x, y)
+        elif self.state == MenuState.TRACK_LIST:
+            self._handle_track_list_tap(button_rects, x, y)
         elif self.state == MenuState.BT_LIST:
             self._handle_bt_tap(button_rects, x, y)
         elif self.state == MenuState.WIFI_LIST:
@@ -338,6 +346,27 @@ class SetupMenu:
                 self.scroll_offset = 0
                 self._on_invalidate()
             break
+
+    def show_track_list(self):
+        """Open the track list for whatever is playing (from the cover button)."""
+        logger.info('Track list opened')
+        self.state = MenuState.TRACK_LIST
+        self.scroll_offset = 0
+        self._on_invalidate()
+
+    def _handle_track_list_tap(self, button_rects: dict, x: int, y: int):
+        """Jump straight to a tapped track."""
+        for key, rect in button_rects.items():
+            if not key.startswith('track_') or not rect.collidepoint(x, y):
+                continue
+            try:
+                index = int(key.rsplit('_', 1)[1])
+            except ValueError:
+                return
+            if self._on_play_track:
+                self._on_play_track(index)
+            self.close()
+            return
 
     def _show_bt_screen(self):
         logger.info('Setup menu: Bluetooth screen')

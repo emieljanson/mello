@@ -137,7 +137,7 @@ class TestStopAll:
         api.play.return_value = True
 
         pc._play_in_progress = True
-        pc._pending_play = ('spotify:album:queued', False, 0)
+        pc._pending_play = ('spotify:album:queued', False, 0, None)
         pc.stop_all()
 
         pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
@@ -488,7 +488,7 @@ class TestPlayQueueing:
 
         pc.play_item('spotify:album:second')
 
-        assert pc._pending_play == ('spotify:album:second', False, 0)
+        assert pc._pending_play == ('spotify:album:second', False, 0, None)
         # Original play is still in progress, no new thread started
         assert pc._play_in_progress is True
 
@@ -498,7 +498,7 @@ class TestPlayQueueing:
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
 
-        pc._pending_play = ('spotify:album:queued', False, 0)
+        pc._pending_play = ('spotify:album:queued', False, 0, None)
         pc._play_in_progress = True
 
         with patch('mello.controllers.playback.run_async') as mock_run:
@@ -517,7 +517,7 @@ class TestQueuedPlayStaleness:
     def test_pending_request_dropped_after_generation_change(self, mock_sleep):
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
-        pc._pending_play = ('spotify:album:queued', False, 0)
+        pc._pending_play = ('spotify:album:queued', False, 0, None)
         pc._play_in_progress = True
 
         def invalidate_generation(*_):
@@ -569,7 +569,7 @@ class TestRetryBackoffGuards:
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
         pc._is_request_current = lambda epoch, uri: uri == 'spotify:album:first'
-        pc._pending_play = ('spotify:album:queued', False, 0)
+        pc._pending_play = ('spotify:album:queued', False, 0, None)
         pc._play_in_progress = True
 
         pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)

@@ -13,6 +13,8 @@ Kids swipe through album covers and tap to play. Parents control the music libra
 - **Spotify Connect** — Add albums and playlists from your Spotify app, Mello plays them
 - **Album carousel** — Large cover art with smooth swipe navigation
 - **Simple controls** — Play, pause, skip. That's it
+- **Track list** — Tap the list button on the cover to see every song, and tap one to jump to it
+- **What's next** — The song before and after the current one, so skipping isn't a guess
 - **Auto-sleep** — Screen dims to a clock after 2 minutes of inactivity
 - **Auto-pause** — Music stops after 30 minutes (configurable), with a visible warning before it does
 - **Quiet hours** — Set a bedtime and the device stays asleep until morning
@@ -103,6 +105,18 @@ Once open, you'll see a scrollable menu with these sections:
 - **Bedtime** — When quiet hours start (18:30 through 21:00, or Off). Tap to cycle. Default: Off
 - **Wake** — When quiet hours end (06:00 through 08:00). Only shown once a bedtime is set. Tap to cycle. Default: 07:00
 - **Bedtime album** — Pick one album that stays playable during quiet hours, or None. Only shown once a bedtime is set. Default: None
+
+### Track list
+
+The line above the cover shows the **previous** and **next** song, so Previous/Next stop being a lottery. The current song is already the title above it.
+
+Tap the **list button** in the cover's top corner (diagonally opposite the `+`) to see every track in the album or playlist. Tap any song to start there.
+
+Both follow the cover you're looking at, not the speaker. Swipe to an album you aren't playing and you still see its tracks, with the one that pressing play would start — the remembered resume point, or the first track. So you can check what's on a record, and pick a song from it, before playing anything.
+
+The list comes from Spotify's Web API. Mello borrows an access token from go-librespot's own session, so there's nothing to register or configure — but go-librespot ships a client ID shared by every installation, so Spotify throttles it often. Mello handles that by honouring Spotify's retry delay (usually seconds) and **caching each list on disk forever**, in `data/tracks/`. An album only has to succeed once; after that the list is instant and works offline.
+
+The practical effect: the very first time you open a brand-new album's list it may be empty for a few seconds. Play it, wait a moment, and it fills in. The list button only appears for the album that's actually playing, so what you see always matches the cover in front of you.
 
 ### Quiet hours
 

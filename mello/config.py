@@ -44,6 +44,7 @@ CATALOG_PATH = DATA_DIR / 'catalog.json'
 PROGRESS_PATH = DATA_DIR / 'progress.json'
 SETTINGS_PATH = DATA_DIR / 'settings.json'
 IMAGES_DIR = DATA_DIR / 'images'
+TRACKS_DIR = DATA_DIR / 'tracks'   # cached Spotify track lists, one file per context
 ICONS_DIR = Path(__file__).parent.parent / 'icons'
 LIBRESPOT_STATE_PATH = Path.home() / '.config' / 'go-librespot' / 'state.json'
 
@@ -188,6 +189,20 @@ WAKE_WINDOW_MINUTES = 90
 # Show the "winding down" bar only for the last stretch before auto-pause.
 # A bar that sits there for 30 minutes is noise; the point is a warning.
 AUTO_PAUSE_WARN_SECONDS = 5 * 60
+
+# ============================================
+# TRACK LISTS
+# ============================================
+
+# How long a cover must stay focused before its track list is fetched.
+# Swiping past twenty albums must not fire twenty requests into a shared
+# rate limit.
+TRACK_LIST_FETCH_DELAY = 1.0
+
+# How often a throttled fetch may be retried. Spotify's cooldown is usually
+# seconds, but a shared client ID means backing off generously costs nothing:
+# once a list is cached it's cached forever.
+TRACK_LIST_RETRY_INTERVAL = 60.0
 
 # ============================================
 # TOUCH & GESTURES
