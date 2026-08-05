@@ -14,7 +14,8 @@ import pygame
 
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET,
+    LIBRESPOT_URL, LIBRESPOT_WS,
+    SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_MARKET,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, TRACKS_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
@@ -32,7 +33,7 @@ from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager, TrackListStore
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager, QuietHours
 from .managers.quiet_hours import clock_is_trusted
-from .api.tracklist import parse_context
+from .api.tracklist import parse_context, parse_episode
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label, set_system_volume
@@ -223,6 +224,7 @@ class Mello:
             mock_mode=self.mock_mode,
             client_id=SPOTIFY_CLIENT_ID,
             client_secret=SPOTIFY_CLIENT_SECRET,
+            market=SPOTIFY_MARKET,
         )
         self._track_focus_uri: Optional[str] = None   # album we're dwelling on
         self._track_focus_since: float = 0.0
@@ -1384,8 +1386,11 @@ class Mello:
                 self.renderer.invalidate()
             return
         
-        # Check if in catalog (with valid image)
-        catalog_item = next((item for item in self.catalog_manager.items if item.uri == context_uri), None)
+        # Check if in catalog (with valid image). A podcast episode counts as
+        # saved when its show is in the catalog — the episode's own URI never
+        # appears there, so otherwise a + tile would linger after adding it.
+        saved_as = self.track_lists.known_show_for(context_uri) or context_uri
+        catalog_item = next((item for item in self.catalog_manager.items if item.uri == saved_as), None)
         if catalog_item and catalog_item.image:
             with self._temp_item_lock:
                 had_temp = self.temp_item is not None
@@ -2190,11 +2195,25 @@ class Mello:
                 return
             
             logger.info(f'Saving: {temp.name}')
-            
+
+            uri, name, item_type = temp.uri, temp.name, temp.type
+            # A podcast page has no show-level play button, so Spotify always
+            # reports an episode as the context. Save the show instead: one tile
+            # with every episode, not a tile per episode.
+            # ponytail: blocking lookup, but only on a deliberate tap and only
+            # for podcasts (~1s typical). Prefetch it when the temp item appears
+            # if that ever feels slow.
+            show = self.track_lists.resolve_episode_show(uri)
+            if show:
+                logger.info(f'Podcast episode saved as its show: {show["name"]}')
+                uri, name, item_type = show['uri'], show['name'], 'show'
+            elif parse_episode(uri):
+                logger.warning('Could not resolve the show; saving the episode alone')
+
             item_data = {
-                'type': temp.type,
-                'uri': temp.uri,
-                'name': temp.name,
+                'type': item_type,
+                'uri': uri,
+                'name': name,
                 'artist': temp.artist,
                 'image': temp.image,
             }
