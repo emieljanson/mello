@@ -270,6 +270,8 @@ def _focused_app(catalog_items, selected=0, playing_uri=None, playing_track=None
     app.playback = SimpleNamespace(play_item=MagicMock())
     app.volume = SimpleNamespace(unmute=MagicMock())
     app._user_activated_playback = False
+    app._resume_cache_key = ()          # get_progress is cached per focused album
+    app._resume_cache_uri = None
     return app
 
 
