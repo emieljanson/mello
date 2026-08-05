@@ -200,6 +200,97 @@ def test_missing_retry_after_still_backs_off(store):
     assert 0 < store.cooldown_remaining() <= DEFAULT_COOLDOWN
 
 
+class TestOwnCredentials:
+    """Our own client ID, so we aren't sharing go-librespot's spent quota."""
+
+    @pytest.fixture
+    def keyed(self, tmp_path):
+        return TrackListStore(cache_dir=tmp_path / 'tracks',
+                              token_url='http://localhost:3678/token',
+                              client_id='id123', client_secret='secret456')
+
+    def test_borrowed_token_when_unconfigured(self, store):
+        assert store.uses_own_credentials() is False
+
+    def test_app_token_used_instead_of_borrowing(self, keyed):
+        payload = {'items': [{'uri': 'spotify:track:1', 'name': 'A'}], 'next': None}
+        token_resp = _resp(200, {'access_token': 'app-token', 'expires_in': 3600})
+        with patch('mello.api.tracklist.requests.post', return_value=token_resp) as post, \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, payload)) as get:
+            assert len(keyed.fetch(ALBUM)) == 1
+
+        # The daemon must not be asked for a token at all.
+        urls = [c.args[0] if c.args else c.kwargs.get('url') for c in post.call_args_list]
+        assert 'https://accounts.spotify.com/api/token' in urls
+        assert keyed.token_url not in urls
+        assert get.call_args.kwargs['headers']['Authorization'] == 'Bearer app-token'
+
+    def test_app_token_is_cached_between_fetches(self, keyed):
+        payload = {'items': [], 'next': None}
+        token_resp = _resp(200, {'access_token': 'app-token', 'expires_in': 3600})
+        with patch('mello.api.tracklist.requests.post', return_value=token_resp) as post, \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, payload)):
+            keyed.fetch(ALBUM)
+            keyed.fetch(PLAYLIST)
+        assert post.call_count == 1, 'a token request per album wastes the quota we just fixed'
+
+    def test_short_lived_token_is_refetched(self, keyed):
+        """A token expiring sooner than the safety margin must not be cached."""
+        payload = {'items': [], 'next': None}
+        token_resp = _resp(200, {'access_token': 'app-token', 'expires_in': 1})
+        with patch('mello.api.tracklist.requests.post', return_value=token_resp) as post, \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, payload)):
+            keyed.fetch(ALBUM)
+            keyed._app_token_expires = 0.0   # as if the second fetch came later
+            keyed.fetch(PLAYLIST)
+        assert post.call_count == 2
+
+    def test_bad_secret_falls_back_to_borrowing(self, keyed):
+        """A typo'd key must not be worse than having configured none at all."""
+        payload = {'items': [], 'next': None}
+        responses = [_resp(400, {'error': 'invalid_client'}),   # accounts.spotify.com
+                     _resp(200, {'token': 'a' * 50})]           # the daemon
+        with patch('mello.api.tracklist.requests.post', side_effect=responses), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, payload)) as get:
+            keyed.fetch(ALBUM)
+        assert get.call_args.kwargs['headers']['Authorization'] == 'Bearer ' + 'a' * 50
+
+    def test_401_drops_the_cached_token(self, keyed):
+        """An expired token must not be reused forever."""
+        token_resp = _resp(200, {'access_token': 'app-token', 'expires_in': 3600})
+        with patch('mello.api.tracklist.requests.post', return_value=token_resp), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(401)):
+            keyed.fetch(ALBUM)
+        assert keyed._app_token is None
+
+
+class TestUnavailableContext:
+    """Spotify's own editorial playlists 404 for every third-party app."""
+
+    def test_404_marks_the_context_unavailable(self, store):
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(404)):
+            assert store.fetch(PLAYLIST) is None
+        assert store.is_unavailable(PLAYLIST)
+        assert not store.is_unavailable(ALBUM), 'one refusal must not condemn every album'
+
+    def test_unavailable_context_is_never_retried(self, store):
+        """Not even after retry_failed() — the answer will not change."""
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(404)):
+            store.fetch(PLAYLIST)
+        store.retry_failed()
+        assert store.wants_fetch(PLAYLIST) is False
+        assert store.wants_fetch(ALBUM) is True
+
+    def test_404_does_not_start_a_cooldown(self, store):
+        """A refused playlist must not block every other album's list."""
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(404)):
+            store.fetch(PLAYLIST)
+        assert store.cooldown_remaining() == 0
+
+
 def test_no_session_yields_no_list(store):
     """204 from /token means nothing has played yet — not an error."""
     with patch('mello.api.tracklist.requests.post', return_value=_resp(204)):

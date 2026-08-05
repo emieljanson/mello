@@ -46,6 +46,8 @@ class RenderContext:
     track_list: list = field(default_factory=list)   # full list for the track screen
     track_listable: bool = False             # focused album *can* have a list (button shows)
     track_cooldown_s: float = 0.0            # >0 while Spotify is rate-limiting us
+    track_unavailable: bool = False           # Spotify 404s this list, permanently
+    track_shared_quota: bool = True           # no own Spotify app configured
     track_list_index: Optional[int] = None           # position of the playing track
     app_version_label: str = ''
     bt_connected: bool = False          # A BT audio device is connected
