@@ -191,6 +191,20 @@ WAKE_WINDOW_MINUTES = 90
 AUTO_PAUSE_WARN_SECONDS = 5 * 60
 
 # ============================================
+# TRACK LISTS
+# ============================================
+
+# How long a cover must stay focused before its track list is fetched.
+# Swiping past twenty albums must not fire twenty requests into a shared
+# rate limit.
+TRACK_LIST_FETCH_DELAY = 1.0
+
+# How often a throttled fetch may be retried. Spotify's cooldown is usually
+# seconds, but a shared client ID means backing off generously costs nothing:
+# once a list is cached it's cached forever.
+TRACK_LIST_RETRY_INTERVAL = 60.0
+
+# ============================================
 # TOUCH & GESTURES
 # ============================================
 

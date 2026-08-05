@@ -23,6 +23,7 @@ from .config import (
     ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
     CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
     SLEEP_CLOCK_DRIFT, QUIET_HOURS_WAKE_HOLD,
+    TRACK_LIST_FETCH_DELAY, TRACK_LIST_RETRY_INTERVAL,
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
@@ -220,7 +221,9 @@ class Mello:
             token_url=f'{LIBRESPOT_URL}/token',
             mock_mode=self.mock_mode,
         )
-        self._track_fetch_context: Optional[str] = None
+        self._track_focus_uri: Optional[str] = None   # album we're dwelling on
+        self._track_focus_since: float = 0.0
+        self._track_retry_at: float = 0.0
         
         # UI Components
         self.image_cache = ImageCache(IMAGES_DIR)
@@ -552,19 +555,62 @@ class Mello:
         else:
             logger.info(f'Play failed for stale request: uri={uri[:40]} epoch={epoch}')
 
-    def _maybe_fetch_track_list(self):
-        """Fetch the playing context's track list once, in the background.
+    def _focused_context(self) -> tuple:
+        """(context_uri, reference_track_uri) that the track list describes.
 
-        Runs off the UI thread: a throttled fetch waits out Spotify's
-        Retry-After, which must never stall a frame.
+        Follows the cover on screen rather than the speaker, so browsing an
+        album shows that album's tracks. When the focused album isn't the one
+        playing, the reference track is whatever pressing play would start —
+        the saved resume point, or the first track.
         """
-        context_uri = self.now_playing.context_uri
-        if not context_uri or context_uri == self._track_fetch_context:
+        items = self.display_items
+        if not items or self.selected_index >= len(items):
+            return None, None
+
+        item = items[self.selected_index]
+        if item.is_temp:
+            return None, None   # not saved yet, so there's nothing to list
+
+        live = (self.now_playing.context_uri == item.uri
+                and (self.now_playing.playing or self.now_playing.paused))
+        if live:
+            return item.uri, self.now_playing.track_uri
+
+        progress = self.catalog_manager.get_progress(item.uri)
+        resume_uri = progress.get('uri') if progress else None
+        if not resume_uri:
+            tracks = self.track_lists.get(item.uri)
+            resume_uri = tracks[0].uri if tracks else None
+        return item.uri, resume_uri
+
+    def _maybe_fetch_track_list(self):
+        """Fetch the focused album's track list once the carousel settles.
+
+        Dwell-gated: swiping past twenty covers must not fire twenty requests
+        into a rate limit shared by every go-librespot install.
+        """
+        now = time.time()
+        if now - self._track_retry_at > TRACK_LIST_RETRY_INTERVAL:
+            self._track_retry_at = now
+            self.track_lists.retry_failed()
+
+        context_uri, _ = self._focused_context()
+        if not context_uri:
+            self._track_focus_uri = None
+            return
+
+        if context_uri != self._track_focus_uri:
+            self._track_focus_uri = context_uri
+            self._track_focus_since = now
+            return
+
+        if not self.carousel.settled or self.touch.dragging:
+            return
+        if now - self._track_focus_since < TRACK_LIST_FETCH_DELAY:
             return
         if not self.track_lists.wants_fetch(context_uri):
             return
 
-        self._track_fetch_context = context_uri
         run_async(self._fetch_track_list_async, context_uri)
 
     def _fetch_track_list_async(self, context_uri: str):
@@ -573,23 +619,18 @@ class Mello:
             tracks = self.track_lists.fetch(context_uri)
         except Exception as e:
             logger.warning(f'Track list fetch failed for {context_uri[:45]}: {e}')
-            tracks = None
-
+            return
         if tracks:
             self.renderer.invalidate()
-        elif self._track_fetch_context == context_uri:
-            # Throttled or offline: let the next context change try again,
-            # since the cooldown is usually only seconds.
-            self._track_fetch_context = None
 
     def _play_track_at_index(self, index: int):
         """Play a track picked from the list, by its position in that list."""
+        context_uri, _ = self._focused_context()
         tracks, _ = self._track_list_view()
-        if index < 0 or index >= len(tracks):
+        if not context_uri or index < 0 or index >= len(tracks):
             logger.warning(f'Track tap ignored | index={index} | list_size={len(tracks)}')
             return
 
-        context_uri = self.now_playing.context_uri
         track = tracks[index]
         logger.info(f'Track picked from list: {index + 1}. {track.name}')
         self._user_activated_playback = True
@@ -597,12 +638,12 @@ class Mello:
         self.playback.play_item(context_uri, skip_to_uri=track.uri)
 
     def _track_list_view(self) -> tuple:
-        """(tracks, current_index) for the playing context — for the list screen."""
-        context_uri = self.now_playing.context_uri
+        """(tracks, reference_index) for the focused album — for the list screen."""
+        context_uri, reference_uri = self._focused_context()
         if not context_uri:
             return [], None
         tracks = self.track_lists.get(context_uri) or []
-        index = self.track_lists.index_of(context_uri, self.now_playing.track_uri)
+        index = self.track_lists.index_of(context_uri, reference_uri)
         return tracks, index
 
     def _playback_is_live(self) -> bool:
@@ -2626,8 +2667,8 @@ class Mello:
         # Snapshot BT state once to avoid race with monitor thread
         bt_dev = self.bluetooth.connected_device
         sleep_clock_text, sleep_clock_drift = self._sleep_clock_state()
-        prev_track, next_track = self.track_lists.neighbours(
-            self.now_playing.context_uri, self.now_playing.track_uri)
+        focused_context, focused_track = self._focused_context()
+        prev_track, next_track = self.track_lists.neighbours(focused_context, focused_track)
         track_list, track_index = self._track_list_view()
 
         ctx = RenderContext(

@@ -239,54 +239,177 @@ def test_unsupported_context_never_fetched(store):
     assert store.fetch('spotify:track:abc') is None
 
 
-# --- App-level guards around playing a picked track ---
+# --- What the list describes: the cover on screen, not the speaker ---
+
+def _focused_app(catalog_items, selected=0, playing_uri=None, playing_track=None,
+                 progress=None, seeded=None, temp_item=None):
+    """Minimal Mello exercising the focus-following track list."""
+    import threading
+    from types import SimpleNamespace
+    from mello.app import Mello
+    from mello.models import NowPlaying
+
+    app = Mello.__new__(Mello)
+    app._now_playing_lock = threading.Lock()
+    app._now_playing = NowPlaying(
+        playing=playing_uri is not None, stopped=playing_uri is None,
+        context_uri=playing_uri, track_uri=playing_track)
+    app.catalog_manager = SimpleNamespace(
+        items=catalog_items,
+        get_progress=lambda uri: progress,
+    )
+    app.temp_item = temp_item
+    app.selected_index = selected
+    app.quiet_hours = SimpleNamespace(active=False)
+    app.settings = SimpleNamespace(bedtime_uri=None)
+
+    store = TrackListStore(cache_dir=Path('/nonexistent'), token_url='x', mock_mode=True)
+    for uri, tracks in (seeded or {}).items():
+        store._lists[uri] = tracks
+    app.track_lists = store
+    app.playback = SimpleNamespace(play_item=MagicMock())
+    app.volume = SimpleNamespace(unmute=MagicMock())
+    app._user_activated_playback = False
+    return app
+
+
+def _item(uri, name='Album'):
+    from mello.models import CatalogItem
+    return CatalogItem(id=uri[-1], uri=uri, name=name, type='album')
+
+
+TRACKS = [Track(uri='spotify:track:a', name='A'),
+          Track(uri='spotify:track:b', name='B'),
+          Track(uri='spotify:track:c', name='C')]
+
+
+class TestFocusedContext:
+    def test_playing_album_uses_the_live_track(self):
+        app = _focused_app([_item(ALBUM)], playing_uri=ALBUM,
+                           playing_track='spotify:track:b', seeded={ALBUM: TRACKS})
+        assert app._focused_context() == (ALBUM, 'spotify:track:b')
+
+    def test_browsing_uses_the_resume_point(self):
+        """Not playing: the reference is whatever pressing play would start."""
+        app = _focused_app([_item(ALBUM)], progress={'uri': 'spotify:track:c'},
+                           seeded={ALBUM: TRACKS})
+        assert app._focused_context() == (ALBUM, 'spotify:track:c')
+
+    def test_browsing_without_progress_uses_the_first_track(self):
+        app = _focused_app([_item(ALBUM)], seeded={ALBUM: TRACKS})
+        assert app._focused_context() == (ALBUM, 'spotify:track:a')
+
+    def test_other_album_playing_still_describes_the_focused_one(self):
+        """Play A, browse to B: the list must be B's, not A's."""
+        other = 'spotify:album:other'
+        app = _focused_app([_item(ALBUM), _item(other)], selected=1,
+                           playing_uri=ALBUM, playing_track='spotify:track:b',
+                           seeded={ALBUM: TRACKS})
+        assert app._focused_context()[0] == other
+
+    def test_temp_item_has_no_list(self):
+        """A cast-but-unsaved album isn't in the catalog to list."""
+        from mello.models import CatalogItem
+        temp = CatalogItem(id='temp', uri='spotify:album:new', name='New', is_temp=True)
+        app = _focused_app([], temp_item=temp)
+        assert app._focused_context() == (None, None)
+
+    def test_empty_catalog(self):
+        assert _focused_app([])._focused_context() == (None, None)
+
+
+class TestTrackListView:
+    def test_index_points_at_the_reference_track(self):
+        app = _focused_app([_item(ALBUM)], progress={'uri': 'spotify:track:c'},
+                           seeded={ALBUM: TRACKS})
+        tracks, index = app._track_list_view()
+        assert [t.name for t in tracks] == ['A', 'B', 'C']
+        assert index == 2
+
+    def test_no_cached_list_yields_nothing(self):
+        app = _focused_app([_item(ALBUM)])
+        assert app._track_list_view() == ([], None)
+
 
 class TestPlayTrackAtIndex:
-    """Tapping a row must never play the wrong thing, or crash on a stale list."""
+    """Tapping a row must never play the wrong album or crash on a stale list."""
 
-    def _app(self, tracks, context_uri=ALBUM):
-        from types import SimpleNamespace
-        import threading
-        from mello.app import Mello
-        from mello.models import NowPlaying
-
-        app = Mello.__new__(Mello)
-        app._now_playing_lock = threading.Lock()
-        app._now_playing = NowPlaying(playing=True, stopped=False,
-                                      context_uri=context_uri,
-                                      track_uri=tracks[0].uri if tracks else None)
-        store = TrackListStore(cache_dir=Path('/nonexistent'), token_url='x', mock_mode=True)
-        store._lists[context_uri] = tracks
-        app.track_lists = store
-        app.playback = SimpleNamespace(play_item=MagicMock())
-        app.volume = SimpleNamespace(unmute=MagicMock())
-        app._user_activated_playback = False
-        return app
-
-    def test_plays_the_tapped_track(self):
-        tracks = [Track(uri='spotify:track:a', name='A'), Track(uri='spotify:track:b', name='B')]
-        app = self._app(tracks)
+    def test_plays_the_tapped_track_of_the_focused_album(self):
+        other = 'spotify:album:other'
+        app = _focused_app([_item(ALBUM), _item(other)], selected=1,
+                           playing_uri=ALBUM, playing_track='spotify:track:a',
+                           seeded={other: TRACKS})
         app._play_track_at_index(1)
-        app.playback.play_item.assert_called_once_with(ALBUM, skip_to_uri='spotify:track:b')
+        # The focused album, not the one currently on the speaker
+        app.playback.play_item.assert_called_once_with(other, skip_to_uri='spotify:track:b')
 
     def test_marks_playback_user_activated(self):
-        """Otherwise the focus gate treats it as machine-initiated."""
-        app = self._app([Track(uri='spotify:track:a', name='A')])
+        """Otherwise the focus gate would treat it as machine-initiated."""
+        app = _focused_app([_item(ALBUM)], seeded={ALBUM: TRACKS})
         app._play_track_at_index(0)
         assert app._user_activated_playback is True
 
     def test_out_of_range_index_is_ignored(self):
         """The list on screen can go stale while a tap is in flight."""
-        app = self._app([Track(uri='spotify:track:a', name='A')])
+        app = _focused_app([_item(ALBUM)], seeded={ALBUM: TRACKS})
         app._play_track_at_index(7)
         app.playback.play_item.assert_not_called()
 
     def test_negative_index_is_ignored(self):
-        app = self._app([Track(uri='spotify:track:a', name='A')])
+        app = _focused_app([_item(ALBUM)], seeded={ALBUM: TRACKS})
         app._play_track_at_index(-1)
         app.playback.play_item.assert_not_called()
 
     def test_no_list_means_no_play(self):
-        app = self._app([])
+        app = _focused_app([_item(ALBUM)])
         app._play_track_at_index(0)
         app.playback.play_item.assert_not_called()
+
+
+class TestFetchDwell:
+    """Swiping past covers must not fire a request per cover."""
+
+    def _app(self, tmp_path, settled=True):
+        from types import SimpleNamespace
+        app = _focused_app([_item(ALBUM)])
+        # A real (non-mock) store: mock_mode disables fetching by design.
+        app.track_lists = TrackListStore(cache_dir=tmp_path / 'tracks',
+                                         token_url='http://localhost:3678/token')
+        app.carousel = SimpleNamespace(settled=settled)
+        app.touch = SimpleNamespace(dragging=False)
+        app._track_focus_uri = None
+        app._track_focus_since = 0.0
+        app._track_retry_at = 0.0
+        return app
+
+    def test_first_sight_only_starts_the_dwell_timer(self, tmp_path):
+        app = self._app(tmp_path)
+        with patch('mello.app.run_async') as run:
+            app._maybe_fetch_track_list()
+        run.assert_not_called()
+        assert app._track_focus_uri == ALBUM
+
+    def test_fetches_after_dwelling(self, tmp_path):
+        app = self._app(tmp_path)
+        with patch('mello.app.run_async') as run:
+            app._maybe_fetch_track_list()          # starts the timer
+            app._track_focus_since -= 5            # pretend the dwell elapsed
+            app._maybe_fetch_track_list()
+        assert run.called
+
+    def test_no_fetch_while_the_carousel_moves(self, tmp_path):
+        app = self._app(tmp_path, settled=False)
+        with patch('mello.app.run_async') as run:
+            app._maybe_fetch_track_list()
+            app._track_focus_since -= 5
+            app._maybe_fetch_track_list()
+        run.assert_not_called()
+
+    def test_no_fetch_when_already_cached(self, tmp_path):
+        app = self._app(tmp_path)
+        app.track_lists._lists[ALBUM] = TRACKS
+        with patch('mello.app.run_async') as run:
+            app._maybe_fetch_track_list()
+            app._track_focus_since -= 5
+            app._maybe_fetch_track_list()
+        run.assert_not_called()

@@ -108,9 +108,11 @@ Once open, you'll see a scrollable menu with these sections:
 
 ### Track list
 
-While something is playing, the line above the cover shows the **previous** and **next** song, so Previous/Next stop being a lottery. The current song is already the title above it.
+The line above the cover shows the **previous** and **next** song, so Previous/Next stop being a lottery. The current song is already the title above it.
 
-Tap the **list button** in the cover's top corner (diagonally opposite the `+`) to see every track in the album or playlist, with the current one highlighted. Tap any song to jump straight to it.
+Tap the **list button** in the cover's top corner (diagonally opposite the `+`) to see every track in the album or playlist. Tap any song to start there.
+
+Both follow the cover you're looking at, not the speaker. Swipe to an album you aren't playing and you still see its tracks, with the one that pressing play would start — the remembered resume point, or the first track. So you can check what's on a record, and pick a song from it, before playing anything.
 
 The list comes from Spotify's Web API. Mello borrows an access token from go-librespot's own session, so there's nothing to register or configure — but go-librespot ships a client ID shared by every installation, so Spotify throttles it often. Mello handles that by honouring Spotify's retry delay (usually seconds) and **caching each list on disk forever**, in `data/tracks/`. An album only has to succeed once; after that the list is instant and works offline.
 

@@ -501,9 +501,9 @@ class Renderer:
                 self._draw_add_button(center_cover_rect)
             elif delete_mode_id == center_item.id:
                 self._draw_delete_button(center_cover_rect)
-            elif has_track_list and now_playing.context_uri == center_item.uri:
-                # Only for the album that's actually playing, so the list always
-                # matches the cover you're looking at.
+            elif has_track_list:
+                # Shown for whichever album is focused, playing or not — the
+                # list describes the cover you're looking at.
                 self._draw_track_list_button(center_cover_rect)
     
     def _draw_cover_progress(self, cover_rect: tuple, item: CatalogItem, now_playing: NowPlaying):
