@@ -605,6 +605,17 @@ class Mello:
         index = self.track_lists.index_of(context_uri, self.now_playing.track_uri)
         return tracks, index
 
+    def _playback_is_live(self) -> bool:
+        """True when audio is running or a play request is still in flight.
+
+        Gates auto-play-on-focus: swiping the carousel switches albums while
+        something is already playing, but from a stopped or paused device only
+        the play button starts playback. play_in_progress is included so the
+        gate stays open across a context switch, where status briefly reports
+        nothing playing and the retry logic still needs to run.
+        """
+        return self.now_playing.playing or self.playback.play_in_progress
+
     def _reset_pending_focus(self, reason: str = ''):
         """Clear pending focus-stability request timer."""
         if self._pending_focus_uri and reason:
@@ -2304,6 +2315,20 @@ class Mello:
                 self._requested_focus_uri = None
                 self._requested_focus_since = 0.0
                 self.volume.unmute()
+            elif not self._playback_is_live():
+                # Browsing is not playing. When nothing is coming out of the
+                # speaker, swiping the carousel must not start it — only the
+                # play button may. Switching between albums mid-playback still
+                # works, since that path has audio running.
+                if self._pending_focus_uri:
+                    logger.info(
+                        'PLAY skip | nothing playing, browsing does not autoplay '
+                        f'(focused={focused_item.name})'
+                    )
+                self._reset_pending_focus('not_playing_no_autoplay')
+                self._requested_focus_epoch = None
+                self._requested_focus_uri = None
+                self._requested_focus_since = 0.0
             elif not self.playback.play_in_progress:
                 now = time.time()
                 focused_uri = focused_item.uri
