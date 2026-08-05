@@ -55,6 +55,7 @@ class Renderer:
         self._progress_cache: Dict[str, pygame.Surface] = {}
         self._text_cache: Dict[str, pygame.Surface] = {}
         self._last_track_key: Optional[Tuple[str, str]] = None
+        self._last_button_state: Optional[tuple] = None
         self._spinner_cache: Dict[int, List[pygame.Surface]] = {}  # size -> list of frames
         self._spinner_overlay_cache: Dict[int, pygame.Surface] = {}  # size -> overlay
         self._spinner_frame_idx: int = 0  # Simple frame counter for consistent rotation
@@ -127,6 +128,7 @@ class Renderer:
         """
         # Sleep mode - dim clock (plain black if the clock can't be shown)
         if ctx.is_sleeping:
+            self._clear_button_rects()
             self.screen.fill((0, 0, 0))
             if ctx.sleep_clock_text:
                 self._draw_sleep_clock(ctx)
@@ -135,19 +137,16 @@ class Renderer:
         
         # Menu overlay — draw full scene then overlay on top
         if ctx.menu_state != MenuState.CLOSED:
-            self.add_button_rect = None
-            self.delete_button_rect = None
-            self.settings_button_rect = None
-            self.track_list_button_rect = None
+            self._clear_button_rects()
             self._draw_menu_frame(ctx)
             return None
 
-        # Clear button hit rects
-        self.add_button_rect = None
-        self.delete_button_rect = None
-        self.settings_button_rect = None
-        self.track_list_button_rect = None
-        
+        # Button hit rects are NOT cleared here. Most frames redraw nothing (see
+        # the steady-state branch below), and clearing per frame meant every
+        # on-cover button became untappable a frame after it was drawn — the tap
+        # fell through to the carousel, which reads a centre tap as play. Each
+        # draw helper now clears and sets its own rects together, so a frame that
+        # doesn't redraw leaves the last accurate ones in place.
         current_item = ctx.items[ctx.selected_index] if ctx.selected_index < len(ctx.items) else None
         current_track_key = self._get_track_key(
             current_item,
@@ -158,13 +157,21 @@ class Renderer:
             ctx.play_in_progress,
         )
         
+        # What decides which on-cover button is drawn. Tracked because the hit
+        # rects now outlive a frame: if visibility changes without a redraw, the
+        # old rect would linger over a button that's no longer there.
+        button_state = (ctx.delete_mode_id, ctx.track_listable,
+                        current_item.is_temp if current_item else None)
+
         # Check if we need a full redraw
         state_changed = (
             self._last_playing_state != ctx.now_playing.playing or
             self._last_selected_index != ctx.selected_index or
+            self._last_button_state != button_state or
             self._last_track_key is None or
             self._last_track_key != current_track_key
         )
+        self._last_button_state = button_state
         
         # Toast changes need redraw too
         toast_changed = self._last_toast != ctx.toast_message
@@ -176,6 +183,7 @@ class Renderer:
         
         # Empty state
         if not ctx.items:
+            self._clear_button_rects()
             self._draw_background()
             self._draw_empty_state(ctx)
             self._needs_full_redraw = True
@@ -234,6 +242,13 @@ class Renderer:
                 return [self._carousel_rect]
             return []
     
+    def _clear_button_rects(self):
+        """Forget every hit rect — nothing tappable is on screen."""
+        self.add_button_rect = None
+        self.delete_button_rect = None
+        self.settings_button_rect = None
+        self.track_list_button_rect = None
+
     def _draw_background(self):
         """Draw pre-rendered background with gradient (portrait mode)."""
         if not self._bg_cache:
@@ -448,6 +463,13 @@ class Renderer:
                        auto_pause_remaining: Optional[float] = None,
                        track_listable: bool = False):
         """Draw album cover carousel (portrait mode - covers along Y axis)."""
+        # Cleared here rather than per frame: these three are set below only when
+        # their button is actually drawn, so clearing and setting must happen in
+        # the same pass or a stale rect outlives the button it belonged to.
+        self.add_button_rect = None
+        self.delete_button_rect = None
+        self.track_list_button_rect = None
+
         # Portrait mode: covers laid out along Y axis (user's horizontal)
         center_y = CAROUSEL_CENTER_Y  # 640
         x = CAROUSEL_X  # Vertical position for covers
