@@ -32,6 +32,7 @@ from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager, TrackListStore
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager, QuietHours
 from .managers.quiet_hours import clock_is_trusted
+from .api.tracklist import parse_context
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label, set_system_volume
@@ -2721,6 +2722,7 @@ class Mello:
             prev_track_name=prev_track.name if prev_track else None,
             next_track_name=next_track.name if next_track else None,
             track_list=track_list,
+            track_listable=parse_context(focused_context) is not None,
             track_list_index=track_index,
             app_version_label=self.app_version_label,
             bt_connected=bt_dev is not None,

@@ -415,3 +415,31 @@ class TestFetchDwell:
             app._track_focus_since -= 5
             app._maybe_fetch_track_list()
         run.assert_not_called()
+
+
+# --- The button must be reachable even when the list isn't loaded ---
+
+class TestListableWithoutAList:
+    """Hiding the button when the fetch hadn't landed left no way to find out why."""
+
+    def test_saved_album_is_listable_before_any_fetch(self):
+        app = _focused_app([_item(ALBUM)])
+        context_uri, _ = app._focused_context()
+        assert app._track_list_view() == ([], None)      # nothing cached yet
+        assert parse_context(context_uri) is not None    # but the button still shows
+
+    def test_listable_once_cached_too(self):
+        app = _focused_app([_item(ALBUM)], seeded={ALBUM: TRACKS})
+        context_uri, _ = app._focused_context()
+        assert parse_context(context_uri) is not None
+
+    def test_nothing_focused_is_not_listable(self):
+        app = _focused_app([])
+        context_uri, _ = app._focused_context()
+        assert parse_context(context_uri) is None
+
+    def test_unsupported_context_is_not_listable(self):
+        """A URI Spotify has no track endpoint for must not offer a button."""
+        app = _focused_app([_item('spotify:artist:xyz')])
+        context_uri, _ = app._focused_context()
+        assert parse_context(context_uri) is None

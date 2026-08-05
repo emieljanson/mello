@@ -158,6 +158,7 @@ class TrackListStore:
                 return None
             self._in_flight.add(context_uri)
 
+        logger.info(f'Track list: fetching {context_uri[:45]}')
         try:
             tracks = self._fetch_all_pages(*parsed)
             if tracks is None:
@@ -186,7 +187,7 @@ class TrackListStore:
         try:
             resp = requests.post(self.token_url, timeout=5)
             if resp.status_code == 204:
-                logger.debug('No active Spotify session, cannot fetch track list yet')
+                logger.info('Track list: no active Spotify session yet, cannot get a token')
                 return None
             resp.raise_for_status()
             data = resp.json()

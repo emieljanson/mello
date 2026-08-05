@@ -204,7 +204,7 @@ class Renderer:
             self._static_layer.blit(self.screen, (0, 0))
             
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
-                                ctx.is_loading, ctx.auto_pause_remaining, bool(ctx.track_list))
+                                ctx.is_loading, ctx.auto_pause_remaining, ctx.track_listable)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -218,7 +218,7 @@ class Renderer:
                            self._carousel_rect.topleft, 
                            self._carousel_rect)
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
-                                ctx.is_loading, ctx.auto_pause_remaining, bool(ctx.track_list))
+                                ctx.is_loading, ctx.auto_pause_remaining, ctx.track_listable)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -230,7 +230,7 @@ class Renderer:
                                self._carousel_rect.topleft,
                                self._carousel_rect)
                 self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
-                                ctx.is_loading, ctx.auto_pause_remaining, bool(ctx.track_list))
+                                ctx.is_loading, ctx.auto_pause_remaining, ctx.track_listable)
                 return [self._carousel_rect]
             return []
     
@@ -446,7 +446,7 @@ class Renderer:
     def _draw_carousel(self, items: List[CatalogItem], scroll_x: float,
                        now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False,
                        auto_pause_remaining: Optional[float] = None,
-                       has_track_list: bool = False):
+                       track_listable: bool = False):
         """Draw album cover carousel (portrait mode - covers along Y axis)."""
         # Portrait mode: covers laid out along Y axis (user's horizontal)
         center_y = CAROUSEL_CENTER_Y  # 640
@@ -504,9 +504,10 @@ class Renderer:
                 self._draw_add_button(center_cover_rect)
             elif delete_mode_id == center_item.id:
                 self._draw_delete_button(center_cover_rect)
-            elif has_track_list:
-                # Shown for whichever album is focused, playing or not — the
-                # list describes the cover you're looking at.
+            elif track_listable:
+                # Shown for any saved album, whether or not its tracks have been
+                # fetched yet. Hiding it when the list is missing left no way to
+                # find out *why* it was missing.
                 self._draw_track_list_button(center_cover_rect)
     
     def _draw_cover_progress(self, cover_rect: tuple, item: CatalogItem, now_playing: NowPlaying):
@@ -957,9 +958,14 @@ class Renderer:
     def _build_track_list_content(self, ctx: 'RenderContext') -> list:
         """The full track list, current song in accent. Tap one to jump to it."""
         if not ctx.track_list:
-            return [('text', 'Track list not loaded yet'),
+            # Reached whenever the fetch hasn't landed: no Spotify session yet
+            # (nothing played since boot) or Spotify is throttling us.
+            return [('text', 'Track list not loaded'),
                     ('spacer',),
-                    ('footer', 'Play this album and try again')]
+                    ('text', 'Needs Spotify. Play'),
+                    ('text', 'something, then retry'),
+                    ('spacer',),
+                    ('footer', 'Retries automatically each minute')]
 
         items: list = []
         for i, track in enumerate(ctx.track_list):
