@@ -6,39 +6,56 @@ Mello always owns volume: Spotify stays at 100%, Pi controls via ALSA.
 import logging
 
 from ..api.librespot import LibrespotAPIProtocol
+from ..config import VOLUME_FLOOR, VOLUME_ICONS, VOLUME_STEP_PCT
 from ..utils import run_async, set_system_volume, mute_speakers, unmute_speakers
 
 logger = logging.getLogger(__name__)
 
 
 class VolumeController:
-    """Manages volume state via ALSA. Spotify is kept at 100%."""
+    """One continuous 0-100% level, mapped onto each output's usable band.
+
+    The percentage is what the user sets and sees. It is not an ALSA value:
+    0% is VOLUME_FLOOR (the quietest still-audible output on this hardware) and
+    100% is the ceiling from settings. That way the slider always spans its full
+    travel and the parental cap stays invisible to whoever's turning it up.
+    """
 
     def __init__(self, api: LibrespotAPIProtocol, settings):
         self.api = api
         self.settings = settings
-        self.index = 1
         self._spotify_initialized = False
         self._muted = False
 
-    def _levels(self):
-        """Get current volume levels from settings."""
-        return self.settings.get_volume_levels()
+    @property
+    def pct(self) -> int:
+        """Where the slider sits, 0-100."""
+        return self.settings.volume_pct
+
+    def _level_for(self, output_type: str) -> int:
+        """Map the current percentage onto this output's floor..ceiling band."""
+        floor = VOLUME_FLOOR.get(output_type, 0)
+        ceiling = max(floor, self.settings.get_max_volume(output_type))
+        return round(floor + (ceiling - floor) * self.pct / 100)
 
     @property
     def speaker_level(self) -> int:
-        """Current speaker volume level (0-100)."""
-        return self._levels()[self.index]['speaker']
+        """Current speaker volume as ALSA wants it (0-100)."""
+        return self._level_for('speaker')
 
     @property
     def bt_level(self) -> int:
-        """Current Bluetooth volume level (0-100) for pactl."""
-        return self._levels()[self.index]['bt']
+        """Current Bluetooth volume for pactl (0-100)."""
+        return self._level_for('bt')
 
     @property
     def icon(self) -> str:
-        """Current volume icon name."""
-        return self._levels()[self.index]['icon']
+        """Volume icon for the current level, quietest first."""
+        if self.pct <= 0:
+            return VOLUME_ICONS[0]
+        # Even thirds, so the icon tracks the slider rather than a preset index.
+        bucket = min(len(VOLUME_ICONS) - 1, self.pct * len(VOLUME_ICONS) // 100)
+        return VOLUME_ICONS[bucket]
 
     def init(self):
         """Initialize system volume at startup."""
@@ -46,10 +63,22 @@ class VolumeController:
         unmute_speakers(self.speaker_level)
         self._muted = False
 
-    def toggle(self):
-        """Cycle through volume levels."""
-        self.index = (self.index + 1) % len(self._levels())
-        logger.info(f'Volume: speaker={self.speaker_level}%, bt={self.bt_level}%')
+    def set_pct(self, pct: float) -> int:
+        """Set the level from the slider. Snaps to VOLUME_STEP_PCT. Returns it."""
+        snapped = int(round(max(0.0, min(100.0, pct)) / VOLUME_STEP_PCT) * VOLUME_STEP_PCT)
+        if snapped == self.pct:
+            return snapped
+        self.settings.set_volume_pct(snapped)
+        self.apply()
+        return snapped
+
+    def nudge(self, delta_pct: float) -> int:
+        """Move the level by a signed amount, for keyboard/rotary input."""
+        return self.set_pct(self.pct + delta_pct)
+
+    def apply(self):
+        """Push the current level to whichever output is live."""
+        logger.info(f'Volume: {self.pct}% (speaker={self.speaker_level}, bt={self.bt_level})')
         run_async(set_system_volume, self.speaker_level)
 
     def mute(self):

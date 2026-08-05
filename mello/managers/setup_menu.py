@@ -36,7 +36,7 @@ class SetupMenu:
         on_invalidate: Callable[[], None],
         on_library_cleared: Callable[[], None],
         bluetooth_manager=None,
-        on_volume_preview: Optional[Callable[[int, str, int], None]] = None,
+        on_volume_preview: Optional[Callable[[str, int], None]] = None,
         on_play_track: Optional[Callable[[int], None]] = None,
     ):
         self.catalog_manager = catalog_manager
@@ -307,20 +307,20 @@ class SetupMenu:
             self._on_invalidate()
 
     def _handle_volume_tap(self, button_rects: dict, x: int, y: int):
-        """Handle taps on the volume settings screen (+/- buttons)."""
+        """Handle taps on the max-volume screen (+/- buttons)."""
         for key, rect in button_rects.items():
             if not rect.collidepoint(x, y):
                 continue
-            # Keys are like "vol_plus_0_speaker", "vol_minus_1_bt"
+            # Keys are like "vol_plus_0_speaker", "vol_minus_0_bt". The index is
+            # vestigial from the old three-preset screen; output type is the key.
             if key.startswith('vol_'):
                 parts = key.split('_')  # ['vol', 'plus'/'minus', index, type]
                 if len(parts) == 4:
                     delta = 1 if parts[1] == 'plus' else -1
-                    level_idx = int(parts[2])
                     output_type = parts[3]
-                    new_val = self.settings.adjust_volume(level_idx, output_type, delta)
+                    new_val = self.settings.adjust_max_volume(output_type, delta)
                     if self._on_volume_preview:
-                        self._on_volume_preview(level_idx, output_type, new_val)
+                        self._on_volume_preview(output_type, new_val)
                     self._on_invalidate()
                 break
 

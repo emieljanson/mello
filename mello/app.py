@@ -23,7 +23,7 @@ from .config import (
     CAROUSEL_TOUCH_MARGIN, MAX_SWIPE_JUMP, VELOCITY_THRESHOLDS,
     ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
     CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
-    SLEEP_CLOCK_DRIFT, QUIET_HOURS_WAKE_HOLD,
+    SLEEP_CLOCK_DRIFT, QUIET_HOURS_WAKE_HOLD, VOLUME_SLIDER_TIMEOUT,
     TRACK_LIST_FETCH_DELAY, TRACK_LIST_RETRY_INTERVAL, TRACK_LIST_GATE_LOG_INTERVAL,
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
@@ -403,6 +403,9 @@ class Mello:
         )
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
+        self.volume_slider_open = False
+        self._volume_dragging = False
+        self._volume_slider_touched: float = 0.0
         self._menu_hold_triggered = False
         # Menu scroll tracking
         self._menu_touch_start: Optional[tuple] = None
@@ -800,9 +803,12 @@ class Mello:
             )
             self._last_context_watchdog_log = now
 
-    def _preview_volume(self, level_idx: int, output_type: str, new_val: int):
-        """Switch to the edited volume level and apply it immediately."""
-        self.volume.index = level_idx
+    def _preview_volume(self, output_type: str, new_val: int):
+        """Let whoever is setting the ceiling hear it as they move it.
+
+        Previewed at the ceiling itself, since that's the only thing being
+        decided here. The live level is restored by the next apply().
+        """
         if output_type == 'speaker':
             set_system_volume(new_val)
         elif output_type == 'bt' and self.bluetooth:
@@ -1500,7 +1506,10 @@ class Mello:
                 self._handle_key(event.key)
             
             elif event.type == pygame.MOUSEMOTION:
-                if self.setup_menu.is_open and self._menu_touch_start is not None:
+                if self._volume_dragging:
+                    self.sleep_manager.reset_timer()
+                    self._set_volume_from_touch(event.pos)
+                elif self.setup_menu.is_open and self._menu_touch_start is not None:
                     # Menu scroll: track vertical drag (physical x-axis)
                     dx = event.pos[0] - self._menu_touch_start[0]
                     if abs(dx) > 10 and self.renderer.menu_content_overflow > 0:
@@ -1571,6 +1580,12 @@ class Mello:
         if self.delete_mode_id:
             self._handle_delete_mode_tap(pos)
             return
+
+        # The open slider is modal too, except over the volume button itself —
+        # that keeps its own tap-to-close and hold-for-menu handling.
+        if self.volume_slider_open and not self._touch_on_volume_button(pos):
+            if self._handle_volume_slider_touch(pos):
+                return
         
         # Check button clicks
         if self._check_button_click(pos):
@@ -1726,8 +1741,23 @@ class Mello:
         self._delete_button_rect = None
         self.renderer.invalidate()
     
+    def _touch_on_volume_button(self, pos) -> bool:
+        """Whether a touch landed on the volume button, slider or not."""
+        x, y = pos
+        if x > CAROUSEL_X - CAROUSEL_TOUCH_MARGIN:
+            return False
+        _, _, vol_y = Renderer.volume_slider_geometry()
+        return vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE
+
     def _handle_touch_up(self, pos):
         """Handle touch/mouse up."""
+        # Before anything that reads carousel touch state: a slider drag never
+        # went through the carousel, so it has none.
+        if self._volume_dragging:
+            self._volume_dragging = False
+            self._volume_slider_touched = time.time()
+            return
+
         logger.debug(f'Touch up: pos={pos}, dragging={self.touch.dragging}')
         if not self.touch.dragging:
             logger.debug('Touch up: ignored (not dragging)')
@@ -1998,6 +2028,10 @@ class Mello:
             f'touch_device={self.evdev_touch.device_name or "none"} | '
             f'touch_path={self.evdev_touch.device_path or "none"}'
         )
+        # A finger held still on the slider sends no motion events, so sleep can
+        # arrive mid-drag. Don't wake up still holding it.
+        self._volume_dragging = False
+        self._close_volume_slider()
         self.sleep_manager.wake_up(reason)
         self._on_wake()
 
@@ -2580,6 +2614,8 @@ class Mello:
         self.setup_menu.update()
 
         # Volume hold detection: open menu after MENU_HOLD_TIME seconds
+        self._close_volume_slider_if_idle()
+
         if self._volume_hold_start is not None and not self._menu_hold_triggered:
             if time.time() - self._volume_hold_start >= MENU_HOLD_TIME:
                 self._menu_hold_triggered = True
@@ -2741,13 +2777,60 @@ class Mello:
             self._volume_hold_start = None
             self._menu_hold_triggered = False
             return
-        # Short tap: toggle volume
-        self.volume.toggle()
-        # Also set BT sink volume when BT audio is active
-        if self._bt_audio_active:
-            self.bluetooth.set_volume(self.volume.bt_level)
+        # Short tap: open the slider, or close it if it's already up.
+        self.volume_slider_open = not self.volume_slider_open
+        self._volume_slider_touched = time.time()
+        self.renderer.invalidate()
         self._last_action_time = time.time()
         self._volume_hold_start = None
+
+    # --- Volume slider ---
+
+    def _close_volume_slider(self):
+        if self.volume_slider_open:
+            self.volume_slider_open = False
+            self.renderer.invalidate()
+
+    def _handle_volume_slider_touch(self, pos) -> bool:
+        """Consume a touch aimed at the open slider. True if it was ours.
+
+        Anywhere on the track counts, not just the handle — dragging a 22px bar
+        with a child's finger on a 5" panel is not a reasonable ask, so a tap
+        jumps the level to wherever you touched.
+        """
+        if not self.volume_slider_open:
+            return False
+        if not self._point_in_rect(pos, Renderer.volume_slider_hit_rect()):
+            # Tapping outside closes it, and the tap is spent doing so — it must
+            # not also hit whatever was underneath.
+            self._close_volume_slider()
+            return True
+        self._volume_dragging = True
+        self._set_volume_from_touch(pos)
+        return True
+
+    def _set_volume_from_touch(self, pos):
+        before = self.volume.pct
+        after = self.volume.set_pct(Renderer.volume_pct_from_touch(pos))
+        self._volume_slider_touched = time.time()
+        self._last_action_time = self._volume_slider_touched
+        if after == before:
+            return   # same step: nothing to push or repaint
+        if self._bt_audio_active:
+            self.bluetooth.set_volume(self.volume.bt_level)
+        self.renderer.invalidate()
+
+    def _volume_maxima(self) -> list:
+        """(output_type, label, ceiling) per output, for the settings screen."""
+        return [('speaker', 'Speaker', self.settings.get_max_volume('speaker')),
+                ('bt', 'Bluetooth', self.settings.get_max_volume('bt'))]
+
+    def _close_volume_slider_if_idle(self):
+        """Close the slider once it's been left alone, so it can't sit on covers."""
+        if not self.volume_slider_open or self._volume_dragging:
+            return
+        if time.time() - self._volume_slider_touched >= VOLUME_SLIDER_TIMEOUT:
+            self._close_volume_slider()
     
     
     def _draw(self):
@@ -2782,7 +2865,9 @@ class Mello:
             drag_offset=self.touch.drag_offset,
             dragging=self.touch.dragging,
             is_sleeping=self.sleep_manager.is_sleeping,
-            volume_index=self.volume.index,
+            volume_pct=self.volume.pct,
+            volume_icon=self.volume.icon,
+            volume_slider_open=self.volume_slider_open,
             delete_mode_id=self.delete_mode_id,
             pressed_button=self._pressed_button,
             # Hide loader as soon as focused context audio is already playing.
@@ -2822,7 +2907,7 @@ class Mello:
             bt_discovered_devices=self.bluetooth.discovered_devices,
             bt_scanning=self.bluetooth.scanning,
             bt_pairing_mac=self.bluetooth.pairing_mac,
-            volume_levels=self.settings.get_volume_levels(),
+            volume_maxima=self._volume_maxima(),
             menu_scroll_offset=self.setup_menu.scroll_offset,
             update_checking=self.setup_menu._update_checking,
             update_available=self.setup_menu._update_available,

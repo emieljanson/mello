@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
-from ..config import (SETTINGS_PATH, DEFAULT_VOLUME_LEVELS, VOLUME_RANGE,
-                      VOLUME_ADJUST_STEP)
+from ..config import (SETTINGS_PATH, VOLUME_RANGE, VOLUME_ADJUST_STEP,
+                      DEFAULT_MAX_VOLUME, VOLUME_FLOOR)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,8 @@ class Settings:
         self._quiet_end: int = DEFAULT_QUIET_END
         self._bedtime_uri: Optional[str] = None
         self._last_bt_device_mac: Optional[str] = None
-        self._volume_overrides: Optional[list] = None  # None = use defaults
+        self._max_volume: dict = {}      # {} = use DEFAULT_MAX_VOLUME
+        self._volume_pct: int = 60       # a sane living-room level on first boot
         self._share_usage_data: bool = True  # Set once during install, not changeable via UI
         self._load()
 
@@ -60,7 +61,8 @@ class Settings:
                 self._quiet_end = data.get('quiet_hours_end', DEFAULT_QUIET_END)
                 self._bedtime_uri = data.get('bedtime_uri')
                 self._last_bt_device_mac = data.get('last_bt_device_mac')
-                self._volume_overrides = data.get('volume_levels')
+                self._max_volume = self._read_max_volume(data)
+                self._volume_pct = max(0, min(100, int(data.get('volume_pct', 60))))
                 if 'share_usage_data' in data:
                     self._share_usage_data = bool(data['share_usage_data'])
                 logger.info(f'Settings loaded: auto_pause={self._auto_pause_minutes}min, expiry={self._progress_expiry_hours}h')
@@ -79,8 +81,9 @@ class Settings:
                 'last_bt_device_mac': self._last_bt_device_mac,
                 'share_usage_data': self._share_usage_data,
             }
-            if self._volume_overrides is not None:
-                data['volume_levels'] = self._volume_overrides
+            data['volume_pct'] = self._volume_pct
+            if self._max_volume:
+                data['max_volume'] = self._max_volume
             self._path.write_text(json.dumps(data, indent=2))
         except Exception as e:
             logger.warning(f'Could not save settings: {e}')
@@ -178,46 +181,63 @@ class Settings:
 
     # --- Volume levels ---
 
-    def get_volume_levels(self) -> list:
-        """Return volume levels (3 dicts with speaker, bt, icon keys)."""
-        if self._volume_overrides is None:
-            return [dict(d) for d in DEFAULT_VOLUME_LEVELS]
-        # Merge overrides with defaults (ensure icon key is always present)
-        result = []
-        for i, default in enumerate(DEFAULT_VOLUME_LEVELS):
-            entry = dict(default)
-            if i < len(self._volume_overrides):
-                override = self._volume_overrides[i]
-                for key in ('speaker', 'bt'):
-                    if key in override:
-                        entry[key] = override[key]
-            result.append(entry)
-        return result
+    @staticmethod
+    def _read_max_volume(data: dict) -> dict:
+        """Read the ceilings, migrating from the old three-preset format.
 
-    def adjust_volume(self, level_index: int, output_type: str, delta: int) -> int:
-        """Nudge a volume value one step in the direction of delta (+1 or -1).
-
-        delta is a direction, not a magnitude: one tap moves VOLUME_ADJUST_STEP
-        percentage points so retuning a preset isn't dozens of taps.
+        The loudest of the old presets *was* the ceiling, so someone who tuned
+        their presets down must not have the device get louder on update.
         """
-        levels = self.get_volume_levels()
-        if level_index < 0 or level_index >= len(levels):
-            return 0
+        stored = data.get('max_volume')
+        if isinstance(stored, dict):
+            return {k: int(v) for k, v in stored.items()
+                    if k in VOLUME_RANGE and isinstance(v, (int, float))}
+
+        legacy = data.get('volume_levels')
+        if not isinstance(legacy, list) or not legacy:
+            return {}
+        migrated = {}
+        for output_type in VOLUME_RANGE:
+            values = [entry[output_type] for entry in legacy
+                      if isinstance(entry, dict) and isinstance(entry.get(output_type), (int, float))]
+            if values:
+                migrated[output_type] = int(max(values))
+        if migrated:
+            logger.info(f'Migrated volume presets to ceilings: {migrated}')
+        return migrated
+
+    def get_max_volume(self, output_type: str) -> int:
+        """Loudest this output may go — the ceiling the slider's 100% maps to."""
         lo, hi = VOLUME_RANGE.get(output_type, (0, 100))
+        default = DEFAULT_MAX_VOLUME.get(output_type, hi)
+        floor = VOLUME_FLOOR.get(output_type, lo)
+        value = self._max_volume.get(output_type, default)
+        # Never below the floor, or 0% would be louder than 100%.
+        return max(floor, min(hi, value))
+
+    def adjust_max_volume(self, output_type: str, delta: int) -> int:
+        """Nudge a ceiling one step in the direction of delta (+1 or -1)."""
+        if output_type not in VOLUME_RANGE:
+            return 0
+        _, hi = VOLUME_RANGE[output_type]
+        floor = VOLUME_FLOOR.get(output_type, 0)
         step = VOLUME_ADJUST_STEP if delta > 0 else -VOLUME_ADJUST_STEP
-        new_val = max(lo, min(hi, levels[level_index][output_type] + step))
-        # Initialize overrides from current effective values
-        if self._volume_overrides is None:
-            self._volume_overrides = [
-                {'speaker': d['speaker'], 'bt': d['bt']}
-                for d in DEFAULT_VOLUME_LEVELS
-            ]
-        self._volume_overrides[level_index][output_type] = new_val
+        new_val = max(floor, min(hi, self.get_max_volume(output_type) + step))
+        self._max_volume[output_type] = new_val
         self._save()
         return new_val
 
-    def reset_volume_levels(self):
-        """Reset volume levels to defaults."""
-        self._volume_overrides = None
+    @property
+    def volume_pct(self) -> int:
+        """Where the slider sits, 0-100. Survives a restart."""
+        return self._volume_pct
+
+    def set_volume_pct(self, pct: int):
+        self._volume_pct = max(0, min(100, int(pct)))
         self._save()
-        logger.info('Volume levels reset to defaults')
+
+    def reset_volume_levels(self):
+        """Reset the ceilings to defaults."""
+        self._max_volume = {}
+        self._save()
+        logger.info('Volume ceilings reset to defaults')

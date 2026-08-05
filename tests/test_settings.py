@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mello.managers.settings import (Settings, DEFAULT_AUTO_PAUSE_MINUTES,
                                      DEFAULT_PROGRESS_EXPIRY_HOURS,
                                      QUIET_START_OPTIONS, QUIET_END_OPTIONS)
-from mello.config import VOLUME_ADJUST_STEP, VOLUME_RANGE
+from mello.config import (VOLUME_ADJUST_STEP, VOLUME_RANGE, VOLUME_FLOOR,
+                          DEFAULT_MAX_VOLUME)
 
 
 @pytest.fixture
@@ -131,24 +132,104 @@ class TestQuietHoursSettings:
         assert s.cycle_quiet_start() == QUIET_START_OPTIONS[1]
 
 
-class TestVolumeAdjustStep:
+class TestMaxVolume:
     def test_one_tap_moves_a_full_step(self, settings_path):
         s = Settings(path=settings_path)
-        before = s.get_volume_levels()[2]['speaker']
-        assert s.adjust_volume(2, 'speaker', -1) == before - VOLUME_ADJUST_STEP
+        before = s.get_max_volume('speaker')
+        assert s.adjust_max_volume('speaker', -1) == before - VOLUME_ADJUST_STEP
 
-    def test_clamped_to_range(self, settings_path):
+    def test_clamped_between_floor_and_range_top(self, settings_path):
+        """The ceiling can never sink below the floor, or 0% would beat 100%."""
         s = Settings(path=settings_path)
-        lo, hi = VOLUME_RANGE['speaker']
+        _, hi = VOLUME_RANGE['speaker']
         for _ in range(50):
-            s.adjust_volume(0, 'speaker', -1)
-        assert s.get_volume_levels()[0]['speaker'] == lo
+            s.adjust_max_volume('speaker', -1)
+        assert s.get_max_volume('speaker') == VOLUME_FLOOR['speaker']
         for _ in range(50):
-            s.adjust_volume(0, 'speaker', 1)
-        assert s.get_volume_levels()[0]['speaker'] == hi
+            s.adjust_max_volume('speaker', 1)
+        assert s.get_max_volume('speaker') == hi
 
     def test_bt_and_speaker_are_independent(self, settings_path):
         s = Settings(path=settings_path)
-        bt_before = s.get_volume_levels()[1]['bt']
-        s.adjust_volume(1, 'speaker', -1)
-        assert s.get_volume_levels()[1]['bt'] == bt_before
+        bt_before = s.get_max_volume('bt')
+        s.adjust_max_volume('speaker', -1)
+        assert s.get_max_volume('bt') == bt_before
+
+    def test_unknown_output_is_ignored(self, settings_path):
+        assert Settings(path=settings_path).adjust_max_volume('kazoo', 1) == 0
+
+    def test_survives_a_reload(self, settings_path):
+        s = Settings(path=settings_path)
+        s.adjust_max_volume('speaker', -1)
+        expected = s.get_max_volume('speaker')
+        assert Settings(path=settings_path).get_max_volume('speaker') == expected
+
+    def test_reset_restores_defaults(self, settings_path):
+        s = Settings(path=settings_path)
+        s.adjust_max_volume('speaker', -1)
+        s.reset_volume_levels()
+        assert s.get_max_volume('speaker') == DEFAULT_MAX_VOLUME['speaker']
+
+
+class TestVolumePct:
+    def test_defaults_to_a_sane_level(self, settings_path):
+        assert 0 < Settings(path=settings_path).volume_pct < 100
+
+    def test_persists(self, settings_path):
+        Settings(path=settings_path).set_volume_pct(35)
+        assert Settings(path=settings_path).volume_pct == 35
+
+    @pytest.mark.parametrize('given, expected', [(-10, 0), (0, 0), (100, 100), (150, 100)])
+    def test_clamped(self, settings_path, given, expected):
+        s = Settings(path=settings_path)
+        s.set_volume_pct(given)
+        assert s.volume_pct == expected
+
+    def test_garbage_on_disk_recovers(self, settings_path):
+        settings_path.write_text(json.dumps({'volume_pct': 900}))
+        assert Settings(path=settings_path).volume_pct == 100
+
+
+class TestVolumeMigration:
+    """The old three presets become one ceiling.
+
+    Someone who tuned their presets down for a bedroom must not have the device
+    get louder just because it updated.
+    """
+
+    def test_loudest_preset_becomes_the_ceiling(self, settings_path):
+        settings_path.write_text(json.dumps({'volume_levels': [
+            {'speaker': 70, 'bt': 10},
+            {'speaker': 80, 'bt': 20},
+            {'speaker': 90, 'bt': 30},
+        ]}))
+        s = Settings(path=settings_path)
+        assert s.get_max_volume('speaker') == 90
+        assert s.get_max_volume('bt') == 30
+
+    def test_new_format_wins_over_the_old_one(self, settings_path):
+        settings_path.write_text(json.dumps({
+            'volume_levels': [{'speaker': 70, 'bt': 10}],
+            'max_volume': {'speaker': 95, 'bt': 50},
+        }))
+        assert Settings(path=settings_path).get_max_volume('speaker') == 95
+
+    def test_no_stored_volume_uses_defaults(self, settings_path):
+        settings_path.write_text(json.dumps({'auto_pause_minutes': 30}))
+        s = Settings(path=settings_path)
+        assert s.get_max_volume('speaker') == DEFAULT_MAX_VOLUME['speaker']
+
+    @pytest.mark.parametrize('legacy', [
+        [], 'nonsense', {'speaker': 90}, [{'speaker': None}], [{}], [None],
+    ])
+    def test_malformed_legacy_data_falls_back(self, settings_path, legacy):
+        settings_path.write_text(json.dumps({'volume_levels': legacy}))
+        s = Settings(path=settings_path)
+        assert s.get_max_volume('speaker') == DEFAULT_MAX_VOLUME['speaker']
+
+    def test_junk_keys_in_new_format_are_dropped(self, settings_path):
+        settings_path.write_text(json.dumps(
+            {'max_volume': {'speaker': 92, 'kazoo': 11, 'bt': 'loud'}}))
+        s = Settings(path=settings_path)
+        assert s.get_max_volume('speaker') == 92
+        assert s.get_max_volume('bt') == DEFAULT_MAX_VOLUME['bt']

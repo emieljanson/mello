@@ -130,18 +130,36 @@ PROGRESS_BAR_WIDTH = 8
 # VOLUME
 # ============================================
 
-# Default volume levels (speaker = ALSA speaker, bt = PipeWire bluetooth sink)
-DEFAULT_VOLUME_LEVELS = [
-    {'speaker': 88, 'bt': 20, 'icon': 'volume_none'},
-    {'speaker': 94, 'bt': 40, 'icon': 'volume_low'},
-    {'speaker': 98, 'bt': 65, 'icon': 'volume_high'},
-]
+# Volume is one continuous 0-100% level, set with the slider. 0% is the
+# quietest *useful* output, not silence — see VOLUME_FLOOR.
 
-# Valid ranges for volume adjustment
+# Loudest the device may ever go, per output. This is the parental ceiling: the
+# slider's 100% maps here, so a child never sees a bar that refuses to fill.
+DEFAULT_MAX_VOLUME = {'speaker': 98, 'bt': 65}
+
+# What the slider's 0% maps to. HARDWARE CALIBRATION, not a preference: on the
+# WM8960 the bottom of ALSA's range is inaudible, so mapping 0% there would
+# leave most of the slider dead. These are the quietest values Mello has ever
+# shipped with (the old 'volume_none' preset), so they're known to be audible.
+# Lower them if the quietest step is still too loud in a bedroom.
+VOLUME_FLOOR = {'speaker': 88, 'bt': 20}
+
+# Valid ranges for the ceiling itself.
 VOLUME_RANGE = {'speaker': (50, 100), 'bt': (5, 100)}
 
-# Percentage points per +/- tap. 1 meant ~30 taps to retune a preset.
+# Percentage points per +/- tap when setting the ceiling.
 VOLUME_ADJUST_STEP = 5
+
+# Slider granularity, in percent. Fine enough to feel continuous, coarse enough
+# that a shaky finger doesn't land between two values.
+VOLUME_STEP_PCT = 5
+
+# Icons for the volume button, quietest first. Picked by level, not by preset.
+VOLUME_ICONS = ('volume_none', 'volume_low', 'volume_high')
+
+# Close the slider on its own after this long untouched, so it can't sit on top
+# of the covers forever if nobody taps outside it.
+VOLUME_SLIDER_TIMEOUT = 6.0
 
 # ============================================
 # BLUETOOTH

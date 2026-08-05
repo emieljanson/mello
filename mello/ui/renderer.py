@@ -18,7 +18,7 @@ from ..config import (
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     TRACK_INFO_X, CAROUSEL_X, CONTROLS_X, CAROUSEL_CENTER_Y,
     BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING, PROGRESS_BAR_WIDTH,
-    DEFAULT_VOLUME_LEVELS, AUTO_PAUSE_WARN_SECONDS,
+    VOLUME_ICONS, AUTO_PAUSE_WARN_SECONDS,
 )
 
 # Headphone button Y position — symmetric to volume button on the opposite side.
@@ -157,11 +157,14 @@ class Renderer:
             ctx.play_in_progress,
         )
         
-        # What decides which on-cover button is drawn. Tracked because the hit
-        # rects now outlive a frame: if visibility changes without a redraw, the
-        # old rect would linger over a button that's no longer there.
+        # Everything that changes what's drawn but isn't covered by the checks
+        # below. The on-cover buttons are here because their hit rects now
+        # outlive a frame, so a visibility change without a redraw would leave a
+        # rect over a button that's gone. The slider is here because dragging it
+        # changes only its own value.
         button_state = (ctx.delete_mode_id, ctx.track_listable,
-                        current_item.is_temp if current_item else None)
+                        current_item.is_temp if current_item else None,
+                        ctx.volume_slider_open, ctx.volume_pct)
 
         # Check if we need a full redraw
         state_changed = (
@@ -204,7 +207,7 @@ class Renderer:
             self._draw_background()
             self._draw_track_info(current_item, ctx)
             self._draw_track_peek(ctx)
-            self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button,
+            self._draw_controls(ctx.is_playing, ctx.volume_icon, ctx.pressed_button,
                                 bt_connected=ctx.bt_connected, bt_audio_active=ctx.bt_audio_active)
             
             if self._static_layer is None:
@@ -213,6 +216,8 @@ class Renderer:
             
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
                                 ctx.is_loading, ctx.auto_pause_remaining, ctx.track_listable)
+            if ctx.volume_slider_open:
+                self._draw_volume_slider(ctx.volume_pct)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -227,6 +232,8 @@ class Renderer:
                            self._carousel_rect)
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
                                 ctx.is_loading, ctx.auto_pause_remaining, ctx.track_listable)
+            if ctx.volume_slider_open:
+                self._draw_volume_slider(ctx.volume_pct)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -239,6 +246,8 @@ class Renderer:
                                self._carousel_rect)
                 self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
                                 ctx.is_loading, ctx.auto_pause_remaining, ctx.track_listable)
+                if ctx.volume_slider_open:
+                    self._draw_volume_slider(ctx.volume_pct)
                 return [self._carousel_rect]
             return []
     
@@ -617,7 +626,7 @@ class Renderer:
             min(255, int(b + (255 - b) * amount)),
         )
     
-    def _draw_controls(self, is_playing: bool, volume_index: int, pressed_button: Optional[str] = None,
+    def _draw_controls(self, is_playing: bool, volume_icon: str, pressed_button: Optional[str] = None,
                        bt_connected: bool = False, bt_audio_active: bool = False):
         """Draw playback control buttons (portrait mode - buttons along Y axis)."""
         x = CONTROLS_X
@@ -659,9 +668,83 @@ class Renderer:
         vol_center = (x, right_cover_edge - BTN_SIZE // 2)
         vol_color = self._lighten_color(gray_color) if pressed_button == 'volume' else gray_color
         draw_aa_circle(self.screen, vol_color, vol_center, BTN_SIZE // 2)
-        icon_key = DEFAULT_VOLUME_LEVELS[volume_index]['icon']
-        self._draw_icon(icon_key, vol_center)
+        self._draw_icon(volume_icon, vol_center)
     
+    # Slider geometry. "Vertical" is from the user's point of view: the display
+    # is pre-rotated, so the bar travels along physical x and its thickness runs
+    # along physical y. Low x = user's bottom = quiet.
+    _VOL_X0 = CONTROLS_X + 85                 # clear of the volume button
+    _VOL_X1 = CAROUSEL_X + COVER_SIZE - 20    # stops level with the cover's top
+    _VOL_TRACK_W = 22                         # visible thickness
+    _VOL_HANDLE_R = 22
+    _VOL_HIT_W = 170                          # generous: fingers, not cursors
+    # Panel overhang past each end of the travel. Fixed rather than derived from
+    # the handle radius: the whole widget has to stay inside _carousel_rect,
+    # which is all a partial update repaints.
+    _VOL_PANEL_PAD = 34
+
+    @classmethod
+    def volume_slider_geometry(cls) -> tuple:
+        """(x0, x1, centre_y) of the slider track, in physical pixels."""
+        cover_edge = CAROUSEL_CENTER_Y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
+        return cls._VOL_X0, cls._VOL_X1, cover_edge - BTN_SIZE // 2
+
+    @classmethod
+    def volume_slider_hit_rect(cls) -> tuple:
+        """Touch area of the whole widget, panel included.
+
+        A classmethod so hit-testing never depends on whether the last frame
+        happened to draw it — the same trap that made every on-cover button
+        untappable while paused.
+        """
+        x0, x1, center_y = cls.volume_slider_geometry()
+        pad = cls._VOL_PANEL_PAD
+        return (x0 - pad, center_y - cls._VOL_HIT_W // 2,
+                (x1 - x0) + pad * 2, cls._VOL_HIT_W)
+
+    @classmethod
+    def volume_pct_from_touch(cls, pos) -> float:
+        """Which percentage a touch at pos is pointing at. Clamped 0-100."""
+        x0, x1, _ = cls.volume_slider_geometry()
+        if x1 <= x0:
+            return 0.0
+        return max(0.0, min(100.0, (pos[0] - x0) / (x1 - x0) * 100))
+
+    def _draw_volume_slider(self, pct: int):
+        """Draw the volume slider over the covers, with the level beside it."""
+        x0, x1, center_y = self.volume_slider_geometry()
+        hx, hy, hw, hh = self.volume_slider_hit_rect()
+
+        # Panel, so the bar reads against whatever cover is behind it.
+        panel = pygame.Rect(hx, hy, hw, hh)
+        backdrop = pygame.Surface((panel.width, panel.height), pygame.SRCALPHA)
+        backdrop.fill((*COLORS['bg_secondary'], 235))
+        self.screen.blit(backdrop, panel.topleft)
+        pygame.draw.rect(self.screen, COLORS['bg_elevated'], panel, width=2, border_radius=18)
+
+        half = self._VOL_TRACK_W // 2
+        filled_x = x0 + int((x1 - x0) * pct / 100)
+
+        # Unfilled remainder, then the filled part from the quiet end.
+        pygame.draw.rect(self.screen, COLORS['bg_elevated'],
+                         pygame.Rect(x0, center_y - half, x1 - x0, self._VOL_TRACK_W),
+                         border_radius=half)
+        if filled_x > x0:
+            pygame.draw.rect(self.screen, COLORS['accent'],
+                             pygame.Rect(x0, center_y - half, filled_x - x0, self._VOL_TRACK_W),
+                             border_radius=half)
+
+        draw_aa_circle(self.screen, (255, 255, 255), (filled_x, center_y), self._VOL_HANDLE_R)
+
+        # Level beside the handle, tracking it up and down the bar. Clamped into
+        # the panel: at either end of the travel the handle sits on the track's
+        # last pixel, and a label centred on it would hang outside the widget.
+        label = self._render_text_rotated(f'{pct}%', self.font_medium, COLORS['text_primary'])
+        label_x = max(panel.left + label.get_width() // 2 + 6,
+                      min(panel.right - label.get_width() // 2 - 6, filled_x))
+        self.screen.blit(label, label.get_rect(
+            center=(label_x, center_y - self._VOL_HANDLE_R - 30)))
+
     def _draw_icon(self, name: str, center: tuple):
         """Draw an icon centered at position."""
         icon = self.icons.get(name)
@@ -848,10 +931,6 @@ class Renderer:
     _MENU_NAV_SIZE = 60          # close/back icon button diameter
     _MENU_NAV_CENTER = (670, 50)   # close/back icon button center (user's top-left)
 
-    _VOL_LABELS = [
-        ('speaker', ['Speaker low', 'Speaker mid', 'Speaker high']),
-        ('bt', ['BT low', 'BT mid', 'BT high']),
-    ]
 
     def _draw_menu_frame(self, ctx: 'RenderContext'):
         """Draw fully black background then the active menu screen."""
@@ -931,7 +1010,7 @@ class Renderer:
         items = [
             ('button', 'wifi', 'WiFi', COLORS['bg_elevated']),
             ('button', 'bluetooth', 'Bluetooth', COLORS['bg_elevated']),
-            ('button', 'volume', 'Volume levels', COLORS['bg_elevated']),
+            ('button', 'volume', 'Max volume', COLORS['bg_elevated']),
             ('separator',),
             ('button', 'auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
             ('button', 'progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
@@ -1059,14 +1138,13 @@ class Renderer:
         return items
 
     def _build_volume_content(self, ctx: 'RenderContext') -> list:
-        items = []
-        levels = ctx.volume_levels
-        for idx, (output_type, names) in enumerate(self._VOL_LABELS):
+        """The ceiling per output — the loudest the slider is allowed to reach."""
+        items = [('text', 'Loudest the slider can go'), ('spacer',)]
+        for idx, (output_type, label, ceiling) in enumerate(ctx.volume_maxima):
             if idx > 0:
                 items.append(('separator',))
-            for i, name in enumerate(names):
-                val = levels[i][output_type] if i < len(levels) else 0
-                items.append(('vol_row', i, output_type, name, val))
+            items.append(('vol_row', 0, output_type, label, ceiling))
+        items.append(('footer', 'Day-to-day volume is the slider on the main screen'))
         return items
 
     # Physical-x extent each row kind occupies, GAP excluded (a GAP is added

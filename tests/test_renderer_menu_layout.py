@@ -28,7 +28,8 @@ def _renderer():
 def _bt_context():
     return RenderContext(
         items=[], selected_index=0, now_playing=NowPlaying(), scroll_x=0.0,
-        drag_offset=0.0, dragging=False, is_sleeping=False, volume_index=1,
+        drag_offset=0.0, dragging=False, is_sleeping=False,
+        volume_pct=60, volume_icon='volume_low', volume_slider_open=False,
         delete_mode_id=None, pressed_button=None, is_loading=False, is_playing=False,
         menu_state=MenuState.BT_LIST,
         bt_paired_devices=[BluetoothDevice(mac='AA:BB', name='Speaker', paired=True)],

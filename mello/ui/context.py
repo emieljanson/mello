@@ -18,7 +18,9 @@ class RenderContext:
     drag_offset: float
     dragging: bool
     is_sleeping: bool
-    volume_index: int
+    volume_pct: int                    # 0-100, what the slider shows
+    volume_icon: str                   # picked from the level, not a preset
+    volume_slider_open: bool
     delete_mode_id: Optional[str]
     pressed_button: Optional[str]
     is_loading: bool
@@ -57,7 +59,7 @@ class RenderContext:
     bt_discovered_devices: List[BluetoothDevice] = field(default_factory=list)
     bt_scanning: bool = False
     bt_pairing_mac: Optional[str] = None
-    volume_levels: list = field(default_factory=list)  # For volume settings screen
+    volume_maxima: list = field(default_factory=list)  # (output, label, ceiling) rows
     menu_scroll_offset: int = 0
     reset_confirm_pending: bool = False
     update_checking: bool = False

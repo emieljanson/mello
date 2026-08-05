@@ -59,7 +59,8 @@ def _ctx(items, **kwargs):
     ctx = RenderContext(
         items=items, selected_index=0, now_playing=paused_on,
         scroll_x=0.0, drag_offset=0.0, dragging=False, is_sleeping=False,
-        volume_index=1, delete_mode_id=None, pressed_button=None,
+        volume_pct=60, volume_icon='volume_low', volume_slider_open=False,
+        delete_mode_id=None, pressed_button=None,
         is_loading=False, is_playing=False)
     for key, value in kwargs.items():
         setattr(ctx, key, value)
