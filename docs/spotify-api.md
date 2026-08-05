@@ -22,8 +22,10 @@ using.
 1. Open https://developer.spotify.com/dashboard and log in with your normal
    Spotify account.
 2. **Create app**. Name and description can be anything ("Mello"). Redirect URI:
-   `http://localhost` — Mello never uses it, but the form requires one. Tick the
-   Web API checkbox.
+   `http://127.0.0.1:8080` — Spotify rejects `http://localhost` as insecure and
+   only accepts the loopback IP literal over plain http. Mello never uses this
+   value at all (client credentials has no redirect step), so any URI that
+   passes their validation is fine. Tick the Web API checkbox.
 3. Open the app's **Settings** to see the Client ID, then **View client secret**.
 4. On the Pi, put both into `~/mello/.env`:
 
