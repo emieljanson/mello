@@ -224,6 +224,8 @@ class Mello:
         self._track_focus_uri: Optional[str] = None   # album we're dwelling on
         self._track_focus_since: float = 0.0
         self._track_retry_at: float = 0.0
+        self._resume_cache_key: tuple = ()
+        self._resume_cache_uri: Optional[str] = None
         
         # UI Components
         self.image_cache = ImageCache(IMAGES_DIR)
@@ -576,12 +578,25 @@ class Mello:
         if live:
             return item.uri, self.now_playing.track_uri
 
-        progress = self.catalog_manager.get_progress(item.uri)
-        resume_uri = progress.get('uri') if progress else None
+        resume_uri = self._resume_track_uri(item.uri)
         if not resume_uri:
             tracks = self.track_lists.get(item.uri)
             resume_uri = tracks[0].uri if tracks else None
         return item.uri, resume_uri
+
+    def _resume_track_uri(self, context_uri: str) -> Optional[str]:
+        """Saved resume track for an album. Cached, because the disk is slow.
+
+        _focused_context() runs every frame, and get_progress() reads and parses
+        progress.json each call — and writes, when it expires a stale entry.
+        Doing that per frame would hammer the SD card for no reason.
+        """
+        key = (context_uri, self.now_playing.track_uri)
+        if key != self._resume_cache_key:
+            self._resume_cache_key = key
+            progress = self.catalog_manager.get_progress(context_uri)
+            self._resume_cache_uri = progress.get('uri') if progress else None
+        return self._resume_cache_uri
 
     def _maybe_fetch_track_list(self):
         """Fetch the focused album's track list once the carousel settles.

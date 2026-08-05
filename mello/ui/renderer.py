@@ -36,6 +36,9 @@ class Renderer:
     # so dimming the glyph too would make it unreadable across a room.
     _SLEEP_CLOCK_COLOR = (205, 205, 205)
 
+    # Moon/sun radius, scaled to sit under the (large) sleep clock.
+    _SLEEP_ICON_RADIUS = 40
+
     def __init__(self, screen: pygame.Surface, image_cache: ImageCache, icons: Dict[str, pygame.Surface]):
         self.screen = screen
         self.image_cache = image_cache
@@ -45,7 +48,7 @@ class Renderer:
         self.font_large = pygame.font.Font(None, 42)
         self.font_medium = pygame.font.Font(None, 32)
         self.font_small = pygame.font.Font(None, 24)
-        self.font_clock = pygame.font.Font(None, 170)  # sleep clock, readable across a room
+        self.font_clock = pygame.font.Font(None, 340)  # sleep clock, readable across a dark room
         
         # Caches
         self._bg_cache: Optional[pygame.Surface] = None
@@ -268,7 +271,7 @@ class Renderer:
 
         if ctx.sleep_icon:
             # Sits "below" the clock from the user's view (small physical X)
-            icon_x = cx - surf.get_width() // 2 - 45
+            icon_x = cx - surf.get_width() // 2 - 70
             self._draw_sleep_icon(ctx.sleep_icon, icon_x, cy)
 
     def _draw_sleep_icon(self, icon: str, x: int, y: int):
@@ -278,21 +281,21 @@ class Renderer:
         moon means stay in bed, sun means you're allowed up.
         """
         colour = self._SLEEP_CLOCK_COLOR
-        radius = 20
+        radius = self._SLEEP_ICON_RADIUS
 
         if icon == 'moon':
             # Crescent: a disc with an offset black disc carved out of it
             draw_aa_circle(self.screen, colour, (x, y), radius)
-            draw_aa_circle(self.screen, (0, 0, 0), (x + 8, y - 8), radius)
+            draw_aa_circle(self.screen, (0, 0, 0), (x + radius * 2 // 5, y - radius * 2 // 5), radius)
             return
 
         # Sun: a disc with bold rays. Sized to read from across a dark room at
         # a few percent backlight — thin rays vanish at that brightness.
-        draw_aa_circle(self.screen, colour, (x, y), radius - 4)
+        draw_aa_circle(self.screen, colour, (x, y), radius - 8)
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
-            start = (x + dx * (radius + 2), y + dy * (radius + 2))
-            end = (x + dx * (radius + 14), y + dy * (radius + 14))
-            pygame.draw.line(self.screen, colour, start, end, 5)
+            start = (x + dx * (radius + 4), y + dy * (radius + 4))
+            end = (x + dx * (radius + 28), y + dy * (radius + 28))
+            pygame.draw.line(self.screen, colour, start, end, 10)
 
     def _render_text_rotated(self, text: str, font: pygame.font.Font, color: tuple) -> pygame.Surface:
         """Render text rotated 90° CW for portrait display mode."""
