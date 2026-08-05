@@ -41,6 +41,10 @@ class RenderContext:
     bedtime_uri: Optional[str] = None
     catalog_items: List[CatalogItem] = field(default_factory=list)  # unfiltered, for menus
     auto_pause_remaining: Optional[float] = None  # seconds left, for the wind-down bar
+    prev_track_name: Optional[str] = None    # peek under the cover: what just played
+    next_track_name: Optional[str] = None    # peek under the cover: what's coming
+    track_list: list = field(default_factory=list)   # full list for the track screen
+    track_list_index: Optional[int] = None           # position of the playing track
     app_version_label: str = ''
     bt_connected: bool = False          # A BT audio device is connected
     bt_audio_active: bool = False       # Audio is routed to BT (headphone icon purple)

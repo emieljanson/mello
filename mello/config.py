@@ -44,6 +44,7 @@ CATALOG_PATH = DATA_DIR / 'catalog.json'
 PROGRESS_PATH = DATA_DIR / 'progress.json'
 SETTINGS_PATH = DATA_DIR / 'settings.json'
 IMAGES_DIR = DATA_DIR / 'images'
+TRACKS_DIR = DATA_DIR / 'tracks'   # cached Spotify track lists, one file per context
 ICONS_DIR = Path(__file__).parent.parent / 'icons'
 LIBRESPOT_STATE_PATH = Path.home() / '.config' / 'go-librespot' / 'state.json'
 

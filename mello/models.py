@@ -15,6 +15,7 @@ class MenuState(Enum):
     WIFI_AP = auto()
     BT_LIST = auto()
     VOLUME_LEVELS = auto()
+    TRACK_LIST = auto()
     BEDTIME_LIST = auto()
 
 

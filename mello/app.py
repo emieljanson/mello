@@ -15,7 +15,7 @@ import pygame
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
     LIBRESPOT_URL, LIBRESPOT_WS,
-    CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR,
+    CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, TRACKS_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
@@ -27,7 +27,7 @@ from .config import (
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
 from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
-from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
+from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager, TrackListStore
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager, QuietHours
 from .managers.quiet_hours import clock_is_trusted
@@ -214,6 +214,13 @@ class Mello:
             get_progress_expiry=lambda: self.settings.progress_expiry_hours,
         )
         self.catalog_manager.load()
+
+        self.track_lists = TrackListStore(
+            cache_dir=TRACKS_DIR,
+            token_url=f'{LIBRESPOT_URL}/token',
+            mock_mode=self.mock_mode,
+        )
+        self._track_fetch_context: Optional[str] = None
         
         # UI Components
         self.image_cache = ImageCache(IMAGES_DIR)
@@ -381,6 +388,7 @@ class Mello:
             on_library_cleared=self._on_library_cleared,
             bluetooth_manager=self.bluetooth,
             on_volume_preview=self._preview_volume,
+            on_play_track=self._play_track_at_index,
         )
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
@@ -543,6 +551,59 @@ class Mello:
             logger.warning(f'Play failed for current focus: uri={uri[:40]} epoch={epoch}')
         else:
             logger.info(f'Play failed for stale request: uri={uri[:40]} epoch={epoch}')
+
+    def _maybe_fetch_track_list(self):
+        """Fetch the playing context's track list once, in the background.
+
+        Runs off the UI thread: a throttled fetch waits out Spotify's
+        Retry-After, which must never stall a frame.
+        """
+        context_uri = self.now_playing.context_uri
+        if not context_uri or context_uri == self._track_fetch_context:
+            return
+        if not self.track_lists.wants_fetch(context_uri):
+            return
+
+        self._track_fetch_context = context_uri
+        run_async(self._fetch_track_list_async, context_uri)
+
+    def _fetch_track_list_async(self, context_uri: str):
+        """Worker: fetch a track list, then refresh the screen if it landed."""
+        try:
+            tracks = self.track_lists.fetch(context_uri)
+        except Exception as e:
+            logger.warning(f'Track list fetch failed for {context_uri[:45]}: {e}')
+            tracks = None
+
+        if tracks:
+            self.renderer.invalidate()
+        elif self._track_fetch_context == context_uri:
+            # Throttled or offline: let the next context change try again,
+            # since the cooldown is usually only seconds.
+            self._track_fetch_context = None
+
+    def _play_track_at_index(self, index: int):
+        """Play a track picked from the list, by its position in that list."""
+        tracks, _ = self._track_list_view()
+        if index < 0 or index >= len(tracks):
+            logger.warning(f'Track tap ignored | index={index} | list_size={len(tracks)}')
+            return
+
+        context_uri = self.now_playing.context_uri
+        track = tracks[index]
+        logger.info(f'Track picked from list: {index + 1}. {track.name}')
+        self._user_activated_playback = True
+        self.volume.unmute()
+        self.playback.play_item(context_uri, skip_to_uri=track.uri)
+
+    def _track_list_view(self) -> tuple:
+        """(tracks, current_index) for the playing context — for the list screen."""
+        context_uri = self.now_playing.context_uri
+        if not context_uri:
+            return [], None
+        tracks = self.track_lists.get(context_uri) or []
+        index = self.track_lists.index_of(context_uri, self.now_playing.track_uri)
+        return tracks, index
 
     def _reset_pending_focus(self, reason: str = ''):
         """Clear pending focus-stability request timer."""
@@ -1427,6 +1488,12 @@ class Mello:
                 self._save_temp_item()
                 return True
         
+        if self.renderer.track_list_button_rect:
+            bx, by, bw, bh = self.renderer.track_list_button_rect
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                self.setup_menu.show_track_list()
+                return True
+
         if self.renderer.delete_button_rect:
             bx, by, bw, bh = self.renderer.delete_button_rect
             if bx <= x <= bx + bw and by <= y <= by + bh:
@@ -2391,6 +2458,7 @@ class Mello:
         if self.quiet_hours.update():
             self._on_quiet_hours_start(menu_open)
         self._sync_bedtime_filter()
+        self._maybe_fetch_track_list()
 
         self.sleep_manager.check_sleep(self.now_playing.playing or menu_open)
         if was_awake and self.sleep_manager.is_sleeping:
@@ -2533,6 +2601,9 @@ class Mello:
         # Snapshot BT state once to avoid race with monitor thread
         bt_dev = self.bluetooth.connected_device
         sleep_clock_text, sleep_clock_drift = self._sleep_clock_state()
+        prev_track, next_track = self.track_lists.neighbours(
+            self.now_playing.context_uri, self.now_playing.track_uri)
+        track_list, track_index = self._track_list_view()
 
         ctx = RenderContext(
             items=items,
@@ -2566,6 +2637,10 @@ class Mello:
             bedtime_uri=self.settings.bedtime_uri,
             catalog_items=self.catalog_manager.items,
             auto_pause_remaining=self.auto_pause.remaining_seconds(),
+            prev_track_name=prev_track.name if prev_track else None,
+            next_track_name=next_track.name if next_track else None,
+            track_list=track_list,
+            track_list_index=track_index,
             app_version_label=self.app_version_label,
             bt_connected=bt_dev is not None,
             bt_audio_active=self._bt_audio_active,
