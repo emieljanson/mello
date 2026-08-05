@@ -644,6 +644,10 @@ class Mello:
         """
         if context_uri and self.track_lists.get(context_uri) is not None:
             return
+        # Spotify has refused this one for good. Repeating that every 10s for as
+        # long as the cover is focused is noise, not diagnosis.
+        if context_uri and self.track_lists.is_unavailable(context_uri):
+            return
 
         now = time.time()
         if now - self._track_gate_log_at < TRACK_LIST_GATE_LOG_INTERVAL:

@@ -265,28 +265,35 @@ class TestOwnCredentials:
 
 
 class TestUnavailableContext:
-    """Spotify's own editorial playlists 404 for every third-party app."""
+    """Spotify refuses its own editorial playlists to every third-party app.
 
-    def test_404_marks_the_context_unavailable(self, store):
+    Observed on the device: 403, not 404. Both mean the same thing to us —
+    asking again will not change the answer.
+    """
+
+    @pytest.mark.parametrize('status', [403, 404])
+    def test_refusal_marks_the_context_unavailable(self, store, status):
         with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
-             patch('mello.api.tracklist.requests.get', return_value=_resp(404)):
+             patch('mello.api.tracklist.requests.get', return_value=_resp(status)):
             assert store.fetch(PLAYLIST) is None
         assert store.is_unavailable(PLAYLIST)
         assert not store.is_unavailable(ALBUM), 'one refusal must not condemn every album'
 
-    def test_unavailable_context_is_never_retried(self, store):
+    @pytest.mark.parametrize('status', [403, 404])
+    def test_unavailable_context_is_never_retried(self, store, status):
         """Not even after retry_failed() — the answer will not change."""
         with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
-             patch('mello.api.tracklist.requests.get', return_value=_resp(404)):
+             patch('mello.api.tracklist.requests.get', return_value=_resp(status)):
             store.fetch(PLAYLIST)
         store.retry_failed()
         assert store.wants_fetch(PLAYLIST) is False
         assert store.wants_fetch(ALBUM) is True
 
-    def test_404_does_not_start_a_cooldown(self, store):
+    @pytest.mark.parametrize('status', [403, 404])
+    def test_refusal_does_not_start_a_cooldown(self, store, status):
         """A refused playlist must not block every other album's list."""
         with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
-             patch('mello.api.tracklist.requests.get', return_value=_resp(404)):
+             patch('mello.api.tracklist.requests.get', return_value=_resp(status)):
             store.fetch(PLAYLIST)
         assert store.cooldown_remaining() == 0
 
@@ -549,6 +556,17 @@ class TestFetchDwell:
             app._track_focus_since -= 5
             app._maybe_fetch_track_list()
         run.assert_not_called()
+
+    def test_refused_context_stops_logging(self, tmp_path, caplog):
+        """A 403'd playlist logged the gate every 10s forever. That's noise."""
+        app = self._app(tmp_path)
+        app.track_lists._unavailable.add(ALBUM)
+        with caplog.at_level('INFO', logger='mello.app'), \
+             patch('mello.app.run_async'):
+            app._maybe_fetch_track_list()
+            app._track_focus_since -= 5
+            app._maybe_fetch_track_list()
+        assert 'Track list gate' not in caplog.text
 
 
 # --- The button must be reachable even when the list isn't loaded ---
