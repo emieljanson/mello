@@ -363,16 +363,17 @@ class TrackListStore:
                     self._app_token = None   # force a fresh one next attempt
                 return None
 
-            if resp.status_code == 404:
+            if resp.status_code in (403, 404):
                 # Spotify's own algorithmic and editorial playlists (the
                 # 37i9dQZF1D... ones) are not readable by third-party apps.
-                # No amount of retrying changes that, so stop asking.
+                # It answers 403 for them, and 404 for anything genuinely gone.
+                # Neither changes on a retry, so stop asking.
                 if context_uri:
                     with self._lock:
                         self._unavailable.add(context_uri)
                 logger.info(
-                    f'Track list unavailable: Spotify returned 404 for '
-                    f'{context_uri[:45] or url} (its own editorial playlists '
+                    f'Track list unavailable: Spotify returned {resp.status_code} '
+                    f'for {context_uri[:45] or url} (its own editorial playlists '
                     f'are closed to third-party apps)'
                 )
                 return None

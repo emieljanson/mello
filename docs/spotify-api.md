@@ -62,9 +62,9 @@ still goes entirely through go-librespot as before.
 
 Spotify's own algorithmic and editorial playlists — Discover Weekly, Daily Mix,
 Release Radar, "This Is …", most things with an ID starting `37i9dQZF1D` — are
-closed to third-party apps. Requests for them return `404` no matter whose key
-you use. Mello detects that, stops retrying, and says "Spotify keeps its own
-playlists private".
+closed to third-party apps. Requests for them come back `403` (or `404`) no
+matter whose key you use. Mello detects that, stops retrying, and says "Spotify
+keeps its own playlists private".
 
 Albums, your own playlists, other people's public playlists and podcast shows
 all work normally. If you want a list for a Spotify-curated mix, copy its tracks
