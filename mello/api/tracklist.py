@@ -77,6 +77,12 @@ def parse_context(context_uri: str) -> Optional[tuple]:
     return match.group(1), match.group(2)
 
 
+def parse_episode(episode_uri: str) -> Optional[str]:
+    """The id in 'spotify:episode:xyz', or None if that's not what this is."""
+    match = re.match(r'^spotify:episode:([A-Za-z0-9]+)$', episode_uri or '')
+    return match.group(1) if match else None
+
+
 def _endpoint(kind: str, spotify_id: str) -> str:
     return {
         'album': f'{API_BASE}/albums/{spotify_id}/tracks',
@@ -107,12 +113,13 @@ class TrackListStore:
     """Fetches and caches the track list for each saved context."""
 
     def __init__(self, cache_dir: Path, token_url: str, mock_mode: bool = False,
-                 client_id: str = '', client_secret: str = ''):
+                 client_id: str = '', client_secret: str = '', market: str = ''):
         self.cache_dir = Path(cache_dir)
         self.token_url = token_url
         self.mock_mode = mock_mode
         self.client_id = client_id
         self.client_secret = client_secret
+        self.market = market
 
         self._lock = threading.Lock()
         self._lists: Dict[str, List[Track]] = {}
@@ -124,6 +131,8 @@ class TrackListStore:
         self._blocked_until: float = 0.0
         self._app_token: Optional[str] = None
         self._app_token_expires: float = 0.0
+        self._episode_shows: Dict[str, str] = {}   # episode uri -> its show's uri
+        self._show_names: Dict[str, str] = {}
 
         if not mock_mode:
             try:
@@ -217,6 +226,70 @@ class TrackListStore:
         finally:
             with self._lock:
                 self._in_flight.discard(context_uri)
+
+    def resolve_episode_show(self, episode_uri: str) -> Optional[dict]:
+        """The show an episode belongs to, as {'uri', 'name'}. None if unknown.
+
+        Spotify's podcast pages have no show-level play button, so playing a
+        podcast always reports an *episode* as the context. Saving that verbatim
+        gives one tile per episode; what anyone actually wants is the show.
+        """
+        episode_id = parse_episode(episode_uri)
+        if not episode_id or self.mock_mode:
+            return None
+
+        with self._lock:
+            cached = self._episode_shows.get(episode_uri)
+        if cached:
+            return {'uri': cached, 'name': self._show_names.get(cached, 'Podcast')}
+
+        token = self._access_token()
+        if not token:
+            return None
+
+        try:
+            resp = requests.get(
+                f'{API_BASE}/episodes/{episode_id}',
+                headers={'Authorization': f'Bearer {token}'},
+                params={'market': self.market} if self.market else None,
+                timeout=6,
+            )
+        except requests.RequestException as e:
+            logger.warning(f"Could not look up the episode's show: {e}")
+            return None
+
+        if resp.status_code != 200:
+            hint = ''
+            if resp.status_code == 404 and not self.market:
+                # Episode availability is market-scoped, and a client-credentials
+                # token carries no country of its own.
+                hint = ' — try setting SPOTIFY_MARKET (e.g. FR) in .env'
+            logger.warning(f'Episode lookup returned {resp.status_code}{hint}')
+            return None
+
+        try:
+            show = (resp.json() or {}).get('show') or {}
+        except ValueError:
+            logger.warning('Episode lookup response was not JSON')
+            return None
+
+        show_uri = show.get('uri') or ''
+        if not parse_context(show_uri):
+            return None
+        show_name = show.get('name') or 'Podcast'
+        with self._lock:
+            self._episode_shows[episode_uri] = show_uri
+            self._show_names[show_uri] = show_name
+        return {'uri': show_uri, 'name': show_name}
+
+    def known_show_for(self, episode_uri: str) -> Optional[str]:
+        """Show we've already resolved for this episode. Never hits the network.
+
+        Lets the carousel know an episode is 'already saved' when its show is in
+        the catalog, so adding a podcast doesn't leave a duplicate + tile behind.
+        """
+        with self._lock:
+            return self._episode_shows.get(episode_uri)
 
     def cooldown_remaining(self) -> float:
         """Seconds until Spotify's rate limit is expected to lift. 0 when clear."""

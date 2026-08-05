@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mello.api.tracklist import (
-    MAX_TRACKS, Track, TrackListStore, parse_context, _parse_items,
+    MAX_TRACKS, Track, TrackListStore, parse_context, parse_episode, _parse_items,
 )
 
 ALBUM = 'spotify:album:0ETFjACtuP2ADo6LFhL6HN'
@@ -658,3 +658,126 @@ class TestTrackListButtonHitTest:
         # far side on physical x, near side on physical y — the top corner
         assert x + w // 2 > CAROUSEL_X + COVER_SIZE // 2
         assert y + h // 2 < CAROUSEL_CENTER_Y
+
+
+# --- Podcasts: a show tile, not one tile per episode ---
+
+EPISODE = 'spotify:episode:0NYHImDd7BB8xSd1zOliJb'
+SHOW = 'spotify:show:64OeNuY4Fp4alz1x3Tatjx'
+
+
+class TestEpisodeResolvesToItsShow:
+    """Spotify reports an episode as the context, because podcast pages have no
+    show-level play button. Saving that verbatim gave a tile per episode."""
+
+    @pytest.fixture
+    def keyed(self, tmp_path):
+        return TrackListStore(cache_dir=tmp_path / 'tracks', token_url='x',
+                              client_id='id', client_secret='secret')
+
+    def _token(self):
+        return patch('mello.api.tracklist.requests.post',
+                     return_value=_resp(200, {'access_token': 't', 'expires_in': 3600}))
+
+    def test_parse_episode(self):
+        assert parse_episode(EPISODE) == '0NYHImDd7BB8xSd1zOliJb'
+        assert parse_episode(SHOW) is None
+        assert parse_episode(ALBUM) is None
+        assert parse_episode('') is None
+
+    def test_resolves_the_parent_show(self, keyed):
+        body = {'name': 'Graal - Partie VI',
+                'show': {'uri': SHOW, 'name': 'Animalia'}}
+        with self._token(), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, body)):
+            assert keyed.resolve_episode_show(EPISODE) == {'uri': SHOW, 'name': 'Animalia'}
+
+    def test_non_episode_uris_never_hit_the_network(self, keyed):
+        with patch('mello.api.tracklist.requests.get') as get:
+            assert keyed.resolve_episode_show(ALBUM) is None
+            assert keyed.resolve_episode_show('') is None
+        get.assert_not_called()
+
+    def test_result_is_cached(self, keyed):
+        body = {'show': {'uri': SHOW, 'name': 'Animalia'}}
+        with self._token(), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, body)) as get:
+            keyed.resolve_episode_show(EPISODE)
+            keyed.resolve_episode_show(EPISODE)
+        assert get.call_count == 1
+        assert keyed.known_show_for(EPISODE) == SHOW
+
+    def test_market_is_sent_when_configured(self, tmp_path):
+        s = TrackListStore(cache_dir=tmp_path / 't', token_url='x',
+                           client_id='id', client_secret='secret', market='FR')
+        body = {'show': {'uri': SHOW, 'name': 'Animalia'}}
+        with self._token(), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, body)) as get:
+            s.resolve_episode_show(EPISODE)
+        assert get.call_args.kwargs['params'] == {'market': 'FR'}
+
+    def test_a_show_that_is_not_a_show_is_rejected(self, keyed):
+        """Don't save junk as a catalog tile because the payload surprised us."""
+        for body in ({}, {'show': None}, {'show': {}}, {'show': {'uri': 'nonsense'}}):
+            with self._token(), \
+                 patch('mello.api.tracklist.requests.get', return_value=_resp(200, body)):
+                assert keyed.resolve_episode_show(EPISODE) is None, body
+
+    def test_lookup_failure_is_not_fatal(self, keyed):
+        with self._token(), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(404)):
+            assert keyed.resolve_episode_show(EPISODE) is None
+        assert keyed.known_show_for(EPISODE) is None
+
+    def test_unknown_episode_has_no_known_show(self, keyed):
+        assert keyed.known_show_for(EPISODE) is None
+
+
+class TestSaveEpisodeAsShow:
+    """The + button, tapped while a podcast episode plays."""
+
+    def _app(self, tmp_path, temp_uri=EPISODE, resolves_to=SHOW):
+        import threading
+        from types import SimpleNamespace
+        from mello.models import CatalogItem
+
+        app = _focused_app([])
+        app.temp_item = CatalogItem(id='temp', uri=temp_uri, name='Graal - Partie VI',
+                                    type='album', artist='Animalia',
+                                    image='/images/temp_abc.png', is_temp=True)
+        app._saving = False
+        app._temp_item_lock = threading.Lock()
+        app.track_lists = TrackListStore(cache_dir=tmp_path / 'tracks', token_url='x')
+        if resolves_to:
+            app.track_lists._episode_shows[temp_uri] = resolves_to
+            app.track_lists._show_names[resolves_to] = 'Animalia'
+        app.saved = []
+        app.catalog_manager = SimpleNamespace(
+            items=[], load=lambda: None,
+            save_item=lambda data: (app.saved.append(data), True)[1],
+        )
+        app._update_carousel_max_index = lambda: None
+        app.image_cache = SimpleNamespace(preload_catalog=lambda items: None)
+        app.renderer = SimpleNamespace(invalidate=lambda: None)
+        return app
+
+    def test_saves_the_show_not_the_episode(self, tmp_path):
+        app = self._app(tmp_path)
+        app._save_temp_item()
+        assert app.saved == [{'type': 'show', 'uri': SHOW, 'name': 'Animalia',
+                              'artist': 'Animalia', 'image': '/images/temp_abc.png'}]
+
+    def test_falls_back_to_the_episode_when_unresolvable(self, tmp_path):
+        """Better a working episode tile than nothing at all."""
+        app = self._app(tmp_path, resolves_to=None)
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(204)):
+            app._save_temp_item()
+        assert app.saved[0]['uri'] == EPISODE
+
+    def test_albums_are_untouched(self, tmp_path):
+        app = self._app(tmp_path, temp_uri=ALBUM, resolves_to=None)
+        with patch('mello.api.tracklist.requests.get') as get:
+            app._save_temp_item()
+        get.assert_not_called()
+        assert app.saved[0]['uri'] == ALBUM
+        assert app.saved[0]['type'] == 'album'

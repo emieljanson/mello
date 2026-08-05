@@ -70,6 +70,27 @@ Albums, your own playlists, other people's public playlists and podcast shows
 all work normally. If you want a list for a Spotify-curated mix, copy its tracks
 into a playlist of your own and add that to Mello instead.
 
+## Podcasts
+
+Spotify's podcast pages have no show-level play button — you always tap an
+individual episode, so the playback context Mello sees is
+`spotify:episode:...`. Saved verbatim that gives one tile per episode.
+
+So `+` resolves the episode's parent **show** and saves that instead: one tile,
+every episode in the track list. Nothing to do differently — play any episode of
+the podcast and press `+`.
+
+If that lookup returns 404, episode availability is market-scoped and an app
+token carries no country of its own. Add your country to `.env`:
+
+```
+SPOTIFY_MARKET=FR
+```
+
+Note that hand-picking episodes into a normal playlist does **not** work — the
+Spotify app itself refuses to play those ("Spotify can't play this right now").
+Add the show instead.
+
 ## Keeping the key
 
 `.env` is gitignored, so an app update won't overwrite it. Nothing else needs
