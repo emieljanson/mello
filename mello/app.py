@@ -23,7 +23,7 @@ from .config import (
     ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
     CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
     SLEEP_CLOCK_DRIFT, QUIET_HOURS_WAKE_HOLD,
-    TRACK_LIST_FETCH_DELAY, TRACK_LIST_RETRY_INTERVAL,
+    TRACK_LIST_FETCH_DELAY, TRACK_LIST_RETRY_INTERVAL, TRACK_LIST_GATE_LOG_INTERVAL,
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
@@ -225,6 +225,7 @@ class Mello:
         self._track_focus_uri: Optional[str] = None   # album we're dwelling on
         self._track_focus_since: float = 0.0
         self._track_retry_at: float = 0.0
+        self._track_gate_log_at: float = 0.0
         self._resume_cache_key: tuple = ()
         self._resume_cache_uri: Optional[str] = None
         
@@ -613,6 +614,7 @@ class Mello:
         context_uri, _ = self._focused_context()
         if not context_uri:
             self._track_focus_uri = None
+            self._log_track_gate_if_due('no_focused_context', None)
             return
 
         if context_uri != self._track_focus_uri:
@@ -621,13 +623,39 @@ class Mello:
             return
 
         if not self.carousel.settled or self.touch.dragging:
+            self._log_track_gate_if_due('carousel_moving', context_uri)
             return
         if now - self._track_focus_since < TRACK_LIST_FETCH_DELAY:
             return
         if not self.track_lists.wants_fetch(context_uri):
+            self._log_track_gate_if_due('fetch_not_wanted', context_uri)
             return
 
         run_async(self._fetch_track_list_async, context_uri)
+
+    def _log_track_gate_if_due(self, reason: str, context_uri: Optional[str]):
+        """Explain, periodically, why no track list has been fetched.
+
+        Every exit from the fetch gate used to be silent, which made a missing
+        track list impossible to diagnose from the logs. Stays quiet once a list
+        is cached, so the steady state doesn't spam the journal.
+        """
+        if context_uri and self.track_lists.get(context_uri) is not None:
+            return
+
+        now = time.time()
+        if now - self._track_gate_log_at < TRACK_LIST_GATE_LOG_INTERVAL:
+            return
+        self._track_gate_log_at = now
+
+        parsed = parse_context(context_uri) if context_uri else None
+        logger.info(
+            f'Track list gate | reason={reason} '
+            f'| focused={(context_uri or "none")[:45]} | listable={parsed is not None} '
+            f'| settled={self.carousel.settled} | dragging={self.touch.dragging} '
+            f'| dwell={now - self._track_focus_since:.1f}s '
+            f'| items={len(self.display_items)} | selected={self.selected_index}'
+        )
 
     def _fetch_track_list_async(self, context_uri: str):
         """Worker: fetch a track list, then refresh the screen if it landed."""

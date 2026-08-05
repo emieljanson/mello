@@ -382,6 +382,7 @@ class TestFetchDwell:
         app._track_focus_uri = None
         app._track_focus_since = 0.0
         app._track_retry_at = 0.0
+        app._track_gate_log_at = 0.0
         return app
 
     def test_first_sight_only_starts_the_dwell_timer(self, tmp_path):

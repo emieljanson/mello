@@ -204,6 +204,10 @@ TRACK_LIST_FETCH_DELAY = 1.0
 # once a list is cached it's cached forever.
 TRACK_LIST_RETRY_INTERVAL = 60.0
 
+# How often the fetch gate explains itself when no list has loaded. Silent once
+# a list is cached, so this only speaks up while something is actually wrong.
+TRACK_LIST_GATE_LOG_INTERVAL = 10.0
+
 # ============================================
 # TOUCH & GESTURES
 # ============================================
