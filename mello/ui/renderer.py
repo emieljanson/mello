@@ -958,14 +958,22 @@ class Renderer:
     def _build_track_list_content(self, ctx: 'RenderContext') -> list:
         """The full track list, current song in accent. Tap one to jump to it."""
         if not ctx.track_list:
-            # Reached whenever the fetch hasn't landed: no Spotify session yet
-            # (nothing played since boot) or Spotify is throttling us.
+            if ctx.track_cooldown_s > 0:
+                # Spotify rate-limits go-librespot's shared client ID. Say so
+                # with the wait, rather than looking broken.
+                mins = int(ctx.track_cooldown_s // 60)
+                wait = f'{mins} min' if mins else f'{int(ctx.track_cooldown_s)} sec'
+                return [('text', 'Spotify is busy'),
+                        ('spacer',),
+                        ('text', f'Retrying in {wait}'),
+                        ('spacer',),
+                        ('footer', 'Rate limit, not your device')]
             return [('text', 'Track list not loaded'),
                     ('spacer',),
                     ('text', 'Needs Spotify. Play'),
                     ('text', 'something, then retry'),
                     ('spacer',),
-                    ('footer', 'Retries automatically each minute')]
+                    ('footer', 'Retries automatically')]
 
         items: list = []
         for i, track in enumerate(ctx.track_list):

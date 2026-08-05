@@ -137,25 +137,67 @@ def test_short_retry_after_is_honoured_then_succeeds(store):
     assert [t.name for t in tracks] == ['One']
 
 
-def test_absurd_retry_after_gives_up_without_waiting(store):
-    """An hour-long cooldown must not park a worker thread for an hour."""
+def test_long_cooldown_never_parks_a_thread(store):
+    """An hour-long cooldown must become a deferral, not a sleeping worker."""
     waits = []
     with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
          patch('mello.api.tracklist.requests.get', return_value=_resp(429, headers={'Retry-After': '3600'})), \
          patch('mello.api.tracklist.threading.Event') as ev:
         ev.return_value.wait.side_effect = lambda w: waits.append(w)
         assert store.fetch(ALBUM) is None
-    assert waits == []
+    assert waits == []                          # nothing slept
+    assert store.cooldown_remaining() > 0       # deferred instead
 
 
-def test_persistent_throttle_stops_retrying(store):
-    """A failed context is remembered, so we don't hammer Spotify every frame."""
+def test_long_cooldown_outranks_retry_failed(store):
+    """Spotify's cooldown must win over our own retry timer.
+
+    Retrying sooner than asked adds load to the very quota we're limited on.
+    """
     with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
-         patch('mello.api.tracklist.requests.get', return_value=_resp(429, headers={'Retry-After': '3600'})):
+         patch('mello.api.tracklist.requests.get', return_value=_resp(429, headers={'Retry-After': '600'})):
         store.fetch(ALBUM)
+
     assert store.wants_fetch(ALBUM) is False
+    store.retry_failed()                       # clears our own failure memory
+    assert store.wants_fetch(ALBUM) is False   # but the cooldown still holds
+    assert 500 < store.cooldown_remaining() <= 600
+
+
+def test_cooldown_is_global_not_per_album(store):
+    """The limit is on the shared client ID, so it applies to every album."""
+    other = 'spotify:album:1AAAAAAAAAAAAAAAAAAAAA'
+    with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+         patch('mello.api.tracklist.requests.get', return_value=_resp(429, headers={'Retry-After': '600'})):
+        store.fetch(ALBUM)
+    assert store.wants_fetch(other) is False
+
+
+def test_fetching_resumes_once_the_cooldown_expires(store):
+    with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+         patch('mello.api.tracklist.requests.get', return_value=_resp(429, headers={'Retry-After': '600'})):
+        store.fetch(ALBUM)
+    store._blocked_until = 0.0                 # pretend it elapsed
     store.retry_failed()
     assert store.wants_fetch(ALBUM) is True
+
+
+def test_absurd_retry_after_is_clamped(store):
+    """A bogus header must not disable track lists for the rest of the day."""
+    from mello.api.tracklist import MAX_COOLDOWN
+    with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+         patch('mello.api.tracklist.requests.get', return_value=_resp(429, headers={'Retry-After': '99999'})):
+        store.fetch(ALBUM)
+    assert store.cooldown_remaining() <= MAX_COOLDOWN
+
+
+def test_missing_retry_after_still_backs_off(store):
+    """go-librespot's proxy strips the header; a 429 must still cause a wait."""
+    from mello.api.tracklist import DEFAULT_COOLDOWN
+    with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+         patch('mello.api.tracklist.requests.get', return_value=_resp(429)):
+        store.fetch(ALBUM)
+    assert 0 < store.cooldown_remaining() <= DEFAULT_COOLDOWN
 
 
 def test_no_session_yields_no_list(store):
@@ -444,3 +486,66 @@ class TestListableWithoutAList:
         app = _focused_app([_item('spotify:artist:xyz')])
         context_uri, _ = app._focused_context()
         assert parse_context(context_uri) is None
+
+
+# --- The list button must open the list, never start playback ---
+
+class TestTrackListButtonHitTest:
+    """A missed hit test falls through to the carousel, which plays on a tap."""
+
+    def _app(self, listable_uri=ALBUM, delete_mode=None, temp=None, renderer_rect=None):
+        from types import SimpleNamespace
+        items = [_item(listable_uri)] if listable_uri else []
+        app = _focused_app(items, temp_item=temp)
+        app.delete_mode_id = delete_mode
+        app.renderer = SimpleNamespace(
+            add_button_rect=None, delete_button_rect=None,
+            settings_button_rect=None, track_list_button_rect=renderer_rect,
+            invalidate=MagicMock())
+        app.setup_menu = SimpleNamespace(show_track_list=MagicMock(), open=MagicMock())
+        app._save_temp_item = MagicMock()
+        app._delete_current_item = MagicMock()
+        return app
+
+    def _centre_of_fallback(self, app):
+        x, y, w, h = app._track_list_fallback_rect()
+        return (x + w // 2, y + h // 2)
+
+    def test_opens_the_list_when_the_renderer_rect_is_missing(self):
+        """The exact reported bug: rect None at tap time, so play started."""
+        app = self._app(renderer_rect=None)
+        assert app._check_button_click(self._centre_of_fallback(app)) is True
+        app.setup_menu.show_track_list.assert_called_once()
+
+    def test_opens_the_list_from_the_renderer_rect(self):
+        app = self._app(renderer_rect=(0, 0, 50, 50))
+        assert app._check_button_click((10, 10)) is True
+        app.setup_menu.show_track_list.assert_called_once()
+
+    def test_a_tap_elsewhere_still_falls_through_to_the_carousel(self):
+        """Returning True everywhere would break play-on-tap entirely."""
+        app = self._app()
+        assert app._check_button_click((300, 640)) is False
+        app.setup_menu.show_track_list.assert_not_called()
+
+    def test_no_button_means_no_fallback_hit(self):
+        """Nothing focused: that corner must not open an empty list."""
+        app = self._app(listable_uri=None)
+        assert app._check_button_click(self._centre_of_fallback(app)) is False
+
+    def test_delete_mode_suppresses_the_button(self):
+        app = self._app(delete_mode='1')
+        assert app._track_list_button_active() is False
+
+    def test_unsupported_uri_suppresses_the_button(self):
+        app = self._app(listable_uri='spotify:artist:xyz')
+        assert app._check_button_click(self._centre_of_fallback(app)) is False
+
+    def test_fallback_matches_the_renderer_geometry(self):
+        """If these drift apart the fallback silently covers the wrong corner."""
+        from mello.config import CAROUSEL_X, CAROUSEL_CENTER_Y, COVER_SIZE
+        app = self._app()
+        x, y, w, h = app._track_list_fallback_rect()
+        # far side on physical x, near side on physical y — the top corner
+        assert x + w // 2 > CAROUSEL_X + COVER_SIZE // 2
+        assert y + h // 2 < CAROUSEL_CENTER_Y

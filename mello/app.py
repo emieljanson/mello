@@ -654,6 +654,7 @@ class Mello:
             f'| focused={(context_uri or "none")[:45]} | listable={parsed is not None} '
             f'| settled={self.carousel.settled} | dragging={self.touch.dragging} '
             f'| dwell={now - self._track_focus_since:.1f}s '
+            f'| cooldown={self.track_lists.cooldown_remaining():.0f}s '
             f'| items={len(self.display_items)} | selected={self.selected_index}'
         )
 
@@ -1584,9 +1585,12 @@ class Mello:
                 self._save_temp_item()
                 return True
         
-        if self.renderer.track_list_button_rect:
-            bx, by, bw, bh = self.renderer.track_list_button_rect
-            if bx <= x <= bx + bw and by <= y <= by + bh:
+        # Renderer rects are cleared every frame and can be None when the tap
+        # lands, so fall back to geometry — otherwise the tap falls through to
+        # the carousel, which treats a centre tap as play.
+        if self._track_list_button_active():
+            if (self._point_in_rect(pos, self.renderer.track_list_button_rect)
+                    or self._point_in_rect(pos, self._track_list_fallback_rect())):
                 self.setup_menu.show_track_list()
                 return True
 
@@ -1603,6 +1607,36 @@ class Mello:
                 return True
 
         return False
+
+    def _track_list_button_active(self) -> bool:
+        """Whether the track-list button is actually on screen right now.
+
+        Guards the geometric fallback: without it, a tap in that corner would
+        open a list even when no button was drawn there.
+        """
+        if self.delete_mode_id:
+            return False
+        items = self.display_items
+        if not items or self.selected_index >= len(items):
+            return False
+        if items[self.selected_index].is_temp:
+            return False
+        context_uri, _ = self._focused_context()
+        return parse_context(context_uri) is not None
+
+    @staticmethod
+    def _track_list_fallback_rect() -> tuple:
+        """Hit rect for the track-list button, from layout constants alone.
+
+        Mirrors Renderer._draw_track_list_button: top corner of the centre
+        cover, diagonally opposite add/delete.
+        """
+        btn_size, margin, touch_padding = 100, 16, 60
+        cover_y = CAROUSEL_CENTER_Y - COVER_SIZE // 2
+        btn_x = CAROUSEL_X + COVER_SIZE - btn_size - margin
+        btn_y = cover_y + margin
+        return (btn_x - touch_padding, btn_y - touch_padding,
+                btn_size + touch_padding * 2, btn_size + touch_padding * 2)
 
     @staticmethod
     def _point_in_rect(pos, rect: Optional[tuple]) -> bool:
@@ -2751,6 +2785,7 @@ class Mello:
             next_track_name=next_track.name if next_track else None,
             track_list=track_list,
             track_listable=parse_context(focused_context) is not None,
+            track_cooldown_s=self.track_lists.cooldown_remaining(),
             track_list_index=track_index,
             app_version_label=self.app_version_label,
             bt_connected=bt_dev is not None,

@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -34,10 +35,17 @@ PAGE_SIZE = 50
 # rate limit. Raise it if anyone actually hits this on a kids' speaker.
 MAX_TRACKS = 300
 
-# A 429 here carries a short Retry-After (seconds). Bounded retries keep a
-# throttled fetch from hanging a worker thread all day.
+# A 429 carries a Retry-After in seconds. Short ones are slept out inline;
+# longer ones become a cooldown so no worker thread is parked waiting.
 MAX_ATTEMPTS = 3
-MAX_RETRY_WAIT = 30
+INLINE_RETRY_WAIT = 30
+
+# Never trust a Retry-After beyond this — a bogus header must not disable track
+# lists for the rest of the day.
+MAX_COOLDOWN = 15 * 60
+
+# Assumed cooldown when a 429 arrives with no usable Retry-After.
+DEFAULT_COOLDOWN = 60
 
 
 @dataclass
@@ -94,6 +102,9 @@ class TrackListStore:
         self._lists: Dict[str, List[Track]] = {}
         self._in_flight: set = set()
         self._failed: set = set()   # don't hammer a context that can't be fetched
+        # Spotify throttles per client ID, and go-librespot's is shared by every
+        # install — so a 429 applies to every context, not just this one.
+        self._blocked_until: float = 0.0
 
         if not mock_mode:
             try:
@@ -144,6 +155,8 @@ class TrackListStore:
             return False
         if self.get(context_uri) is not None:
             return False
+        if self.cooldown_remaining() > 0:
+            return False
         with self._lock:
             return context_uri not in self._in_flight and context_uri not in self._failed
 
@@ -174,6 +187,11 @@ class TrackListStore:
         finally:
             with self._lock:
                 self._in_flight.discard(context_uri)
+
+    def cooldown_remaining(self) -> float:
+        """Seconds until Spotify's rate limit is expected to lift. 0 when clear."""
+        with self._lock:
+            return max(0.0, self._blocked_until - time.time())
 
     def retry_failed(self):
         """Forget past failures so a throttled context can be tried again."""
@@ -245,12 +263,15 @@ class TrackListStore:
 
             if resp.status_code == 429:
                 wait = self._retry_after(resp)
-                if wait is None or attempt == MAX_ATTEMPTS - 1:
-                    logger.info(f'Track list throttled (429), giving up for now (retry_after={wait})')
-                    return None
-                logger.info(f'Track list throttled, waiting {wait}s (attempt {attempt + 1})')
-                threading.Event().wait(wait)
-                continue
+                # Short cooldown: sleep it out here, we're on a worker thread.
+                if wait <= INLINE_RETRY_WAIT and attempt < MAX_ATTEMPTS - 1:
+                    logger.info(f'Track list throttled, waiting {wait:.0f}s (attempt {attempt + 1})')
+                    threading.Event().wait(wait)
+                    continue
+                # Long one: record it and back off. Retrying sooner than Spotify
+                # asked adds load to the quota we're already being limited on.
+                self._start_cooldown(wait)
+                return None
 
             if resp.status_code == 401:
                 logger.info('Track list token rejected (401), will refetch a token next time')
@@ -261,16 +282,28 @@ class TrackListStore:
         return None
 
     @staticmethod
-    def _retry_after(resp) -> Optional[float]:
-        """Seconds to wait per Retry-After, or None if it's unusably long."""
+    def _retry_after(resp) -> float:
+        """Seconds Spotify asked us to wait. Clamped, never None.
+
+        The previous version returned None for anything over the inline limit,
+        which threw away the only number that explains a throttle — and left
+        the caller retrying on its own schedule instead of Spotify's.
+        """
         raw = resp.headers.get('Retry-After')
         try:
-            wait = float(raw) if raw is not None else 5.0
+            wait = float(raw) if raw is not None else DEFAULT_COOLDOWN
         except (TypeError, ValueError):
-            wait = 5.0
-        if wait > MAX_RETRY_WAIT:
-            return None
-        return max(1.0, wait)
+            wait = DEFAULT_COOLDOWN
+        return max(1.0, min(wait, MAX_COOLDOWN))
+
+    def _start_cooldown(self, seconds: float):
+        """Stop trying any context until Spotify's cooldown has passed."""
+        with self._lock:
+            self._blocked_until = max(self._blocked_until, time.time() + seconds)
+        logger.info(
+            f'Track list throttled (429): backing off {seconds:.0f}s '
+            f'(Spotify rate-limits go-librespot\'s shared client ID)'
+        )
 
     # --- Disk cache ---
 
