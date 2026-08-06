@@ -17,7 +17,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mello.config import (CAROUSEL_X, COVER_SIZE, VOLUME_SLIDER_TIMEOUT,
-                          VOLUME_STEP_PCT, CAROUSEL_TOUCH_MARGIN)
+                          VOLUME_STEP_PCT, CAROUSEL_TOUCH_MARGIN,
+                          ACTION_DEBOUNCE, CONTROLS_X, PLAY_BTN_SIZE)
 from mello.ui.renderer import Renderer
 
 
@@ -190,6 +191,68 @@ class TestSettingTheLevel:
         app.bluetooth = SimpleNamespace(set_volume=sent.append)
         app._set_volume_from_touch(_on_track(1.0))
         assert sent == [app.volume.bt_level]
+
+
+class TestTapThenHoldIsNotDebounced:
+    """The regression: 'press volume, settings won't open, and it skips track'.
+
+    Root cause: a fast tap-then-hold on the volume button landed inside the
+    300ms ACTION_DEBOUNCE window shared by every button. The debounce silently
+    dropped the second touch-down, so no hold timer ever started and holding
+    afterward did nothing — read by the user as "the button stopped
+    responding". This is much easier to trigger now than before: a short tap
+    used to just cycle a preset, so nobody immediately pressed again; now it
+    opens the slider, which invites exactly that "tap, then hold" gesture.
+    """
+
+    def _button_app(self):
+        app = _app()
+        app._last_action_time = 0.0
+        app.renderer.invalidate = lambda: None
+        return app
+
+    def _volume_pos(self):
+        _, _, vol_y = Renderer.volume_slider_geometry()
+        return (CONTROLS_X, vol_y)
+
+    def test_a_lone_press_starts_the_hold_timer(self):
+        app = self._button_app()
+        app._handle_button_tap(self._volume_pos())
+        assert app._volume_hold_start is not None
+
+    def test_second_press_inside_the_debounce_window_still_starts_it(self):
+        """This is the exact failure: it must NOT be swallowed like prev/next are."""
+        app = self._button_app()
+        app._handle_button_tap(self._volume_pos())
+        app._handle_button_up()   # short tap: opens the slider, clears hold_start
+        assert app._volume_hold_start is None
+
+        app._last_action_time = time.time()   # as if the tap just registered
+        app._handle_button_tap(self._volume_pos())
+        assert app._volume_hold_start is not None, \
+            'a fast tap-then-hold must still arm the hold timer'
+
+    def test_other_buttons_are_still_debounced(self):
+        """The fix must be volume-specific, not a debounce bypass for everyone."""
+        app = self._button_app()
+        skipped = []
+        app._skip_track = lambda fn: skipped.append(fn)
+        app.api = SimpleNamespace(next=lambda: True, prev=lambda: True)
+        app.bluetooth = SimpleNamespace(connected_device=False)
+
+        from mello.config import CAROUSEL_CENTER_Y, BTN_SPACING
+        next_pos = (CONTROLS_X, CAROUSEL_CENTER_Y + BTN_SPACING)
+
+        app._handle_button_tap(next_pos)
+        app._handle_button_tap(next_pos)   # within ACTION_DEBOUNCE
+        assert len(skipped) == 1, 'prev/next must still collapse a bouncy double-tap'
+
+    def test_hit_test_agrees_with_the_sliders_own_check(self):
+        """The two must never disagree — that gap is what let a slightly
+        off-centre tap fall between "on the button" and "on the slider"."""
+        app = self._button_app()
+        pos = self._volume_pos()
+        assert app._volume_button_hit(pos) == app._touch_on_volume_button(pos) == True
 
 
 class TestIdleClose:

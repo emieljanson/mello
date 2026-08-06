@@ -1742,12 +1742,13 @@ class Mello:
         self.renderer.invalidate()
     
     def _touch_on_volume_button(self, pos) -> bool:
-        """Whether a touch landed on the volume button, slider or not."""
-        x, y = pos
-        if x > CAROUSEL_X - CAROUSEL_TOUCH_MARGIN:
-            return False
-        _, _, vol_y = Renderer.volume_slider_geometry()
-        return vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE
+        """Whether a touch landed on the volume button, slider open or not.
+
+        Delegates to _volume_button_hit rather than approximating the same
+        boundary a second way — a mismatch there once let an off-centre tap
+        fall between "on the button" and "on the slider", swallowed by neither.
+        """
+        return self._volume_button_hit(pos)
 
     def _handle_touch_up(self, pos):
         """Handle touch/mouse up."""
@@ -1806,22 +1807,51 @@ class Mello:
                 self._toggle_play()
                 self.renderer.invalidate()
     
+    def _volume_button_hit(self, pos) -> bool:
+        """Exact hit-test for the volume button.
+
+        Shared by the touch-down dispatch below and the slider's own
+        modal-exemption check (_touch_on_volume_button), so the two can never
+        disagree about where the button is — which is what let a slightly
+        off-centre tap fall between them.
+        """
+        x, y = pos
+        if not (CONTROLS_X - PLAY_BTN_SIZE <= x <= CONTROLS_X + PLAY_BTN_SIZE):
+            return False
+        _, _, vol_y = Renderer.volume_slider_geometry()
+        return vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE
+
     def _handle_button_tap(self, pos):
         """Handle direct tap on control buttons with debouncing.
-        
+
         Portrait mode: buttons stacked vertically at X=CONTROLS_X, along Y axis.
         """
+        # Starting the volume hold-timer has no visible effect by itself — the
+        # actual action (toggle the slider, or open settings) fires later and
+        # is already guarded by its own state machine (_volume_hold_start /
+        # _menu_hold_triggered). Debouncing this touch-down like a discrete
+        # action would silently swallow "tap the volume button, then
+        # immediately hold it again" — which the slider makes a completely
+        # normal gesture (tap opens it; a second press decides slider vs
+        # settings). That swallowed press looked like "the button just stopped
+        # responding" and was the actual settings-menu regression reported.
+        if self._volume_button_hit(pos):
+            now = time.time()
+            self._volume_hold_start = now
+            self._menu_hold_triggered = False
+            self._pressed_button = 'volume'
+            self._pressed_time = now
+            self.renderer.invalidate()
+            return
+
         now = time.time()
         if now - self._last_action_time < ACTION_DEBOUNCE:
             logger.debug(f'Button tap debounced at ({pos[0]}, {pos[1]})')
             return
-        
+
         x, y = pos
         center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING  # 155
-
-        # Volume button Y position (matches renderer)
-        vol_y = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2 - BTN_SIZE // 2
 
         # Headphone button Y position (matches renderer constant)
         hp_y = center_y - (COVER_SIZE + COVER_SPACING) - COVER_SIZE_SMALL // 2 + BTN_SIZE // 2
@@ -1846,13 +1876,7 @@ class Mello:
             elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
                 button_pressed = 'next'
                 self._skip_track(self.api.next)
-            # Volume: Y = vol_y (~1173) — start hold timer; action fires on release
-            elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
-                button_pressed = 'volume'
-                self._volume_hold_start = now
-                self._menu_hold_triggered = False
-                # Don't toggle volume here — wait for button up (short tap) or hold (menu)
-            
+
             if button_pressed:
                 logger.debug(f'Button press: {button_pressed}')
                 self._last_action_time = now

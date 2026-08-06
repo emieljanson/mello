@@ -137,12 +137,12 @@ PROGRESS_BAR_WIDTH = 8
 # slider's 100% maps here, so a child never sees a bar that refuses to fill.
 DEFAULT_MAX_VOLUME = {'speaker': 98, 'bt': 65}
 
-# What the slider's 0% maps to. HARDWARE CALIBRATION, not a preference: on the
-# WM8960 the bottom of ALSA's range is inaudible, so mapping 0% there would
-# leave most of the slider dead. These are the quietest values Mello has ever
-# shipped with (the old 'volume_none' preset), so they're known to be audible.
-# Lower them if the quietest step is still too loud in a bedroom.
-VOLUME_FLOOR = {'speaker': 88, 'bt': 20}
+# What the slider's 0% maps to. HARDWARE CALIBRATION, not a preference.
+# Speaker used to sit at 88 (the old 'volume_none' preset), only 10 ALSA points
+# below the 98 ceiling — fine for 3 clustered presets, but a slider spanning
+# just 10 points reads as barely moving at all. Lowered for real slider travel;
+# raise it back up if 0% turns out to be inaudible on the actual hardware.
+VOLUME_FLOOR = {'speaker': 60, 'bt': 20}
 
 # Valid ranges for the ceiling itself.
 VOLUME_RANGE = {'speaker': (50, 100), 'bt': (5, 100)}

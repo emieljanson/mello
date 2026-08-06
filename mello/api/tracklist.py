@@ -61,6 +61,14 @@ DEFAULT_COOLDOWN = 60
 TOKEN_EXPIRY_MARGIN = 60
 
 
+class _AccessDenied(Exception):
+    """Spotify returned 403/404. Ambiguous on its own: could mean an editorial
+    playlist (blocked for every app) or a private one (blocked for our
+    app-only token but visible to the account that owns it)."""
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+
 @dataclass
 class Track:
     """One entry in a context's track list."""
@@ -379,31 +387,77 @@ class TrackListStore:
         return next((v for v in data.values() if isinstance(v, str) and len(v) > 40), None)
 
     def _fetch_all_pages(self, kind: str, spotify_id: str) -> Optional[List[Track]]:
+        context_uri = f'spotify:{kind}:{spotify_id}'
+        url = _endpoint(kind, spotify_id)
+
         token = self._access_token()
         if not token:
             return None
 
+        try:
+            return self._paginate(kind, url, token)
+        except _AccessDenied as denied:
+            if not self.uses_own_credentials():
+                # Already the account's own session — no more-privileged token
+                # to escalate to, so this 403/404 is final.
+                self._mark_unavailable(context_uri, denied.status_code)
+                return None
+
+            # Client-credentials tokens carry no user identity, so they can only
+            # see PUBLIC catalog data. A private playlist you own 403s exactly
+            # like an editorial one does — the two are indistinguishable until
+            # we retry with a token that actually is the account.
+            logger.info(
+                f'Track list: app token was refused ({denied.status_code}) for '
+                f'{context_uri[:45]}; retrying with the device\'s own Spotify '
+                f'session in case this is a private playlist, not an editorial one'
+            )
+            user_token = self._borrowed_token()
+            if not user_token:
+                self._mark_unavailable(context_uri, denied.status_code)
+                return None
+            try:
+                return self._paginate(kind, url, user_token)
+            except _AccessDenied as denied_again:
+                # Refused even by the account itself: genuinely not ours to see.
+                self._mark_unavailable(context_uri, denied_again.status_code)
+                return None
+
+    def _paginate(self, kind: str, url: str, token: str) -> Optional[List[Track]]:
         headers = {'Authorization': f'Bearer {token}'}
-        url = _endpoint(kind, spotify_id)
         params = {'limit': PAGE_SIZE, 'offset': 0}
         tracks: List[Track] = []
 
-        context_uri = f'spotify:{kind}:{spotify_id}'
         while url and len(tracks) < MAX_TRACKS:
-            payload = self._get_json(url, headers, params, context_uri)
+            payload = self._get_json(url, headers, params)
             if payload is None:
                 return None  # give up on this context for now; retried later
             tracks.extend(_parse_items(kind, payload.get('items') or []))
             url = payload.get('next')
             params = None  # 'next' already carries limit/offset
             if url and len(tracks) >= MAX_TRACKS:
-                logger.info(f'Track list truncated at {MAX_TRACKS} for {kind}:{spotify_id}')
+                logger.info(f'Track list truncated at {MAX_TRACKS} for {kind}')
 
         return tracks[:MAX_TRACKS]
 
-    def _get_json(self, url: str, headers: dict, params: Optional[dict],
-                  context_uri: str = '') -> Optional[dict]:
-        """GET with bounded retries that honour Spotify's Retry-After."""
+    def _mark_unavailable(self, context_uri: str, status_code: int):
+        """Give up on a context for good — asking again cannot change the answer."""
+        with self._lock:
+            self._unavailable.add(context_uri)
+        logger.info(
+            f'Track list unavailable: Spotify returned {status_code} for '
+            f'{context_uri[:45]} even from the account\'s own session — one of '
+            f'Spotify\'s own editorial playlists, closed to every app'
+        )
+
+    def _get_json(self, url: str, headers: dict, params: Optional[dict]) -> Optional[dict]:
+        """GET with bounded retries that honour Spotify's Retry-After.
+
+        Raises _AccessDenied on 403/404 rather than returning None, so the
+        caller can decide whether a different token is worth trying — that
+        decision needs context (which credential produced this token) that
+        this method, deliberately, does not have.
+        """
         for attempt in range(MAX_ATTEMPTS):
             try:
                 resp = requests.get(url, headers=headers, params=params, timeout=8)
@@ -437,19 +491,7 @@ class TrackListStore:
                 return None
 
             if resp.status_code in (403, 404):
-                # Spotify's own algorithmic and editorial playlists (the
-                # 37i9dQZF1D... ones) are not readable by third-party apps.
-                # It answers 403 for them, and 404 for anything genuinely gone.
-                # Neither changes on a retry, so stop asking.
-                if context_uri:
-                    with self._lock:
-                        self._unavailable.add(context_uri)
-                logger.info(
-                    f'Track list unavailable: Spotify returned {resp.status_code} '
-                    f'for {context_uri[:45] or url} (its own editorial playlists '
-                    f'are closed to third-party apps)'
-                )
-                return None
+                raise _AccessDenied(resp.status_code)
 
             logger.warning(f'Track list request returned {resp.status_code}')
             return None
