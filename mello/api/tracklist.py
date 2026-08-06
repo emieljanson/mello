@@ -13,8 +13,13 @@ request comes back 429 on the first try, so borrowing is a fallback, not a
 plan.
 
 The fix is your own Spotify app (client ID + secret in .env), which gets its
-own quota. See docs/spotify-api.md. Client credentials are enough — album,
-playlist and show track lists are public catalog data.
+own quota. See docs/spotify-api.md. That app-only token covers albums and shows.
+
+Playlists need one thing more: Spotify requires the playlist-read-private scope
+on /playlists/{id}/tracks for *every* playlist, public ones included, and an
+app-only token carries no scopes at all. So playlist track lists need a real
+login — mello-login.py, once — after which the refresh token in .env keeps it
+going. Without it, playlists 403 no matter who owns them.
 
 Requests go straight to api.spotify.com rather than through the daemon's
 /web-api proxy, because that proxy discards Spotify's Retry-After header.
@@ -121,13 +126,15 @@ class TrackListStore:
     """Fetches and caches the track list for each saved context."""
 
     def __init__(self, cache_dir: Path, token_url: str, mock_mode: bool = False,
-                 client_id: str = '', client_secret: str = '', market: str = ''):
+                 client_id: str = '', client_secret: str = '', market: str = '',
+                 refresh_token: str = ''):
         self.cache_dir = Path(cache_dir)
         self.token_url = token_url
         self.mock_mode = mock_mode
         self.client_id = client_id
         self.client_secret = client_secret
         self.market = market
+        self.refresh_token = refresh_token
 
         self._lock = threading.Lock()
         self._lists: Dict[str, List[Track]] = {}
@@ -143,6 +150,9 @@ class TrackListStore:
         self._shared_blocked_until: float = 0.0
         self._app_token: Optional[str] = None
         self._app_token_expires: float = 0.0
+        self._user_token: Optional[str] = None
+        self._user_token_expires: float = 0.0
+        self._login_dead = False   # refresh token revoked: stop retrying it
         self._episode_shows: Dict[str, str] = {}   # episode uri -> its show's uri
         self._show_names: Dict[str, str] = {}
         self._playlist_info: Dict[str, dict] = {}   # context uri -> {'name', 'image'}
@@ -212,6 +222,10 @@ class TrackListStore:
     def uses_own_credentials(self) -> bool:
         """True when we have our own Spotify app, not go-librespot's shared one."""
         return bool(self.client_id and self.client_secret)
+
+    def is_logged_in(self) -> bool:
+        """True when mello-login.py has run — the only way to read playlists."""
+        return bool(self.refresh_token) and self.uses_own_credentials()
 
     def fetch(self, context_uri: str) -> Optional[List[Track]]:
         """Fetch and cache a context's tracks. Blocking — call from a worker."""
@@ -400,6 +414,68 @@ class TrackListStore:
             # Fall through: a bad secret shouldn't be worse than no secret.
         return self._borrowed_token()
 
+    def _logged_in_token(self) -> Optional[str]:
+        """Access token for the logged-in account. None when not logged in.
+
+        The only token that can read a playlist's tracks at all: Spotify
+        requires playlist-read-private on /playlists/{id}/tracks for *every*
+        playlist, public ones included, and an app-only token carries no scopes.
+        Set up once by mello-login.py, refreshed here forever after.
+        """
+        if not self.is_logged_in():
+            return None
+        with self._lock:
+            if self._user_token and time.time() < self._user_token_expires:
+                return self._user_token
+            if self._login_dead:
+                return None
+            refresh_token = self.refresh_token
+
+        basic = base64.b64encode(
+            f'{self.client_id}:{self.client_secret}'.encode()).decode()
+        try:
+            resp = requests.post(
+                ACCOUNTS_TOKEN_URL,
+                data={'grant_type': 'refresh_token', 'refresh_token': refresh_token},
+                headers={'Authorization': f'Basic {basic}'},
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                # Revoked, or minted for a different app. Stop asking and fall
+                # back to app-only access: no worse than never having logged in.
+                with self._lock:
+                    self._login_dead = True
+                logger.warning(
+                    f'Spotify login no longer valid ({resp.status_code}) — playlist '
+                    f'track lists need it; re-run mello-login.py. Albums and shows '
+                    f'are unaffected.'
+                )
+                return None
+            data = resp.json()
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f'Spotify token refresh failed: {e}')
+            return None
+
+        token = data.get('access_token')
+        if not isinstance(token, str) or not token:
+            return None
+        try:
+            lifetime = float(data.get('expires_in') or 3600)
+        except (TypeError, ValueError):
+            lifetime = 3600
+        # Spotify's confidential-client flow doesn't normally rotate the refresh
+        # token, but honour one if it arrives — in memory only.
+        # ponytail: not written back to .env; a rotation we drop just costs one
+        # re-login. Persist it if that ever actually happens.
+        rotated = data.get('refresh_token')
+        with self._lock:
+            self._user_token = token
+            self._user_token_expires = time.time() + max(30.0, lifetime - TOKEN_EXPIRY_MARGIN)
+            if isinstance(rotated, str) and rotated:
+                self.refresh_token = rotated
+        logger.info('Spotify login token refreshed (playlist track lists enabled)')
+        return token
+
     def _client_credentials_token(self) -> Optional[str]:
         """Token for our own Spotify app. Cached until it nearly expires.
 
@@ -472,6 +548,17 @@ class TrackListStore:
 
         if not self.uses_own_credentials():
             return self._fetch_via_shared_quota(kind, url, context_uri, on_denied_status=None)
+
+        # A logged-in token strictly dominates the app-only one — same client ID
+        # and quota, plus the scope playlists require — so it goes first and
+        # there's nothing below it worth falling back to.
+        user_token = self._logged_in_token()
+        if user_token:
+            try:
+                return self._paginate(kind, url, user_token, quota='client')
+            except _AccessDenied as denied:
+                self._mark_unavailable(context_uri, denied.status_code)
+                return None
 
         token = self._client_credentials_token()
         if not token:
@@ -586,6 +673,7 @@ class TrackListStore:
                 logger.info('Track list token rejected (401), will refetch a token next time')
                 with self._lock:
                     self._app_token = None   # force a fresh one next attempt
+                    self._user_token = None
                 return None
 
             if resp.status_code in (403, 404):

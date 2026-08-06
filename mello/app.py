@@ -16,6 +16,7 @@ from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
     LIBRESPOT_URL, LIBRESPOT_WS,
     SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_MARKET,
+    SPOTIFY_REFRESH_TOKEN,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, TRACKS_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
@@ -225,6 +226,7 @@ class Mello:
             client_id=SPOTIFY_CLIENT_ID,
             client_secret=SPOTIFY_CLIENT_SECRET,
             market=SPOTIFY_MARKET,
+            refresh_token=SPOTIFY_REFRESH_TOKEN,
         )
         self._track_focus_uri: Optional[str] = None   # album we're dwelling on
         self._track_focus_since: float = 0.0

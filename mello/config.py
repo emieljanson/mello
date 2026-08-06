@@ -41,6 +41,11 @@ LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
 SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID', '').strip()
 SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET', '').strip()
 
+# Written by mello-login.py. Only a logged-in token can read playlist track
+# lists — Spotify requires the playlist-read-private scope for every playlist,
+# public ones included, and an app-only token carries no scopes at all.
+SPOTIFY_REFRESH_TOKEN = os.environ.get('SPOTIFY_REFRESH_TOKEN', '').strip()
+
 # Two-letter country, only needed if podcast lookups 404. Episode availability
 # is market-scoped and an app token carries no country of its own.
 SPOTIFY_MARKET = os.environ.get('SPOTIFY_MARKET', '').strip().upper()

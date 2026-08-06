@@ -808,6 +808,153 @@ class TestPlaylistInfo:
         get.assert_not_called()
 
 
+def _accounts_post(refresh_status=200, refresh_payload=None):
+    """Fake token endpoints that answer each grant differently.
+
+    Which credential gets used is the whole subject of the tests below, so a
+    single canned response would hide the thing being asserted.
+    """
+    grants = []
+
+    def post(url, data=None, headers=None, timeout=None):
+        if 'accounts.spotify.com' not in url:
+            grants.append('borrowed')                 # go-librespot's own /token
+            return _resp(200, {'token': 'a' * 50})
+        grant = (data or {}).get('grant_type')
+        grants.append(grant)
+        if grant == 'refresh_token':
+            return _resp(refresh_status, refresh_payload if refresh_payload is not None
+                         else {'access_token': 'user-token', 'expires_in': 3600})
+        return _resp(200, {'access_token': 'app-token', 'expires_in': 3600})
+
+    return post, grants
+
+
+class TestLoggedIn:
+    """A real login is the only way to read a playlist's tracks.
+
+    Spotify requires playlist-read-private on /playlists/{id}/tracks for EVERY
+    playlist, public ones included — confirmed against their reference doc and
+    on the device, where a playlist the account owns and had made public still
+    403'd on an app-only token. Client credentials carry no scopes at all, so
+    no amount of retrying or quota-juggling could ever have fixed this; only
+    mello-login.py can.
+    """
+
+    PLAYLIST_PAGE = {'items': [{'track': {'uri': 'spotify:track:1', 'name': 'One',
+                                          'artists': [{'name': 'Gims'}]}}], 'next': None}
+
+    @pytest.fixture
+    def logged_in(self, tmp_path):
+        return TrackListStore(cache_dir=tmp_path / 'tracks', token_url='http://d/token',
+                              client_id='id', client_secret='secret',
+                              refresh_token='refresh-abc')
+
+    @pytest.fixture
+    def keyed(self, tmp_path):
+        return TrackListStore(cache_dir=tmp_path / 'tracks', token_url='http://d/token',
+                              client_id='id', client_secret='secret')
+
+    def test_not_logged_in_without_a_refresh_token(self, keyed):
+        assert keyed.is_logged_in() is False
+
+    def test_a_refresh_token_alone_is_not_a_login(self, tmp_path):
+        """It's exchanged against our own app's key — useless without one."""
+        store = TrackListStore(cache_dir=tmp_path / 'tracks', token_url='x',
+                               refresh_token='refresh-abc')
+        assert store.is_logged_in() is False
+
+    def test_playlist_read_with_the_logged_in_token(self, logged_in):
+        post, grants = _accounts_post()
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get',
+                   return_value=_resp(200, self.PLAYLIST_PAGE)) as get:
+            tracks = logged_in.fetch(PLAYLIST)
+
+        assert [t.name for t in tracks] == ['One']
+        assert grants == ['refresh_token'], 'the app-only token cannot read this at all'
+        assert get.call_args.kwargs['headers']['Authorization'] == 'Bearer user-token'
+
+    def test_the_token_is_cached_across_fetches(self, logged_in):
+        post, grants = _accounts_post()
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, {'items': [], 'next': None})):
+            logged_in.fetch(PLAYLIST)
+            logged_in.fetch(ALBUM)
+        assert grants.count('refresh_token') == 1
+
+    def test_a_revoked_login_falls_back_to_the_app_token(self, logged_in):
+        """Same principle as a typo'd secret: no worse than never logging in."""
+        post, grants = _accounts_post(refresh_status=400)
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get',
+                   return_value=_resp(200, {'items': [], 'next': None})) as get:
+            assert logged_in.fetch(ALBUM) == []
+        assert 'client_credentials' in grants
+        assert get.call_args.kwargs['headers']['Authorization'] == 'Bearer app-token'
+
+    def test_a_revoked_login_is_not_retried_every_fetch(self, logged_in):
+        post, grants = _accounts_post(refresh_status=400)
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get',
+                   return_value=_resp(200, {'items': [], 'next': None})):
+            logged_in.fetch(ALBUM)
+            logged_in.fetch(PLAYLIST)
+        assert grants.count('refresh_token') == 1, 'a dead token must be asked about once'
+
+    def test_denied_with_a_real_login_is_final(self, logged_in):
+        """Nothing outranks a logged-in token, so 403 here means editorial.
+
+        Falling through to the borrowed token would be pure waste: it
+        authenticates as the same account and its shared quota is spent.
+        """
+        post, _ = _accounts_post()
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(403)) as get:
+            assert logged_in.fetch(PLAYLIST) is None
+
+        assert logged_in.is_unavailable(PLAYLIST) is True
+        assert get.call_count == 1, 'no point retrying a weaker credential'
+
+    def test_a_rotated_refresh_token_is_honoured(self, logged_in):
+        post, _ = _accounts_post(refresh_payload={
+            'access_token': 'user-token', 'expires_in': 3600, 'refresh_token': 'refresh-xyz'})
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, {'items': [], 'next': None})):
+            logged_in.fetch(ALBUM)
+        assert logged_in.refresh_token == 'refresh-xyz'
+
+    def test_401_drops_the_cached_login_token(self, logged_in):
+        post, _ = _accounts_post()
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(401)):
+            logged_in.fetch(PLAYLIST)
+        assert logged_in._user_token is None
+
+    def test_a_network_failure_refreshing_is_not_fatal(self, logged_in):
+        import requests as _requests
+
+        def post(url, data=None, headers=None, timeout=None):
+            if 'accounts.spotify.com' in url and (data or {}).get('grant_type') == 'refresh_token':
+                raise _requests.RequestException('offline')
+            return _resp(200, {'access_token': 'app-token', 'expires_in': 3600})
+
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get',
+                   return_value=_resp(200, {'items': [], 'next': None})):
+            assert logged_in.fetch(ALBUM) == []
+
+    def test_albums_still_work_without_logging_in(self, keyed):
+        """The login is a playlist fix — it must not become a prerequisite."""
+        post, grants = _accounts_post()
+        with patch('mello.api.tracklist.requests.post', side_effect=post), \
+             patch('mello.api.tracklist.requests.get',
+                   return_value=_resp(200, {'items': [{'uri': 'spotify:track:1', 'name': 'A'}],
+                                            'next': None})):
+            assert len(keyed.fetch(ALBUM)) == 1
+        assert 'refresh_token' not in grants
+
+
 class TestEpisodeResolvesToItsShow:
     """Spotify reports an episode as the context, because podcast pages have no
     show-level play button. Saving that verbatim gave a tile per episode."""
