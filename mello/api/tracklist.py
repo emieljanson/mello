@@ -145,6 +145,8 @@ class TrackListStore:
         self._app_token_expires: float = 0.0
         self._episode_shows: Dict[str, str] = {}   # episode uri -> its show's uri
         self._show_names: Dict[str, str] = {}
+        self._playlist_info: Dict[str, dict] = {}   # context uri -> {'name', 'image'}
+        self._playlist_info_in_flight: set = set()
 
         if not mock_mode:
             try:
@@ -302,6 +304,62 @@ class TrackListStore:
         """
         with self._lock:
             return self._episode_shows.get(episode_uri)
+
+    def playlist_info(self, context_uri: str) -> Optional[dict]:
+        """A playlist's own name and cover, as {'name', 'image'}. None if unknown.
+
+        go-librespot's /status only ever reports the currently PLAYING TRACK's
+        album and cover — never the playlist's own — so the temp tile used to
+        freeze on whichever track happened to play first. This is the fix:
+        unlike /playlists/{id}/tracks (gated behind playlist-read-private, a
+        scope a client-credentials token can never carry), basic metadata like
+        name and cover art needs no scope at all, so it works for any playlist,
+        even ones whose track list this device can never read.
+        """
+        parsed = parse_context(context_uri)
+        if not parsed or parsed[0] != 'playlist' or self.mock_mode:
+            return None
+        _, spotify_id = parsed
+
+        with self._lock:
+            cached = self._playlist_info.get(context_uri)
+            if cached is not None:
+                return cached
+            if context_uri in self._playlist_info_in_flight:
+                return None
+            self._playlist_info_in_flight.add(context_uri)
+
+        try:
+            token = self._access_token()
+            if not token:
+                return None
+            resp = requests.get(
+                f'{API_BASE}/playlists/{spotify_id}',
+                headers={'Authorization': f'Bearer {token}'},
+                params={'fields': 'name,images'},
+                timeout=6,
+            )
+            if resp.status_code != 200:
+                logger.info(f'Playlist info lookup returned {resp.status_code} for {context_uri[:45]}')
+                return None
+            try:
+                data = resp.json() or {}
+            except ValueError:
+                return None
+            images = data.get('images') or []
+            image_url = images[0].get('url') if images and isinstance(images[0], dict) else None
+            if not image_url:
+                return None
+            info = {'name': data.get('name') or 'Playlist', 'image': image_url}
+            with self._lock:
+                self._playlist_info[context_uri] = info
+            return info
+        except requests.RequestException as e:
+            logger.warning(f'Playlist info lookup failed: {e}')
+            return None
+        finally:
+            with self._lock:
+                self._playlist_info_in_flight.discard(context_uri)
 
     def cooldown_remaining(self) -> float:
         """Seconds until fetching can generally resume. 0 when clear.

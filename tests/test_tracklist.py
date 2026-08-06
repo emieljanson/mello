@@ -743,6 +743,71 @@ EPISODE = 'spotify:episode:0NYHImDd7BB8xSd1zOliJb'
 SHOW = 'spotify:show:64OeNuY4Fp4alz1x3Tatjx'
 
 
+class TestPlaylistInfo:
+    """A playlist's own name/cover — metadata, not its track list.
+
+    go-librespot's /status only ever reports the currently PLAYING TRACK's
+    album and cover, never the playlist's own, so the temp tile used to freeze
+    on whichever track happened to play first. Unlike /playlists/{id}/tracks,
+    this endpoint carries no scope requirement, so it works via the app token
+    even for a playlist whose track list 403s outright — confirmed on a real
+    device: the same playlist that 403'd on /tracks returned this cleanly.
+    """
+
+    @staticmethod
+    def _token_post():
+        return patch('mello.api.tracklist.requests.post',
+                     return_value=_resp(200, {'access_token': 't', 'expires_in': 3600}))
+
+    def test_returns_name_and_cover(self, store):
+        body = {'name': 'Gims', 'images': [{'url': 'https://mosaic.scdn.co/640/x'}]}
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, body)):
+            info = store.playlist_info(PLAYLIST)
+        assert info == {'name': 'Gims', 'image': 'https://mosaic.scdn.co/640/x'}
+
+    def test_non_playlist_uris_never_hit_the_network(self, store):
+        with patch('mello.api.tracklist.requests.get') as get:
+            assert store.playlist_info(ALBUM) is None
+            assert store.playlist_info('') is None
+        get.assert_not_called()
+
+    def test_result_is_cached(self, store):
+        body = {'name': 'Gims', 'images': [{'url': 'https://mosaic.scdn.co/640/x'}]}
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, body)) as get:
+            store.playlist_info(PLAYLIST)
+            store.playlist_info(PLAYLIST)
+        assert get.call_count == 1
+
+    def test_works_with_an_app_key_too(self):
+        """The exact real-world case: /tracks 403s on the app token; this doesn't."""
+        store = TrackListStore(cache_dir=Path('/nonexistent'), token_url='x',
+                               client_id='id', client_secret='secret')
+        body = {'name': 'Gims', 'images': [{'url': 'https://mosaic.scdn.co/640/x'}]}
+        with self._token_post(), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, body)):
+            info = store.playlist_info(PLAYLIST)
+        assert info is not None
+
+    def test_no_images_returns_none(self, store):
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(200, {'name': 'Gims', 'images': []})):
+            assert store.playlist_info(PLAYLIST) is None
+
+    def test_failure_is_not_fatal_and_not_cached(self, store):
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(500)):
+            assert store.playlist_info(PLAYLIST) is None
+        assert PLAYLIST not in store._playlist_info
+
+    def test_mock_mode_never_hits_the_network(self):
+        store = TrackListStore(cache_dir=Path('/nonexistent'), token_url='x', mock_mode=True)
+        with patch('mello.api.tracklist.requests.get') as get:
+            assert store.playlist_info(PLAYLIST) is None
+        get.assert_not_called()
+
+
 class TestEpisodeResolvesToItsShow:
     """Spotify reports an episode as the context, because podcast pages have no
     show-level play button. Saving that verbatim gave a tile per episode."""

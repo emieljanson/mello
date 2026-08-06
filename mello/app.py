@@ -1410,29 +1410,34 @@ class Mello:
         is_playlist = 'playlist' in context_uri
         collected_covers = self.catalog_manager.get_collected_covers(context_uri) if is_playlist else None
         track_cover = self.now_playing.track_cover
-        
+
         start_download = False
-        
+        fetch_playlist_info = False
+
         with self._temp_item_lock:
             current_cover_count = len(self.temp_item.images or []) if self.temp_item else 0
             new_cover_count = len(collected_covers or [])
-            
+
             uri_changed = not self.temp_item or self.temp_item.uri != context_uri
-            
+
             needs_update = (
                 uri_changed or
                 new_cover_count > current_cover_count
             )
-            
+
             if not needs_update:
                 return
-            
+
             # Only preserve local image if same URI (prevents wrong cover on wrong item)
             if not uri_changed and self.temp_item.image and self.temp_item.image.startswith('/images/'):
                 local_image = self.temp_item.image
             else:
                 local_image = None
-            
+
+            # Best guess until the real thing loads: go-librespot's /status only
+            # ever reports the CURRENTLY PLAYING TRACK's album and cover, never
+            # the playlist's own — without _fetch_playlist_info_async below, this
+            # froze on whichever track happened to play first.
             self.temp_item = CatalogItem(
                 id='temp',
                 uri=context_uri,
@@ -1443,16 +1448,22 @@ class Mello:
                 images=collected_covers,
                 is_temp=True
             )
-            
+
             start_download = not local_image and bool(track_cover)
-        
+            fetch_playlist_info = is_playlist and uri_changed
+
         self._update_carousel_max_index()
         self.renderer.invalidate()
         logger.info(f'TempItem: {self.temp_item.name}')
-        
+
         # Download cover in background if we don't have a local image
         if start_download:
             run_async(self._download_temp_cover_async, context_uri, track_cover)
+        # Replace the guess above with the playlist's real name/cover once it
+        # loads. Unlike the track list, this isn't gated behind user auth, so
+        # it works even for a playlist this device can never list the tracks of.
+        if fetch_playlist_info:
+            run_async(self._fetch_playlist_info_async, context_uri)
     
     def _download_temp_cover_async(self, context_uri: str, cover_url: str):
         """Download temp item cover in background thread."""
@@ -1479,6 +1490,37 @@ class Mello:
             logger.info(f'TempItem cover downloaded: {local_path}')
         except Exception as e:
             logger.debug(f'Temp cover download failed: {e}')
+
+    def _fetch_playlist_info_async(self, context_uri: str):
+        """Replace the guessed name/cover with the playlist's real ones.
+
+        Runs once per playlist encountered — playlist_info() itself caches, so
+        a later encounter of the same playlist resolves from that cache and
+        this call returns immediately without hitting the network again.
+        """
+        try:
+            info = self.track_lists.playlist_info(context_uri)
+            if not info:
+                return
+            local_image = self.catalog_manager.download_temp_image(info['image'])
+
+            with self._temp_item_lock:
+                if not self.temp_item or self.temp_item.uri != context_uri:
+                    return
+                self.temp_item = CatalogItem(
+                    id=self.temp_item.id,
+                    uri=self.temp_item.uri,
+                    name=info['name'],
+                    type=self.temp_item.type,
+                    artist=self.temp_item.artist,
+                    image=local_image or self.temp_item.image,
+                    images=self.temp_item.images,
+                    is_temp=True
+                )
+            self.renderer.invalidate()
+            logger.info(f"TempItem: playlist info resolved to '{info['name']}'")
+        except Exception as e:
+            logger.debug(f'Playlist info fetch failed: {e}')
     
     def _handle_events(self):
         """Handle pygame events."""
