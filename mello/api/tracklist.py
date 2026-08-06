@@ -134,9 +134,13 @@ class TrackListStore:
         self._in_flight: set = set()
         self._failed: set = set()   # don't hammer a context that can't be fetched
         self._unavailable: set = set()  # Spotify refuses these (404) — never retry
-        # Spotify throttles per client ID, and go-librespot's is shared by every
-        # install — so a 429 applies to every context, not just this one.
-        self._blocked_until: float = 0.0
+        # Two independent rate limits, tracked separately: our own app has its
+        # own quota; go-librespot's client ID is shared by every install and
+        # throttles far more often. Conflating them into one cooldown meant a
+        # shared-quota 429 (from the fallback below) blocked the app-token path
+        # too — the exact hammering #9 was written to prevent, just relocated.
+        self._client_blocked_until: float = 0.0
+        self._shared_blocked_until: float = 0.0
         self._app_token: Optional[str] = None
         self._app_token_expires: float = 0.0
         self._episode_shows: Dict[str, str] = {}   # episode uri -> its show's uri
@@ -300,9 +304,27 @@ class TrackListStore:
             return self._episode_shows.get(episode_uri)
 
     def cooldown_remaining(self) -> float:
-        """Seconds until Spotify's rate limit is expected to lift. 0 when clear."""
+        """Seconds until fetching can generally resume. 0 when clear.
+
+        With an app key, that's the app quota — its own, independent limit, so
+        fetching keeps working through this even while the shared quota (used
+        only as a fallback) is hot. Without one, the shared quota is the only
+        limit there is.
+        """
         with self._lock:
-            return max(0.0, self._blocked_until - time.time())
+            until = self._client_blocked_until if self.uses_own_credentials() else self._shared_blocked_until
+            return max(0.0, until - time.time())
+
+    def _shared_cooldown_remaining(self) -> float:
+        """Seconds until the shared (borrowed-token) quota is expected to clear.
+
+        Checked before ever attempting the fallback in _fetch_via_shared_quota —
+        every install on this client ID pays for a retry into a quota that's
+        already hot, so a context sits merely _failed (retried later) rather
+        than spending another attempt into a wall that hasn't moved yet.
+        """
+        with self._lock:
+            return max(0.0, self._shared_blocked_until - time.time())
 
     def retry_failed(self):
         """Forget past failures so a throttled context can be tried again."""
@@ -390,19 +412,18 @@ class TrackListStore:
         context_uri = f'spotify:{kind}:{spotify_id}'
         url = _endpoint(kind, spotify_id)
 
-        token = self._access_token()
+        if not self.uses_own_credentials():
+            return self._fetch_via_shared_quota(kind, url, context_uri, on_denied_status=None)
+
+        token = self._client_credentials_token()
         if not token:
-            return None
+            # Bad secret or token endpoint down — the shared quota is all
+            # that's left, same as not having an app key at all.
+            return self._fetch_via_shared_quota(kind, url, context_uri, on_denied_status=None)
 
         try:
-            return self._paginate(kind, url, token)
+            return self._paginate(kind, url, token, quota='client')
         except _AccessDenied as denied:
-            if not self.uses_own_credentials():
-                # Already the account's own session — no more-privileged token
-                # to escalate to, so this 403/404 is final.
-                self._mark_unavailable(context_uri, denied.status_code)
-                return None
-
             # Client-credentials tokens carry no user identity, so they can only
             # see PUBLIC catalog data. A private playlist you own 403s exactly
             # like an editorial one does — the two are indistinguishable until
@@ -412,31 +433,50 @@ class TrackListStore:
                 f'{context_uri[:45]}; retrying with the device\'s own Spotify '
                 f'session in case this is a private playlist, not an editorial one'
             )
-            user_token = self._borrowed_token()
-            if not user_token:
-                self._mark_unavailable(context_uri, denied.status_code)
-                return None
-            try:
-                return self._paginate(kind, url, user_token)
-            except _AccessDenied as denied_again:
-                # Refused even by the account itself: genuinely not ours to see.
-                self._mark_unavailable(context_uri, denied_again.status_code)
-                return None
+            return self._fetch_via_shared_quota(kind, url, context_uri, denied.status_code)
 
-    def _paginate(self, kind: str, url: str, token: str) -> Optional[List[Track]]:
+    def _fetch_via_shared_quota(self, kind: str, url: str, context_uri: str,
+                                on_denied_status: Optional[int]) -> Optional[List[Track]]:
+        """The borrowed token — go-librespot's client ID, shared by every install.
+
+        Only path available without an app key; the last resort with one. Never
+        attempted while its own quota is already hot: that quota is shared with
+        every other Mello, so retrying into a 429 doesn't just fail this fetch,
+        it extends the wait for everyone. Leaving the context merely _failed (not
+        _unavailable) means it gets tried again once the quota has recovered,
+        rather than being written off on a busy-but-not-actually-denied answer.
+        """
+        if self._shared_cooldown_remaining() > 0:
+            return None
+
+        token = self._borrowed_token()
+        if not token:
+            if on_denied_status is not None:
+                self._mark_unavailable(context_uri, on_denied_status)
+            return None
+        try:
+            return self._paginate(kind, url, token, quota='shared')
+        except _AccessDenied as denied:
+            # Refused even by the account's own session: genuinely not ours to
+            # see, regardless of which status got us here.
+            self._mark_unavailable(context_uri, denied.status_code)
+            return None
+
+    def _paginate(self, kind: str, url: str, token: str, quota: str) -> Optional[List[Track]]:
         headers = {'Authorization': f'Bearer {token}'}
         params = {'limit': PAGE_SIZE, 'offset': 0}
         tracks: List[Track] = []
 
-        while url and len(tracks) < MAX_TRACKS:
-            payload = self._get_json(url, headers, params)
+        while url:
+            if len(tracks) >= MAX_TRACKS:
+                logger.info(f'Track list truncated at {MAX_TRACKS} for {kind}')
+                break
+            payload = self._get_json(url, headers, params, quota)
             if payload is None:
                 return None  # give up on this context for now; retried later
             tracks.extend(_parse_items(kind, payload.get('items') or []))
-            url = payload.get('next')
+            url = payload.get('next') or ''
             params = None  # 'next' already carries limit/offset
-            if url and len(tracks) >= MAX_TRACKS:
-                logger.info(f'Track list truncated at {MAX_TRACKS} for {kind}')
 
         return tracks[:MAX_TRACKS]
 
@@ -450,7 +490,7 @@ class TrackListStore:
             f'Spotify\'s own editorial playlists, closed to every app'
         )
 
-    def _get_json(self, url: str, headers: dict, params: Optional[dict]) -> Optional[dict]:
+    def _get_json(self, url: str, headers: dict, params: Optional[dict], quota: str) -> Optional[dict]:
         """GET with bounded retries that honour Spotify's Retry-After.
 
         Raises _AccessDenied on 403/404 rather than returning None, so the
@@ -481,7 +521,7 @@ class TrackListStore:
                     continue
                 # Long one: record it and back off. Retrying sooner than Spotify
                 # asked adds load to the quota we're already being limited on.
-                self._start_cooldown(wait)
+                self._start_cooldown(wait, quota)
                 return None
 
             if resp.status_code == 401:
@@ -512,14 +552,21 @@ class TrackListStore:
             wait = DEFAULT_COOLDOWN
         return max(1.0, min(wait, MAX_COOLDOWN))
 
-    def _start_cooldown(self, seconds: float):
-        """Stop trying any context until Spotify's cooldown has passed."""
+    def _start_cooldown(self, seconds: float, quota: str):
+        """Back off the quota that actually got throttled — not the other one.
+
+        A shared-quota 429 must not block the app-token path (it has its own,
+        healthy limit), and vice versa. Conflating them once meant the fallback
+        to the shared quota could stall every other album and show on the
+        device for the shared quota's cooldown, which can run into minutes.
+        """
         with self._lock:
-            self._blocked_until = max(self._blocked_until, time.time() + seconds)
-        logger.info(
-            f'Track list throttled (429): backing off {seconds:.0f}s '
-            f'(Spotify rate-limits go-librespot\'s shared client ID)'
-        )
+            if quota == 'client':
+                self._client_blocked_until = max(self._client_blocked_until, time.time() + seconds)
+            else:
+                self._shared_blocked_until = max(self._shared_blocked_until, time.time() + seconds)
+        reason = '' if quota == 'client' else " (Spotify rate-limits go-librespot's shared client ID)"
+        logger.info(f'Track list throttled (429) on the {quota} quota: backing off {seconds:.0f}s{reason}')
 
     # --- Disk cache ---
 

@@ -177,7 +177,7 @@ def test_fetching_resumes_once_the_cooldown_expires(store):
     with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
          patch('mello.api.tracklist.requests.get', return_value=_resp(429, headers={'Retry-After': '600'})):
         store.fetch(ALBUM)
-    store._blocked_until = 0.0                 # pretend it elapsed
+    store._shared_blocked_until = 0.0           # pretend it elapsed
     store.retry_failed()
     assert store.wants_fetch(ALBUM) is True
 
@@ -262,6 +262,83 @@ class TestOwnCredentials:
              patch('mello.api.tracklist.requests.get', return_value=_resp(401)):
             keyed.fetch(ALBUM)
         assert keyed._app_token is None
+
+
+class TestQuotasAreIndependent:
+    """The app-key quota and go-librespot's shared quota must never conflate.
+
+    Reproduces a real device log: a public playlist 403'd on the app token,
+    the fallback to the borrowed token got 429'd (the shared quota was already
+    hot from other Mellos), and that 429 was recorded as a GLOBAL cooldown —
+    stalling every album and show on the device for the shared quota's
+    backoff, which escalated past 900s. The two quotas are independent and a
+    429 on one must not touch the other.
+    """
+
+    @pytest.fixture
+    def keyed(self, tmp_path):
+        return TrackListStore(cache_dir=tmp_path / 'tracks', token_url='x',
+                              client_id='id', client_secret='secret')
+
+    @staticmethod
+    def _token_post():
+        return patch('mello.api.tracklist.requests.post',
+                     return_value=_resp(200, {'access_token': 't', 'expires_in': 3600}))
+
+    def test_shared_429_after_app_403_does_not_block_the_app_quota(self, keyed):
+        """The exact device log: app 403, fallback 429. Albums must keep working."""
+        other_album = 'spotify:album:1AAAAAAAAAAAAAAAAAAAAA'
+        with self._token_post(), \
+             patch('mello.api.tracklist.requests.get', side_effect=[
+                 _resp(403),                                          # app token: denied
+                 _resp(429, headers={'Retry-After': '900'}),           # shared token: rate-limited
+             ]):
+            assert keyed.fetch(PLAYLIST) is None
+
+        assert keyed.cooldown_remaining() == 0, \
+            'the app quota must be untouched by a 429 on the shared quota'
+        assert keyed.wants_fetch(other_album) is True
+        assert PLAYLIST not in keyed._unavailable, \
+            'rate-limited is not the same answer as denied — must stay retryable'
+
+    def test_already_hot_shared_quota_is_not_hammered_again(self, keyed):
+        """Once the shared quota is known hot, don't spend another 403+429
+        round trip finding that out again — that's the hammering loop itself."""
+        keyed._shared_blocked_until = __import__('time').time() + 500
+
+        with self._token_post(), \
+             patch('mello.api.tracklist.requests.get', return_value=_resp(403)) as get:
+            assert keyed.fetch(PLAYLIST) is None
+
+        assert get.call_count == 1, 'only the app-token attempt should fire'
+
+    def test_app_429_does_not_touch_the_shared_quota(self, keyed):
+        """The other direction: an app-quota 429 is not a shared-quota problem."""
+        with self._token_post(), \
+             patch('mello.api.tracklist.requests.get',
+                   return_value=_resp(429, headers={'Retry-After': '60'})):
+            keyed.fetch(ALBUM)
+
+        assert keyed._shared_cooldown_remaining() == 0
+
+    def test_no_app_key_still_uses_the_single_shared_cooldown(self, store):
+        """No app key configured: behaves exactly as it always did — one quota."""
+        with patch('mello.api.tracklist.requests.post', return_value=_resp(200, {'token': 'a' * 50})), \
+             patch('mello.api.tracklist.requests.get',
+                   return_value=_resp(429, headers={'Retry-After': '60'})):
+            store.fetch(ALBUM)
+        assert store.cooldown_remaining() > 0
+        assert store._shared_cooldown_remaining() > 0
+
+    def test_a_public_playlist_the_shared_token_can_read_still_succeeds(self, keyed):
+        """The fallback's whole point: prove it actually resolves a good case."""
+        payload = {'items': [{'track': {'uri': 'spotify:track:1', 'name': 'One', 'artists': []}}],
+                   'next': None}
+        with self._token_post(), \
+             patch('mello.api.tracklist.requests.get', side_effect=[_resp(403), _resp(200, payload)]):
+            tracks = keyed.fetch(PLAYLIST)
+        assert [t.name for t in tracks] == ['One']
+        assert PLAYLIST not in keyed._unavailable
 
 
 class TestUnavailableContext:
