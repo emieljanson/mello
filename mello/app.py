@@ -34,6 +34,9 @@ from .utils import run_async, get_runtime_version_label, set_system_volume
 
 logger = logging.getLogger(__name__)
 
+LIBRESPOT_RESTART_AFTER = 60.0
+LIBRESPOT_RESTART_COOLDOWN = 300.0
+
 
 class Mello:
     """Main Mello application."""
@@ -307,6 +310,8 @@ class Mello:
         # we keep the last known now_playing snapshot and block auto-retrigger.
         self._status_unknown: bool = False
         self._last_status_unknown_log: float = 0.0
+        self._status_failure_started_at: float = 0.0
+        self._last_librespot_restart_at: float = 0.0
         self._last_status_not_ready_log: float = 0.0
         self._user_activated_playback: bool = False
         self._last_play_commit_uri: Optional[str] = None
@@ -1035,6 +1040,7 @@ class Mello:
             if self._connection_fail_count > 0:
                 logger.debug(f'Connection recovered after {self._connection_fail_count} failures')
             self._connection_fail_count = 0
+            self._status_failure_started_at = 0.0
             self.connected = True
         else:
             self._connection_fail_count += 1
@@ -1124,12 +1130,55 @@ class Mello:
             # Keep last known now_playing to avoid duplicate play re-triggers.
             self._status_unknown = True
             now = time.time()
+            if self._status_failure_started_at == 0.0:
+                self._status_failure_started_at = now
             if now - self._last_status_unknown_log > 3.0:
                 logger.warning(
                     'STATUS unknown | preserving last now_playing snapshot '
                     f'| connected={self.connected} | fail_count={self._connection_fail_count}'
                 )
                 self._last_status_unknown_log = now
+            self._maybe_restart_librespot(now)
+
+    def _maybe_restart_librespot(self, now: float):
+        """Restart a locally hung Spotify engine after a sustained outage."""
+        failure_started_at = self._status_failure_started_at
+        if failure_started_at == 0.0:
+            return
+        if now - failure_started_at < LIBRESPOT_RESTART_AFTER:
+            return
+        if (
+            self._last_librespot_restart_at > 0.0
+            and now - self._last_librespot_restart_at < LIBRESPOT_RESTART_COOLDOWN
+        ):
+            return
+
+        self._last_librespot_restart_at = now
+        self._show_toast('Spotify herstellen...')
+        logger.warning(
+            'LIBRESPOT recovery | restarting unresponsive service '
+            f'after {now - failure_started_at:.1f}s'
+        )
+        try:
+            result = subprocess.run(
+                ['sudo', 'systemctl', 'restart', 'mello-librespot'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                self._status_failure_started_at = now
+                self._connection_fail_count = 0
+                self._poll_wake_event.set()
+                logger.info('LIBRESPOT recovery | restart requested successfully')
+            else:
+                logger.error(
+                    'LIBRESPOT recovery | restart failed '
+                    f'rc={result.returncode} stderr={result.stderr.strip()}'
+                )
+        except Exception as exc:
+            logger.error(f'LIBRESPOT recovery | restart error: {exc}', exc_info=True)
     
     def _check_autoplay(self):
         """Detect autoplay and clear progress when context finishes."""
