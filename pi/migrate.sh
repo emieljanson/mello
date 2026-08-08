@@ -758,6 +758,43 @@ _migrate_014() {
 }
 
 # ============================================
+# Migration 015: Allow Mello to recover a hung Spotify engine
+# ============================================
+_migrate_015() {
+  local SUDOERS_DIR="${MELLO_SUDOERS_DIR:-/etc/sudoers.d}"
+  local SUDOERS_FILE="$SUDOERS_DIR/mello-wifi"
+  [ -f "$SUDOERS_FILE" ] || SUDOERS_FILE="$SUDOERS_DIR/berry-wifi"
+
+  if [ ! -f "$SUDOERS_FILE" ]; then
+    log "Mello sudoers file not found, skipping librespot recovery permission"
+    return 0
+  fi
+  if sudo grep -q '/bin/systemctl restart mello-librespot' "$SUDOERS_FILE"; then
+    log "Librespot recovery permission already installed"
+    return 0
+  fi
+
+  local TMP_SUDOERS="/tmp/mello-sudoers.$$"
+  sudo sed \
+    's|/bin/systemctl start mello-librespot,|/bin/systemctl start mello-librespot, /bin/systemctl restart mello-librespot,|' \
+    "$SUDOERS_FILE" > "$TMP_SUDOERS"
+  if ! grep -q '/bin/systemctl restart mello-librespot' "$TMP_SUDOERS"; then
+    log "ERROR: existing sudoers rule has an unexpected format"
+    rm -f "$TMP_SUDOERS"
+    return 1
+  fi
+  if sudo visudo -cf "$TMP_SUDOERS"; then
+    sudo install -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
+    log "Installed librespot recovery permission"
+  else
+    log "ERROR: librespot recovery sudoers validation failed"
+    rm -f "$TMP_SUDOERS"
+    return 1
+  fi
+  rm -f "$TMP_SUDOERS"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -774,3 +811,4 @@ run_migration "011" "Converge Raspberry Pi Touch Display 2 boot config"
 run_migration "012" "Reboot after display boot config changes"
 run_migration "013" "Disable Spotify suggested autoplay"
 run_migration "014" "Keep librespot independent of UI sleep/restarts"
+run_migration "015" "Allow automatic librespot recovery"
