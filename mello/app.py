@@ -1040,7 +1040,6 @@ class Mello:
             if self._connection_fail_count > 0:
                 logger.debug(f'Connection recovered after {self._connection_fail_count} failures')
             self._connection_fail_count = 0
-            self._status_failure_started_at = 0.0
             self.connected = True
         else:
             self._connection_fail_count += 1
@@ -1065,6 +1064,7 @@ class Mello:
             logger.info(f'  fail_count={self._connection_fail_count}, status={raw is not None}')
         
         if raw and isinstance(raw, dict):
+            self._status_failure_started_at = 0.0
             self._last_status_ok_at = time.time()
             self._status_unknown = False
             api_context_uri = raw.get('context_uri')
