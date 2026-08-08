@@ -25,6 +25,42 @@ def _make_app():
     return app
 
 
+def _make_refresh_app():
+    app = _make_app()
+    app.api = MagicMock()
+    app.api.status.return_value = None
+    app.api.is_connected.return_value = True
+    app._connected_lock = MagicMock()
+    app._connected = True
+    app._connection_grace_threshold = 3
+    app._status_unknown = False
+    app._last_status_unknown_log = 0.0
+    return app
+
+
+@patch('mello.app.subprocess.run')
+@patch('mello.app.time.time', side_effect=[100.0, 161.0])
+def test_reachable_but_unusable_status_restarts_after_sustained_failure(
+    mock_time,
+    mock_run,
+):
+    app = _make_refresh_app()
+    app._status_failure_started_at = 0.0
+    mock_run.return_value = MagicMock(returncode=0, stderr='')
+
+    app._refresh_status()
+    app._refresh_status()
+
+    assert mock_time.call_count == 2
+    mock_run.assert_called_once_with(
+        ['sudo', 'systemctl', 'restart', 'mello-librespot'],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10,
+    )
+
+
 @patch('mello.app.subprocess.run')
 def test_sustained_status_failure_restarts_librespot(mock_run):
     app = _make_app()
