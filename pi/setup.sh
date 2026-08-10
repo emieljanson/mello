@@ -289,11 +289,11 @@ echo "Setting up systemd services..."
 for tmpl in ~/mello/pi/systemd/*.service.template; do
   install_service "$tmpl"
 done
-sudo ln -sf ~/mello/pi/systemd/mello-touch-fix.service /etc/systemd/system/
+sudo chmod +x ~/mello/pi/touch-fix.sh ~/mello/pi/touch-watchdog.sh
 sudo systemctl daemon-reload
 sudo systemctl disable mello-wifi 2>/dev/null || true
 sudo rm -f /etc/systemd/system/mello-wifi.service
-sudo systemctl enable mello-librespot mello-native mello-touch-fix
+sudo systemctl enable mello-librespot mello-native mello-touch-fix mello-touch-watchdog
 
 # Enable PipeWire user services (Bluetooth audio routing)
 sudo -u "$MELLO_USER" XDG_RUNTIME_DIR=/run/user/$MELLO_UID systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null || true

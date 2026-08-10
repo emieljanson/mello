@@ -795,6 +795,50 @@ _migrate_015() {
 }
 
 # ============================================
+# Migration 016: Runtime recovery for wedged Goodix touch controller
+# ============================================
+_migrate_016() {
+  local CODE_DIR="$HOME/mello"
+  [ -d "$CODE_DIR" ] || CODE_DIR="$HOME/tomo"
+  [ -d "$CODE_DIR" ] || CODE_DIR="$HOME/berry"
+
+  local touch_fix_template="$CODE_DIR/pi/systemd/mello-touch-fix.service.template"
+  local watchdog_template="$CODE_DIR/pi/systemd/mello-touch-watchdog.service.template"
+  if [ ! -f "$touch_fix_template" ] || [ ! -f "$watchdog_template" ]; then
+    log "ERROR: touch recovery service templates not found"
+    return 1
+  fi
+
+  sudo chmod +x "$CODE_DIR/pi/touch-fix.sh" "$CODE_DIR/pi/touch-watchdog.sh"
+
+  # Older installs used a symlink to a non-templated service. Remove it first;
+  # otherwise writing the rendered template would follow the stale symlink
+  # back into the checkout.
+  sudo systemctl stop mello-touch-watchdog 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/mello-touch-fix.service
+  sudo rm -f /etc/systemd/system/mello-touch-watchdog.service
+
+  for template in "$touch_fix_template" "$watchdog_template"; do
+    local name
+    name=$(basename "$template" .template)
+    sed -e "s|__USER__|$MELLO_USER|g" \
+        -e "s|__HOME__|$MELLO_HOME|g" \
+        -e "s|__UID__|$MELLO_UID|g" \
+        "$template" | sudo tee "/etc/systemd/system/$name" > /dev/null
+    log "Installed $name"
+  done
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable mello-touch-fix
+
+  # Recover the controller now, then reconnect Mello to the new evdev node.
+  sudo systemctl restart mello-touch-fix
+  sudo systemctl try-restart mello-native
+  sudo systemctl enable --now mello-touch-watchdog
+  log "Goodix runtime recovery enabled"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -812,3 +856,4 @@ run_migration "012" "Reboot after display boot config changes"
 run_migration "013" "Disable Spotify suggested autoplay"
 run_migration "014" "Keep librespot independent of UI sleep/restarts"
 run_migration "015" "Allow automatic librespot recovery"
+run_migration "016" "Recover a wedged Goodix touchscreen automatically"

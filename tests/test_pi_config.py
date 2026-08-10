@@ -62,6 +62,25 @@ def test_librespot_recovery_permission_is_installed_and_migrated():
     assert 'run_migration "015" "Allow automatic librespot recovery"' in migrate
 
 
+def test_touch_watchdog_is_enabled_for_new_and_existing_devices():
+    setup = (ROOT / 'pi/setup.sh').read_text()
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    service = (ROOT / 'pi/systemd/mello-touch-watchdog.service.template').read_text()
+
+    assert 'mello-touch-watchdog' in setup
+    assert '_migrate_016()' in migrate
+    assert 'systemctl enable --now mello-touch-watchdog' in migrate
+    assert 'run_migration "016" "Recover a wedged Goodix touchscreen automatically"' in migrate
+    assert 'ExecStart=/home/berry/mello/pi/touch-watchdog.sh' not in service
+    assert 'ExecStart=__HOME__/mello/pi/touch-watchdog.sh' in service
+
+
+def test_touch_recovery_service_uses_the_shared_recovery_script():
+    service = (ROOT / 'pi/systemd/mello-touch-fix.service.template').read_text()
+
+    assert 'ExecStart=__HOME__/mello/pi/touch-fix.sh' in service
+
+
 def test_migration_015_updates_current_sudoers_rule(tmp_path):
     sudoers = tmp_path / 'mello-wifi'
     sudoers.write_text('berry ALL=(ALL) NOPASSWD: /bin/systemctl start mello-librespot, /bin/systemctl restart mello-native\n')

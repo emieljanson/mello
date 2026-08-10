@@ -1,0 +1,13 @@
+[Unit]
+Description=Recover Goodix touchscreen before Mello starts
+DefaultDependencies=no
+After=sysinit.target
+Before=mello-native.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=__HOME__/mello/pi/touch-fix.sh
+
+[Install]
+WantedBy=multi-user.target

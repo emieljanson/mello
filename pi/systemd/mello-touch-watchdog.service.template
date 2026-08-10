@@ -1,0 +1,13 @@
+[Unit]
+Description=Recover Mello touchscreen when the Goodix controller wedges
+After=mello-native.service
+Wants=mello-native.service
+
+[Service]
+Type=simple
+ExecStart=__HOME__/mello/pi/touch-watchdog.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
