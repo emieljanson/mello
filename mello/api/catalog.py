@@ -64,6 +64,7 @@ class CatalogManager:
         self._catalog_lock = threading.Lock()
         self._progress_lock = threading.Lock()
         self._playlist_covers_lock = threading.Lock()
+        self._image_save_lock = threading.Lock()
         
         # Ensure images directory exists
         self.images_path.mkdir(parents=True, exist_ok=True)
@@ -305,6 +306,11 @@ class CatalogManager:
         return (hash_short, img)
     
     def _save_image(self, hash_short: str, img: Image.Image, temp: bool = False) -> str:
+        """Serialize variant creation so background cover jobs cannot collide."""
+        with self._image_save_lock:
+            return self._save_image_locked(hash_short, img, temp)
+
+    def _save_image_locked(self, hash_short: str, img: Image.Image, temp: bool = False) -> str:
         """Save all image variants (4 files) and return base local path.
         
         Generates 4 variants for fast runtime loading:
@@ -868,4 +874,3 @@ class CatalogManager:
         except Exception as e:
             logger.warning(f'Unexpected error cleaning up images: {e}', exc_info=True)
             return 0
-

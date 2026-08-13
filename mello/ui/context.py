@@ -23,6 +23,7 @@ class RenderContext:
     pressed_button: Optional[str]
     is_loading: bool
     is_playing: bool  # What to show for play/pause button
+    live_cover_path: Optional[str] = None
     pending_focus_uri: Optional[str] = None
     requested_focus_uri: Optional[str] = None
     play_in_progress: bool = False
@@ -47,4 +48,3 @@ class RenderContext:
     update_available: bool = False
     update_running: bool = False
     has_network: bool = True
-

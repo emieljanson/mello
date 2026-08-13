@@ -7,6 +7,7 @@ import signal
 import logging
 import subprocess
 import threading
+from collections import OrderedDict
 from typing import Optional, List
 
 import pygame
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 LIBRESPOT_RESTART_AFTER = 60.0
 LIBRESPOT_RESTART_COOLDOWN = 300.0
+LIVE_COVER_CACHE_SIZE = 40
 
 
 class Mello:
@@ -272,6 +274,7 @@ class Mello:
         # State (with thread-safe now_playing and connected)
         self._now_playing = NowPlaying()
         self._now_playing_lock = threading.Lock()
+        self._status_refresh_lock = threading.Lock()
         self._connected = self.mock_mode
         self._connected_lock = threading.Lock()
         self.selected_index = 0
@@ -281,6 +284,17 @@ class Mello:
         self._running.set()
         self._poll_wake_event = threading.Event()
         self._last_sleep_wait_log: float = 0.0
+
+        # Session-only live cover state. Paths point at variants produced by
+        # CatalogManager; pygame surfaces are still loaded by the main thread.
+        self._live_cover_lock = threading.Lock()
+        self._live_cover_path: Optional[str] = None
+        self._live_cover_key: Optional[tuple] = None
+        self._live_cover_display_key: Optional[tuple] = None
+        self._live_cover_pending_key: Optional[tuple] = None
+        self._live_cover_inflight: set = set()
+        self._live_cover_cache: OrderedDict[tuple, str] = OrderedDict()
+        self._live_cover_failures: OrderedDict[tuple, float] = OrderedDict()
         
         # TempItem and delete mode (with lock for thread-safe access)
         self.temp_item: Optional[CatalogItem] = None
@@ -760,14 +774,15 @@ class Mello:
     def _on_ws_update(self):
         """Called when WebSocket receives an event."""
         logger.debug(f'WebSocket event, context: {self.events.context_uri}')
-        if self.sleep_manager.is_sleeping:
-            self._poll_wake_event.set()
+        # threading.Event coalesces event bursts. The single poll worker owns
+        # status refreshes, so this wakes it without starting another loop.
+        self._poll_wake_event.set()
     
     def _on_ws_reconnect(self):
         """Called when WebSocket reconnects after disconnect."""
         logger.info('WebSocket reconnected - refreshing state')
         self._connection_fail_count = 0
-        run_async(self._refresh_status)
+        self._poll_wake_event.set()
     
     @property
     def display_items(self) -> List[CatalogItem]:
@@ -788,6 +803,19 @@ class Mello:
         """Thread-safe setter for now_playing state."""
         with self._now_playing_lock:
             self._now_playing = value
+        # Publish the target key at the same state boundary. A download that
+        # finishes after this assignment can no longer activate an older key,
+        # even in the tiny window before _update_live_cover schedules the new one.
+        live_lock = getattr(self, '_live_cover_lock', None)
+        if live_lock is not None:
+            with live_lock:
+                new_key = self._live_cover_key_for(value)
+                key_changed = self._live_cover_display_key != new_key
+                self._live_cover_display_key = new_key
+                if key_changed and new_key is not None:
+                    # A genuine track transition permits retrying a cover that
+                    # failed the last time this key was active.
+                    self._live_cover_failures.pop(new_key, None)
     
     @property
     def connected(self) -> bool:
@@ -1030,7 +1058,15 @@ class Mello:
             self._poll_wake_event.clear()
     
     def _refresh_status(self):
-        """Refresh playback status from librespot."""
+        """Refresh playback status from librespot, never concurrently."""
+        lock = getattr(self, '_status_refresh_lock', None)
+        if lock is None:  # Lightweight unit-test instances created via __new__.
+            return self._refresh_status_locked()
+        with lock:
+            return self._refresh_status_locked()
+
+    def _refresh_status_locked(self):
+        """Refresh implementation. Caller owns ``_status_refresh_lock``."""
         raw = self.api.status()
         was_connected = self.connected
         
@@ -1094,6 +1130,7 @@ class Mello:
                 duration=status.duration,
                 repeat_context=status.repeat_context,
             )
+            self._update_live_cover(self.now_playing)
 
             if status.context_uri != old_ctx or status.playing != old_playing:
                 state = 'playing' if status.playing else ('paused' if status.paused else 'stopped')
@@ -1139,6 +1176,148 @@ class Mello:
                 )
                 self._last_status_unknown_log = now
             self._maybe_restart_librespot(now)
+
+    @staticmethod
+    def _live_cover_key_for(now_playing: NowPlaying) -> Optional[tuple]:
+        """Return a stable live-cover identity only when both fields exist."""
+        if not now_playing.track_uri or not now_playing.track_cover:
+            return None
+        return (now_playing.track_uri, now_playing.track_cover)
+
+    @staticmethod
+    def _short_cover_id(key: tuple) -> str:
+        """Return a useful log identifier without exposing the cover URL."""
+        track_uri = key[0] or 'none'
+        return track_uri[-16:]
+
+    def _update_live_cover(self, now_playing: NowPlaying):
+        """Select or asynchronously prepare the cover for a status snapshot."""
+        key = self._live_cover_key_for(now_playing)
+        should_download = False
+        cache_hit = False
+
+        with self._live_cover_lock:
+            self._live_cover_display_key = key
+            if key is None:
+                self._live_cover_pending_key = None
+                return
+
+            if self._live_cover_key == key and self._live_cover_path:
+                self._live_cover_pending_key = None
+                return
+
+            cached_path = self._live_cover_cache.get(key)
+            if cached_path:
+                self._live_cover_cache.move_to_end(key)
+                self._live_cover_path = cached_path
+                self._live_cover_key = key
+                self._live_cover_pending_key = None
+                cache_hit = True
+            elif key in self._live_cover_inflight:
+                self._live_cover_pending_key = key
+                return
+            else:
+                if key in self._live_cover_failures:
+                    return
+                self._live_cover_pending_key = key
+                self._live_cover_inflight.add(key)
+                should_download = True
+
+        cover_id = self._short_cover_id(key)
+        if cache_hit:
+            logger.info(f'LIVE_COVER cache_hit | track={cover_id}')
+            self.renderer.invalidate()
+        elif should_download:
+            logger.info(f'LIVE_COVER requested | track={cover_id}')
+            run_async(self._download_live_cover_async, key)
+
+    def _download_live_cover_async(self, key: tuple):
+        """Download/process a live cover and atomically publish it if current."""
+        cover_id = self._short_cover_id(key)
+        try:
+            local_path = self.catalog_manager.download_temp_image(key[1])
+        except Exception as exc:
+            logger.debug(
+                f'LIVE_COVER download exception | track={cover_id} | error={exc}',
+                exc_info=True,
+            )
+            local_path = None
+        ready = False
+
+        with self._live_cover_lock:
+            current_key = self._live_cover_key_for(self.now_playing)
+            self._live_cover_inflight.discard(key)
+            if local_path:
+                self._live_cover_cache[key] = local_path
+                self._live_cover_cache.move_to_end(key)
+                while len(self._live_cover_cache) > LIVE_COVER_CACHE_SIZE:
+                    self._live_cover_cache.popitem(last=False)
+                self._live_cover_failures.pop(key, None)
+
+                if current_key == key and self._live_cover_display_key == key:
+                    self._live_cover_path = local_path
+                    self._live_cover_key = key
+                    if self._live_cover_pending_key == key:
+                        self._live_cover_pending_key = None
+                    ready = True
+            else:
+                self._live_cover_failures[key] = time.monotonic()
+                self._live_cover_failures.move_to_end(key)
+                while len(self._live_cover_failures) > LIVE_COVER_CACHE_SIZE:
+                    self._live_cover_failures.popitem(last=False)
+                if self._live_cover_pending_key == key:
+                    self._live_cover_pending_key = None
+
+        if not local_path:
+            logger.warning(f'LIVE_COVER download_failed | track={cover_id}')
+        elif ready:
+            logger.info(f'LIVE_COVER ready | track={cover_id} | path={local_path}')
+            self._apply_live_cover_to_temp_item(key, local_path)
+            self.renderer.invalidate()
+        else:
+            logger.info(f'LIVE_COVER stale_ignored | track={cover_id}')
+
+    def _live_cover_for_render(self, now_playing: NowPlaying) -> Optional[str]:
+        """Snapshot the ready cover/fallback path for the current track."""
+        key = self._live_cover_key_for(now_playing)
+        if key is None:
+            return None
+        with self._live_cover_lock:
+            if self._live_cover_display_key != key:
+                return None
+            # During a download or after a transient failure, retain the last
+            # fully processed live cover instead of exposing an empty frame.
+            return self._live_cover_path
+
+    def _ready_live_cover_for(self, now_playing: NowPlaying) -> Optional[str]:
+        """Return a cover only when it was processed for this exact track key."""
+        key = self._live_cover_key_for(now_playing)
+        if key is None:
+            return None
+        with self._live_cover_lock:
+            if self._live_cover_key == key:
+                return self._live_cover_path
+            return self._live_cover_cache.get(key)
+
+    def _apply_live_cover_to_temp_item(self, key: tuple, local_path: str):
+        """Let an unsaved TempItem reuse the live pipeline's completed file."""
+        now_playing = self.now_playing
+        if self._live_cover_key_for(now_playing) != key:
+            return
+        with self._temp_item_lock:
+            if not self.temp_item or self.temp_item.uri != now_playing.context_uri:
+                return
+            self.temp_item = CatalogItem(
+                id=self.temp_item.id,
+                uri=self.temp_item.uri,
+                name=self.temp_item.name,
+                type=self.temp_item.type,
+                artist=self.temp_item.artist,
+                image=local_path,
+                images=self.temp_item.images,
+                current_track=self.temp_item.current_track,
+                is_temp=True,
+            )
 
     def _maybe_restart_librespot(self, now: float):
         """Restart a locally hung Spotify engine after a sustained outage."""
@@ -1243,6 +1422,7 @@ class Mello:
         is_playlist = 'playlist' in context_uri
         collected_covers = self.catalog_manager.get_collected_covers(context_uri) if is_playlist else None
         track_cover = self.now_playing.track_cover
+        ready_live_cover = self._ready_live_cover_for(self.now_playing)
         
         start_download = False
         
@@ -1261,7 +1441,9 @@ class Mello:
                 return
             
             # Only preserve local image if same URI (prevents wrong cover on wrong item)
-            if not uri_changed and self.temp_item.image and self.temp_item.image.startswith('/images/'):
+            if ready_live_cover:
+                local_image = ready_live_cover
+            elif not uri_changed and self.temp_item.image and self.temp_item.image.startswith('/images/'):
                 local_image = self.temp_item.image
             else:
                 local_image = None
@@ -1277,7 +1459,13 @@ class Mello:
                 is_temp=True
             )
             
-            start_download = not local_image and bool(track_cover)
+            # The live-cover pipeline owns this URL and will update TempItem on
+            # completion, avoiding a duplicate download for external contexts.
+            start_download = (
+                not local_image
+                and bool(track_cover)
+                and self._live_cover_key_for(self.now_playing) is None
+            )
         
         self._update_carousel_max_index()
         self.renderer.invalidate()
@@ -2436,6 +2624,7 @@ class Mello:
             # Hide loader as soon as focused context audio is already playing.
             is_loading=self.playback.play_state.is_loading and not (focused_context_playing or recent_focus_commit),
             is_playing=self.playback.play_state.display_playing(np.playing),
+            live_cover_path=self._live_cover_for_render(np),
             pending_focus_uri=self._pending_focus_uri,
             requested_focus_uri=self._requested_focus_uri,
             play_in_progress=self.playback.play_in_progress,

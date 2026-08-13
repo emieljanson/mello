@@ -58,6 +58,7 @@ class Renderer:
         self._carousel_rect = pygame.Rect(CAROUSEL_X - 50, 0, COVER_SIZE + 100, SCREEN_HEIGHT)
         self._last_playing_state: Optional[bool] = None
         self._last_selected_index: Optional[int] = None
+        self._last_live_cover_path: Optional[str] = None
         self._last_toast: Optional[str] = None
         
         # Button hit rectangles (updated during draw)
@@ -149,6 +150,7 @@ class Renderer:
         state_changed = (
             self._last_playing_state != ctx.now_playing.playing or
             self._last_selected_index != ctx.selected_index or
+            self._last_live_cover_path != ctx.live_cover_path or
             self._last_track_key is None or
             self._last_track_key != current_track_key
         )
@@ -160,6 +162,7 @@ class Renderer:
             self._needs_full_redraw = True
             self._last_playing_state = ctx.now_playing.playing
             self._last_selected_index = ctx.selected_index
+            self._last_live_cover_path = ctx.live_cover_path
         
         # Empty state
         if not ctx.items:
@@ -189,7 +192,8 @@ class Renderer:
                 self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
             self._static_layer.blit(self.screen, (0, 0))
             
-            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
+            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
+                                ctx.is_loading, ctx.selected_index, ctx.live_cover_path)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -202,7 +206,8 @@ class Renderer:
             self.screen.blit(self._static_layer, 
                            self._carousel_rect.topleft, 
                            self._carousel_rect)
-            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
+            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
+                                ctx.is_loading, ctx.selected_index, ctx.live_cover_path)
             if ctx.toast_message:
                 self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
@@ -213,7 +218,8 @@ class Renderer:
                 self.screen.blit(self._static_layer,
                                self._carousel_rect.topleft,
                                self._carousel_rect)
-                self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
+                self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id,
+                                    ctx.is_loading, ctx.selected_index, ctx.live_cover_path)
                 return [self._carousel_rect]
             return []
     
@@ -347,7 +353,9 @@ class Renderer:
             self.screen.blit(self._text_cache['artist_surface'], self._text_cache['artist_rect'])
     
     def _draw_carousel(self, items: List[CatalogItem], scroll_x: float, 
-                       now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False):
+                       now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False,
+                       selected_index: Optional[int] = None,
+                       live_cover_path: Optional[str] = None):
         """Draw album cover carousel (portrait mode - covers along Y axis)."""
         # Portrait mode: covers laid out along Y axis (user's horizontal)
         center_y = CAROUSEL_CENTER_Y  # 640
@@ -379,13 +387,16 @@ class Renderer:
             if draw_y + size < 0 or draw_y > SCREEN_HEIGHT:
                 continue
             
-            # All items (albums and playlists) use single image field
-            # Composites for playlists are pre-rendered and stored as single image
+            image_path = self._cover_path_for_item(
+                item, now_playing, item.image, live_cover_path,
+                is_center=is_center, item_index=i, selected_index=selected_index,
+            )
+
             if is_center:
                 if loading:
-                    cover = self.image_cache.get_dimmed(item.image, size)
+                    cover = self.image_cache.get_dimmed(image_path, size)
                 else:
-                    cover = self.image_cache.get(item.image, size)
+                    cover = self.image_cache.get(image_path, size)
                 center_cover_rect = (draw_x, draw_y, size, size)
                 center_item = item
             else:
@@ -403,6 +414,21 @@ class Renderer:
                 self._draw_add_button(center_cover_rect)
             elif delete_mode_id == center_item.id:
                 self._draw_delete_button(center_cover_rect)
+
+    @staticmethod
+    def _cover_path_for_item(item: CatalogItem, now_playing: NowPlaying,
+                             catalog_path: Optional[str], live_cover_path: Optional[str],
+                             is_center: bool, item_index: int,
+                             selected_index: Optional[int]) -> Optional[str]:
+        """Choose live art only for the focused, currently playing context."""
+        if (
+            is_center
+            and item_index == selected_index
+            and item.uri == now_playing.context_uri
+            and live_cover_path
+        ):
+            return live_cover_path
+        return catalog_path
     
     def _draw_cover_progress(self, cover_rect: tuple, item: CatalogItem, now_playing: NowPlaying):
         """Draw progress bar at the edge of the cover (portrait mode - left edge = user's bottom)."""
@@ -910,4 +936,3 @@ class Renderer:
         pygame.draw.rect(self.screen, bg_color, rect, border_radius=18)
         text_surf = self._render_text_rotated(label, self.font_medium, text_color)
         self.screen.blit(text_surf, text_surf.get_rect(center=rect.center))
-
