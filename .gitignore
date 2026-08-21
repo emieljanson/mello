@@ -29,3 +29,7 @@ mello-update.log
 # IDE
 .cursor/
 .vscode/
+
+# Generated browser tooling (not needed in repo)
+.playwright-cli/
+public-site/
