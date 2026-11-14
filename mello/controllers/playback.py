@@ -165,6 +165,7 @@ class PlaybackController:
             now_playing.position,
             now_playing.track_name,
             now_playing.track_artist,
+            now_playing.duration,
         )
 
     def save_progress_on_shutdown(self, now_playing: NowPlaying):
@@ -188,7 +189,8 @@ class PlaybackController:
                 track.get('uri'),
                 track.get('position', 0),
                 track.get('name'),
-                ', '.join(track.get('artist_names', []))
+                ', '.join(track.get('artist_names', [])),
+                track.get('duration', 0),
             )
             logger.info(f'Saved progress on shutdown: {track.get("name")} @ {track.get("position", 0) // 1000}s')
         except Exception as e:
@@ -404,6 +406,7 @@ class PlaybackController:
         position: int,
         track_name: Optional[str],
         track_artist: Optional[str],
+        duration: int = 0,
     ):
         """Save a single coherent playback snapshot (runs in thread pool)."""
         try:
@@ -420,6 +423,7 @@ class PlaybackController:
                 max(0, int(position or 0)),
                 track_name,
                 track_artist,
+                duration,
             )
             self.last_saved_track_uri = track_uri
             logger.info(

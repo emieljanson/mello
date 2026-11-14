@@ -719,8 +719,13 @@ class CatalogManager:
                 item.current_track = entry
 
     def save_progress(self, context_uri: str, track_uri: str,
-                      position: int, track_name: str = None, artist: str = None):
-        """Save playback progress to progress.json."""
+                      position: int, track_name: str = None, artist: str = None,
+                      duration: int = None):
+        """Save playback progress to progress.json.
+
+        `duration` (track length in ms) lets the cover show where the child
+        was before Spotify has loaded anything.
+        """
         if self.mock_mode or not context_uri or not track_uri:
             return
 
@@ -749,6 +754,8 @@ class CatalogManager:
                     'artist': artist,
                     'updatedAt': datetime.now().isoformat()
                 }
+                if duration and duration > 0:
+                    entry['duration'] = int(duration)
                 progress_data[context_uri] = entry
                 self._save_progress_data(progress_data)
 

@@ -196,6 +196,7 @@ class TestProgressSave:
             12000,
             'Track X',
             'Artist X',
+            0,
         )
 
     def test_save_progress_rejects_snapshot_without_track_uri(self):

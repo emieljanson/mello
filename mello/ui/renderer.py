@@ -404,14 +404,29 @@ class Renderer:
             elif delete_mode_id == center_item.id:
                 self._draw_delete_button(center_cover_rect)
     
+    @staticmethod
+    def _cover_progress(item: CatalogItem, now_playing: NowPlaying) -> float:
+        """How far along the focused album's track is, 0.0-1.0.
+
+        Live when Spotify is on this album and knows the position. Otherwise
+        the place saved for it: while an album is still loading (which takes
+        seconds deep into an audiobook) the bar already shows where the child
+        was, next to the saved track title.
+        """
+        if now_playing.context_uri == item.uri and now_playing.progress > 0:
+            return now_playing.progress
+        saved = item.current_track if isinstance(item.current_track, dict) else None
+        if saved:
+            duration = saved.get('duration') or 0
+            if duration > 0:
+                return max(0.0, min(1.0, (saved.get('position') or 0) / duration))
+        return 0.0
+
     def _draw_cover_progress(self, cover_rect: tuple, item: CatalogItem, now_playing: NowPlaying):
         """Draw progress bar at the edge of the cover (portrait mode - left edge = user's bottom)."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
-        
-        if now_playing.context_uri != item.uri:
-            return
-        
-        progress = now_playing.progress
+
+        progress = self._cover_progress(item, now_playing)
         if progress <= 0:
             return
         
