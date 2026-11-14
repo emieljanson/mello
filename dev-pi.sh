@@ -179,7 +179,7 @@ restart_app() {
     else
         echo -e "${RED}Failed to start${NC}"
         ssh $PI_HOST "sudo journalctl -u mello-native -n 10 --no-pager" 2>/dev/null || true
-        ssh $PI_HOST "tail -10 ~/mello/mello.log" 2>/dev/null || true
+        ssh $PI_HOST "tail -10 ~/mello/logs/mello.log" 2>/dev/null || true
     fi
 }
 
@@ -188,7 +188,7 @@ start_logs() {
     kill $LOG_PID 2>/dev/null || true
     sleep 0.2
 
-    ssh $PI_HOST 'tail -f ~/mello/mello.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
+    ssh $PI_HOST 'tail -f ~/mello/logs/mello.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
         if [ "$VERBOSE" = true ]; then
             # Verbose mode: show everything, just add colors
             case "$line" in
@@ -344,7 +344,7 @@ while true; do
             l)
                 echo ""
                 echo -e "${CYAN}━━━ Recent logs ━━━${NC}"
-                ssh $PI_HOST 'tail -20 ~/mello/mello.log' 2>/dev/null
+                ssh $PI_HOST 'tail -20 ~/mello/logs/mello.log' 2>/dev/null
                 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━${NC}"
                 echo ""
                 ;;
