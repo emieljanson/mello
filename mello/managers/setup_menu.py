@@ -14,7 +14,10 @@ import shutil
 
 from pathlib import Path
 
-from ..config import CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH
+from ..config import (
+    CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH,
+    SOLOIST_DATA_DIR, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
+)
 from ..models import MenuState
 
 _REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
@@ -37,6 +40,7 @@ class SetupMenu:
         on_library_cleared: Callable[[], None],
         bluetooth_manager=None,
         on_volume_preview: Optional[Callable[[int, str, int], None]] = None,
+        engine_setup=None,
     ):
         self.catalog_manager = catalog_manager
         self.settings = settings
@@ -45,6 +49,9 @@ class SetupMenu:
         self._on_library_cleared = on_library_cleared
         self.bluetooth = bluetooth_manager
         self._on_volume_preview = on_volume_preview
+        # Key entry page for switching to Spotify Soloist (served only while
+        # the Spotify screen is open).
+        self.engine_setup = engine_setup
 
         self.state = MenuState.CLOSED
         self.scroll_offset: int = 0  # pixels scrolled in current menu screen
@@ -52,6 +59,7 @@ class SetupMenu:
         self.current_network: Optional[str] = None
         self._ssid_to_con_name: dict = {}
         self._wifi_process: Optional[subprocess.Popen] = None
+        self._wifi_ap_attempt = 0
 
         # Reset confirmation state
         self._reset_confirm_pending: bool = False
@@ -90,6 +98,7 @@ class SetupMenu:
             self._wifi_process = None
         if self.bluetooth and self.state == MenuState.BT_LIST:
             self.bluetooth.stop_scan()
+        self._leave_spotify_screen()
         self._reset_confirm_pending = False
         self.state = MenuState.CLOSED
         self.current_network = None
@@ -103,6 +112,7 @@ class SetupMenu:
             if self.state == MenuState.MAIN:
                 self.close()
             elif self.state == MenuState.WIFI_AP:
+                self._leave_spotify_screen()
                 self._restore_wifi_autoconnect()
                 if self._wifi_process:
                     self._kill_wifi_processes()
@@ -115,6 +125,7 @@ class SetupMenu:
                 # All other submenus → back to main
                 if self.state == MenuState.BT_LIST and self.bluetooth:
                     self.bluetooth.stop_scan()
+                self._leave_spotify_screen()
                 self.state = MenuState.MAIN
                 self.scroll_offset = 0
                 self._on_invalidate()
@@ -161,6 +172,8 @@ class SetupMenu:
                 self.state = MenuState.VOLUME_LEVELS
                 self.scroll_offset = 0
                 self._on_invalidate()
+            elif 'spotify' in button_rects and button_rects['spotify'].collidepoint(x, y):
+                self._show_spotify_screen()
             elif 'check_update' in button_rects and button_rects['check_update'].collidepoint(x, y):
                 if self._update_running or self._update_checking:
                     return
@@ -168,6 +181,23 @@ class SetupMenu:
                     self._run_update()
                 else:
                     self._check_for_update()
+
+    def _show_spotify_screen(self):
+        """Show how to reach the key entry page, and serve it meanwhile."""
+        if self.engine_setup:
+            self.engine_setup.start()
+        self.state = MenuState.SPOTIFY
+        self.scroll_offset = 0
+        self._on_invalidate()
+
+    def _leave_spotify_screen(self):
+        """Stop the key page when leaving a screen that serves it."""
+        if self.engine_setup and self.state in (MenuState.SPOTIFY, MenuState.WIFI_AP):
+            self.engine_setup.stop()
+
+    @property
+    def spotify_lines(self) -> list:
+        return self.engine_setup.screen_lines() if self.engine_setup else []
 
     def handle_scroll(self, delta: int, max_overflow: int):
         """Adjust scroll offset by delta, clamped to valid range."""
@@ -201,6 +231,8 @@ class SetupMenu:
                     logger.info('wifi-connect exited (code=0)')
                     self._on_toast('WiFi connected!')
                     self.close()
+                    if self.engine_setup:
+                        self.engine_setup.activate_pending_when_online()
                 else:
                     logger.info(f'wifi-connect exited (code={ret})')
                     self._reconnect_to_known_network()
@@ -272,11 +304,14 @@ class SetupMenu:
         self._on_invalidate()
         self._on_toast("Updating... don't unplug")
         try:
-            self._update_process = subprocess.Popen(
-                ['bash', f'{_REPO_DIR}/pi/auto-update.sh'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
+            # Into the same log the nightly run uses. A pipe nobody reads
+            # fills up (apt, pip) and then the update hangs with its lock held.
+            with open(Path.home() / 'mello-update.log', 'ab') as update_log:
+                self._update_process = subprocess.Popen(
+                    ['bash', f'{_REPO_DIR}/pi/auto-update.sh'],
+                    stdout=update_log,
+                    stderr=subprocess.STDOUT,
+                )
             logger.info('Manual update triggered')
         except Exception as e:
             logger.error(f'Failed to start update: {e}')
@@ -421,6 +456,18 @@ class SetupMenu:
         self.state = MenuState.WIFI_AP
         self.scroll_offset = 0
         self._on_invalidate()
+        # The WiFi setup page offers an optional Soloist key field; it posts
+        # to this page. No internet now, so the key is kept for later.
+        if self.engine_setup:
+            self.engine_setup.start(defer=True)
+
+        self._wifi_ap_attempt += 1
+        attempt = self._wifi_ap_attempt
+
+        def still_wanted() -> bool:
+            # False once the user tapped back (or started over) while this
+            # was still preparing.
+            return self.state == MenuState.WIFI_AP and self._wifi_ap_attempt == attempt
 
         def _prepare_and_launch():
             try:
@@ -431,6 +478,8 @@ class SetupMenu:
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f'WiFi rescan failed: {e}')
+            if not still_wanted():
+                return  # nothing changed yet
             # Disable autoconnect BEFORE disconnect — disconnect fails when
             # wlan0 is already disconnected (exit code 6) and won't suppress
             # autoconnect, letting NM reclaim wlan0 from the AP.
@@ -450,7 +499,18 @@ class SetupMenu:
                 pass
             self._kill_wifi_processes()
             self._delete_stale_ap_profile()
-            self._launch_wifi_connect()
+            if still_wanted():
+                self._launch_wifi_connect()
+            if not still_wanted():
+                # Backed out while WiFi was being taken down: nobody is
+                # watching a hotspot any more, so put the speaker back online
+                # instead of leaving it disconnected with autoconnect off.
+                logger.info('WiFi setup cancelled while starting; restoring the connection')
+                if self._wifi_process:
+                    self._wifi_process = None
+                self._kill_wifi_processes()
+                self._restore_wifi_autoconnect()
+                self._reconnect_to_known_network()
 
         threading.Thread(target=_prepare_and_launch, daemon=True).start()
 
@@ -459,7 +519,8 @@ class SetupMenu:
             self._wifi_process = subprocess.Popen(
                 ['sudo', 'wifi-connect',
                  '--portal-ssid', 'Mello-Setup',
-                 '--ui-directory', '/usr/local/share/wifi-connect/ui'],
+                 # Straight from the code folder, so the page updates with the app.
+                 '--ui-directory', str(Path(_REPO_DIR) / 'portal')],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
@@ -558,6 +619,27 @@ class SetupMenu:
 
         self.close()
 
+    def _clear_soloist_login(self):
+        """Log Soloist out of Spotify.
+
+        Soloist has no logout command and keeps the session inside its data
+        directory, so the daemon is stopped, the directory emptied, and the
+        daemon started again: it comes back waiting for a new owner.
+        """
+        subprocess.run(
+            ['sudo', 'systemctl', 'stop', SPOTIFY_ENGINE_SERVICE],
+            capture_output=True, timeout=15,
+        )
+        try:
+            if SOLOIST_DATA_DIR.exists():
+                shutil.rmtree(SOLOIST_DATA_DIR)
+            logger.info('Spotify credentials cleared')
+        finally:
+            subprocess.run(
+                ['sudo', 'systemctl', 'start', SPOTIFY_ENGINE_SERVICE],
+                capture_output=True, timeout=15,
+            )
+
     def _factory_reset(self):
         """Full factory reset: catalog, settings, Spotify, Bluetooth, WiFi."""
         logger.info('Setup menu: Factory reset')
@@ -574,7 +656,9 @@ class SetupMenu:
 
         # 2. Clear Spotify credentials
         try:
-            if LIBRESPOT_STATE_PATH.exists():
+            if SPOTIFY_ENGINE == 'soloist':
+                self._clear_soloist_login()
+            elif LIBRESPOT_STATE_PATH.exists():
                 state = json.loads(LIBRESPOT_STATE_PATH.read_text())
                 state['credentials'] = {'username': '', 'data': None}
                 LIBRESPOT_STATE_PATH.write_text(json.dumps(state))
@@ -585,7 +669,17 @@ class SetupMenu:
         # 3. Delete settings (auto-pause, volume, BT device memory)
         try:
             if SETTINGS_PATH.exists():
-                SETTINGS_PATH.unlink()
+                # The choice about sharing usage data was made at install and
+                # cannot be made again on the speaker: a reset must not
+                # silently turn an opt-out back into the default (sharing on).
+                try:
+                    opted_out = json.loads(SETTINGS_PATH.read_text()).get('share_usage_data') is False
+                except (ValueError, OSError):
+                    opted_out = False
+                if opted_out:
+                    SETTINGS_PATH.write_text(json.dumps({'share_usage_data': False}))
+                else:
+                    SETTINGS_PATH.unlink()
                 logger.info('Settings deleted')
         except Exception as e:
             logger.error(f'Failed to delete settings: {e}')

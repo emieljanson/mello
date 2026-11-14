@@ -682,6 +682,10 @@ class Renderer:
                 ('spacer',),
                 ('text', '3. Enter the password'),
             ]
+        elif ctx.menu_state == MenuState.SPOTIFY:
+            title = 'Spotify'
+            nav_icon = 'back'
+            items = [('text', line) if line else ('spacer',) for line in ctx.menu_spotify_lines]
         elif ctx.menu_state == MenuState.BT_LIST:
             title = 'Bluetooth'
             nav_icon = 'back'
@@ -728,6 +732,7 @@ class Renderer:
             ('button', 'wifi', 'WiFi', COLORS['bg_elevated']),
             ('button', 'bluetooth', 'Bluetooth', COLORS['bg_elevated']),
             ('button', 'volume', 'Volume levels', COLORS['bg_elevated']),
+            ('button', 'spotify', 'Spotify', COLORS['bg_elevated']),
             ('separator',),
             ('button', 'auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
             ('button', 'progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, 
-    LIBRESPOT_URL, MOCK_MODE, FULLSCREEN,
+    LIBRESPOT_URL, SOLOIST_WS, SPOTIFY_ENGINE, MOCK_MODE, FULLSCREEN,
     LOG_DIR, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
 )
 from .app import Mello
@@ -148,7 +148,8 @@ def main():
     if MOCK_MODE:
         logger.info('Mode: MOCK (UI testing)')
     else:
-        logger.info(f'Librespot: {LIBRESPOT_URL}')
+        engine_url = SOLOIST_WS if SPOTIFY_ENGINE == 'soloist' else LIBRESPOT_URL
+        logger.info(f'Spotify engine: {SPOTIFY_ENGINE} ({engine_url})')
     logger.info(f'Screen: {SCREEN_WIDTH}x{SCREEN_HEIGHT}')
     logger.info(f'Fullscreen: {FULLSCREEN}')
     

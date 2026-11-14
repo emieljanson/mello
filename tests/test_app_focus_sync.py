@@ -82,7 +82,7 @@ def playback_app(monkeypatch):
     app = _make_mello(items, NowPlaying())
     app.mock_mode = False
     app._startup_ready = True
-    app._last_status_ok_at = app._last_title_diag_log = 0.0
+    app._last_status_ok_at = 0.0
     app._status_failure_started_at = app._last_status_unknown_log = 0.0
     app._last_snap_pause_at = 0.0
     app._connection_fail_count = 0

@@ -143,6 +143,8 @@ class PlaybackController:
             self._play_generation += 1
             self._pending_play = None
             self._playing_uri = None
+        # An engine may still be working its way to the saved track.
+        self.api.abort_play()
         self.play_state.clear()
 
     def save_progress(self, now_playing: NowPlaying, force: bool = False):
@@ -273,6 +275,10 @@ class PlaybackController:
                     logger.info('  No saved progress found')
 
             need_seek = saved_progress and saved_progress.get('position', 0) > 0
+            # Stay quiet until our own content is at the right spot: an engine
+            # may first take over what another device was playing, and not
+            # every engine can start silently in the middle of an album.
+            self.volume.mute()
 
             result = False
             max_attempts = 2
@@ -315,12 +321,11 @@ class PlaybackController:
 
             if _stale():
                 return
-            self._enable_repeat_context_if_needed(uri, 'play_success')
-            if _stale():
-                return
+            # Sound first; looping the album can follow a moment later.
             self.volume.unmute()
             self.play_state.stop_loading()
             self._on_play_committed(uri, epoch)
+            self._enable_repeat_context_if_needed(uri, 'play_success')
         finally:
             with self._play_lock:
                 pending = self._pending_play

@@ -154,6 +154,13 @@ fi
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse origin/main)
 
+# Speakers on Spotify Soloist: its binary stops working 90 days after it was
+# built, so renew it in time. Runs every night, also when Mello itself has no
+# update. A no-op for speakers on go-librespot.
+if [ -f pi/soloist/soloist-setup.sh ]; then
+  bash pi/soloist/soloist-setup.sh refresh || log "Soloist renewal failed, will retry next run"
+fi
+
 if [ "$LOCAL" = "$REMOTE" ]; then
   exit 0  # No updates
 fi
@@ -257,11 +264,16 @@ sudo systemctl daemon-reload
 # 5. Restart services
 # ============================================
 log "Restarting services"
-sudo systemctl restart mello-librespot mello-native
+# Exactly one Spotify engine runs per speaker (see pi/soloist/soloist-setup.sh).
+ENGINE_SERVICE=mello-librespot
+if grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' "$CODE_DIR/.env" 2>/dev/null; then
+  ENGINE_SERVICE=mello-soloist
+fi
+sudo systemctl restart "$ENGINE_SERVICE" mello-native
 
 # Basic post-update health check to catch hard failures quickly.
 sleep 2
-if ! systemctl is-active --quiet mello-librespot || ! systemctl is-active --quiet mello-native; then
+if ! systemctl is-active --quiet "$ENGINE_SERVICE" || ! systemctl is-active --quiet mello-native; then
   log "ERROR: service health check failed after restart"
   exit 1
 fi

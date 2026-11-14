@@ -18,8 +18,9 @@ select{width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:10px
 select:focus{border-color:#bd65fc}
 .select-wrap::after{content:"";position:absolute;right:14px;top:50%;transform:translateY(-50%);width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #666;pointer-events:none}
 
-input[type=password]{width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:10px;padding:13px 14px;font-size:15px;color:#fff;outline:none;-webkit-appearance:none;transition:border-color .15s}
-input[type=password]:focus{border-color:#bd65fc}
+input[type=password],input[type=text]{width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:10px;padding:13px 14px;font-size:15px;color:#fff;outline:none;-webkit-appearance:none;transition:border-color .15s}
+input[type=password]:focus,input[type=text]:focus{border-color:#bd65fc}
+.hint{font-size:12px;color:#666;margin:-14px 0 24px;line-height:1.4}
 input::placeholder{color:#444}
 .field{margin-bottom:24px;display:none}
 .field.show{display:block}
@@ -100,6 +101,26 @@ button:disabled{opacity:.25;cursor:default}
     pwField.appendChild(pwLabel);
     pwField.appendChild(pwInput);
 
+    // Optional: the owner's Spotify Soloist API key. Mello keeps it and
+    // switches to Soloist once it is online (see mello/managers/engine_setup.py).
+    var keyField = document.createElement('div');
+    keyField.className = 'field show';
+    var keyLabel = document.createElement('label');
+    keyLabel.textContent = 'Spotify Soloist key (optional)';
+    var keyInput = document.createElement('input');
+    keyInput.id = 'soloist-key';
+    keyInput.type = 'text';
+    keyInput.placeholder = 'Leave empty to skip';
+    keyInput.autocomplete = 'off';
+    keyInput.autocorrect = 'off';
+    keyInput.autocapitalize = 'off';
+    keyInput.spellcheck = false;
+    keyField.appendChild(keyLabel);
+    keyField.appendChild(keyInput);
+    var keyHint = document.createElement('p');
+    keyHint.className = 'hint';
+    keyHint.textContent = 'Only if you have your own key from developer.spotify.com. You can also add it later in Settings > Spotify.';
+
     var btn = document.createElement('button');
     btn.id = 'go';
     btn.textContent = 'Connect';
@@ -108,7 +129,7 @@ button:disabled{opacity:.25;cursor:default}
     st.className = 'status';
     st.id = 'st';
 
-    app.replaceChildren(label, wrap, pwField, btn, st);
+    app.replaceChildren(label, wrap, pwField, keyField, keyHint, btn, st);
 
     function updatePw(){
       var n = nets.find(function(x){ return x.ssid === sel.value });
@@ -131,10 +152,27 @@ button:disabled{opacity:.25;cursor:default}
     st.className = 'status show wait';
     st.textContent = 'Connecting...';
 
-    fetch('/connect',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ssid:ssid, identity:'', passphrase: pw ? pw.value : ''})
+    // The key goes to Mello itself (port 8080 on this same speaker) before
+    // the WiFi details go to the WiFi setup: after that this page loses its
+    // connection. A failure here must never stand in the way of WiFi.
+    var keyInput = document.getElementById('soloist-key');
+    var key = keyInput ? keyInput.value.trim() : '';
+    var keySaved = !key ? Promise.resolve() : Promise.race([
+      fetch('http://' + location.hostname + ':8080/key', {
+        method:'POST',
+        mode:'no-cors',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'key=' + encodeURIComponent(key)
+      }),
+      new Promise(function(done){ setTimeout(done, 4000) })
+    ]).catch(function(){});
+
+    keySaved.then(function(){
+      return fetch('/connect',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ssid:ssid, identity:'', passphrase: pw ? pw.value : ''})
+      });
     }).then(function(r){
       if(r.status !== 200) throw new Error(r.statusText);
       st.className = 'status show wait';

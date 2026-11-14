@@ -30,6 +30,7 @@ class RenderContext:
     menu_state: MenuState = MenuState.CLOSED
     menu_known_networks: List[str] = field(default_factory=list)
     menu_current_network: Optional[str] = None
+    menu_spotify_lines: List[str] = field(default_factory=list)
     auto_pause_minutes: int = 30
     progress_expiry_hours: int = 96
     app_version_label: str = ''
