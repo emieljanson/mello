@@ -768,6 +768,11 @@ class Renderer:
                 self._draw_qr(item[1], x)
                 x -= self._MENU_QR_SIZE + 12
 
+        if ctx.menu_spotify_switching:
+            # Nothing to close: the speaker restarts on the new engine by itself.
+            self._needs_full_redraw = True
+            return
+
         # Hold-to-close pill, sized to its text like the empty state's button.
         label = self._render_text_rotated('Hold to close', self.font_medium, COLORS['text_primary'])
         label_rect = label.get_rect(center=(x - 34, center_y))

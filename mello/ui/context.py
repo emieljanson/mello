@@ -33,6 +33,7 @@ class RenderContext:
     menu_spotify_items: List[tuple] = field(default_factory=list)
     menu_spotify_prompt: bool = False        # opened by itself: hold to close, no close button
     menu_prompt_hold_progress: float = 0.0
+    menu_spotify_switching: bool = False     # the speaker is changing engines right now
     auto_pause_minutes: int = 30
     progress_expiry_hours: int = 96
     app_version_label: str = ''

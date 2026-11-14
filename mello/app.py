@@ -2309,6 +2309,7 @@ class Mello:
             menu_spotify_items=self.setup_menu.spotify_items,
             menu_spotify_prompt=self.setup_menu.spotify_prompt_active,
             menu_prompt_hold_progress=self.setup_menu.prompt_hold_progress,
+            menu_spotify_switching=self.setup_menu.spotify_switching,
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
             app_version_label=self.app_version_label,

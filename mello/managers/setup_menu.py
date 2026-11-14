@@ -122,7 +122,7 @@ class SetupMenu:
     def handle_press(self, pos, button_rects: dict):
         """A finger went down while the menu is open."""
         rect = button_rects.get('prompt_close')
-        if self.spotify_prompt_active and rect and rect.collidepoint(*pos):
+        if self.spotify_prompt_active and not self.spotify_switching and rect and rect.collidepoint(*pos):
             self._prompt_hold_start = time.time()
             self._spotify_prompt_since = self._prompt_hold_start   # touched: not unattended
             self._on_invalidate()   # the button lights up at once
@@ -231,6 +231,10 @@ class SetupMenu:
     def _leave_spotify_screen(self):
         if self.engine_setup and self.state == MenuState.SPOTIFY:
             self.engine_setup.stop()
+
+    @property
+    def spotify_switching(self) -> bool:
+        return bool(self.engine_setup) and self.engine_setup.state == 'switching'
 
     @property
     def spotify_items(self) -> list:
