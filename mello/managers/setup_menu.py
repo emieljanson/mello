@@ -19,6 +19,12 @@ from ..config import (
     SOLOIST_DATA_DIR, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
 )
 from ..models import MenuState
+from .engine_setup import (
+    PROMPT_BUTTON_LAST, PROMPT_BUTTON_LATER,
+    PROMPT_TITLE_NEW_OWNER, PROMPT_TITLE_UPDATE,
+    SETTINGS_CONNECTED_LINES, SETTINGS_OFFER_LINES, SETUP_LINES,
+    lan_address,
+)
 
 _REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
@@ -69,6 +75,9 @@ class SetupMenu:
         self._ssid_to_con_name: dict = {}
         self._wifi_process: Optional[subprocess.Popen] = None
         self._wifi_ap_attempt = 0
+        # The home screen itself is asking to connect Spotify (new Mello).
+        self._home_page = False
+        self._home_page_retry_at = 0.0
 
         # Reset confirmation state
         self._reset_confirm_pending: bool = False
@@ -223,14 +232,49 @@ class SetupMenu:
     def _show_spotify_screen(self):
         """Show how to reach the key entry page, and serve it meanwhile."""
         if self.engine_setup:
+            self._tell_page_who_is_asking()
             self.engine_setup.start()
         self.state = MenuState.SPOTIFY
         self.scroll_offset = 0
         self._on_invalidate()
 
     def _leave_spotify_screen(self):
-        if self.engine_setup and self.state == MenuState.SPOTIFY:
+        if self.engine_setup and self.state == MenuState.SPOTIFY and not self._home_page:
             self.engine_setup.stop()
+
+    def _tell_page_who_is_asking(self):
+        """The phone page words itself for a new Mello or for one that was updated."""
+        if self.settings:
+            self.engine_setup.new_owner = self.settings.soloist_new_owner
+            self.engine_setup.setup_step = self._spotify_is_setup_step
+
+    def home_connect_spotify(self, has_network: bool, library_empty: bool) -> bool:
+        """Whether the home screen itself should ask to connect Spotify.
+
+        A new Mello that is online and has nothing saved yet shows it right
+        where "Play to Mello via Spotify" would be: no menu, nothing to tap
+        away. The phone page exists for as long as the home screen asks.
+        Playing to Mello anyway (the old player still works) leaves it.
+        """
+        if not self.engine_setup or not self.settings:
+            return False
+        # Once a code is in, the screen stays ("One moment...") until the
+        # speaker restarts on the new player, whatever else changes.
+        switching = self._home_page and self.engine_setup.state == 'switching'
+        want = bool(switching or (
+            has_network and library_empty
+            and self.settings.soloist_setup_step_open and self.engine_setup.can_offer_soloist()
+        ))
+        if want and not self.engine_setup.running:
+            now = time.time()
+            if now >= self._home_page_retry_at:
+                self._tell_page_who_is_asking()
+                if not self.engine_setup.start():
+                    self._home_page_retry_at = now + 30      # port taken: not every frame
+        elif not want and self._home_page and self.state != MenuState.SPOTIFY:
+            self.engine_setup.stop(wait=False)               # called while drawing
+        self._home_page = want
+        return want
 
     @property
     def spotify_switching(self) -> bool:
@@ -238,29 +282,86 @@ class SetupMenu:
 
     @property
     def spotify_items(self) -> list:
-        return self.engine_setup.screen_items() if self.engine_setup else []
+        if not self.engine_setup:
+            return []
+        if (self.spotify_prompt_active or self._home_page) and not self.spotify_switching and not self.engine_setup.url:
+            # Seconds after WiFi came up: Mello has no address to point at yet.
+            return [('text', 'One moment...')]
+        return self.engine_setup.screen_items()
+
+    @property
+    def _spotify_is_setup_step(self) -> bool:
+        return bool(self.settings) and self.settings.soloist_setup_step_open
 
     def show_spotify_prompt(self) -> bool:
-        """Open the Spotify screen by itself to say Soloist is available.
+        """Open the "a faster Mello" offer by itself.
 
-        It has no close button: it goes away when a key is entered (the
-        speaker switches and restarts) or when someone holds "Hold to close"
-        for a few seconds, so a child does not tap it away before a parent
-        has seen it. Until then it comes back each time the speaker is woken.
+        For a Mello that got Spotify's own player through an update, or a new
+        one whose owner started using it without connecting Spotify. (A new
+        Mello is asked on its home screen instead, see home_connect_spotify.)
 
-        Returns False when there is nothing to offer (already switched, no
-        Soloist build for this speaker, or it was closed on purpose before).
+        It has no close button: it goes away when a code is entered (the
+        speaker switches and restarts) or when someone holds its button for a
+        few seconds, so a child does not tap it away before a parent has seen
+        it. Held away, it is back a few days later; the last time the button
+        says so, and after that it only lives in Settings.
+
+        Returns False when there is nothing to offer now.
         """
         if self.is_open or not self.engine_setup or not self.settings:
             return False
-        if not self.settings.soloist_prompt_due or not self.engine_setup.can_offer_soloist():
+        if not self.engine_setup.can_offer_soloist():
             return False
-        logger.info('Setup menu: showing the Spotify Soloist prompt')
+        if self._spotify_is_setup_step:
+            if self.catalog_manager and self.catalog_manager.items:
+                # Saved an album without connecting Spotify: setting up is
+                # over, the offer follows in a few days.
+                logger.info('Setup menu: new Mello is in use without Spotify connected, offer follows later')
+                self.settings.postpone_soloist_prompt()
+            return False
+        if not self.settings.soloist_prompt_due or not lan_address():
+            return False                 # (offline: the phone could not reach the page)
+        logger.info('Setup menu: showing the faster-Mello offer')
         self.spotify_prompt_active = True
         self._prompt_hold_start = None
         self._spotify_prompt_since = time.time()
         self._show_spotify_screen()
         return True
+
+    # What the three connect-Spotify screens say.
+
+    @property
+    def home_lines(self) -> tuple:
+        """Under the logo on a new Mello's home screen, above the code."""
+        return SETUP_LINES
+
+    @property
+    def spotify_menu_items(self) -> list:
+        """Settings > Spotify: two grey lines and the code, like the WiFi screen."""
+        if not self.engine_setup or self.state != MenuState.SPOTIFY:
+            return []
+        items = self.spotify_items
+        if self.spotify_switching or not self.engine_setup.url:
+            return items
+        if self.engine_setup.engine == 'soloist':
+            lines = SETTINGS_CONNECTED_LINES
+        elif self._spotify_is_setup_step:
+            lines = SETUP_LINES
+        else:
+            lines = SETTINGS_OFFER_LINES
+        return [('text', line) for line in lines] + [('spacer',)] + items
+
+    # The self-opened "a faster Mello" offer.
+
+    @property
+    def prompt_title(self) -> str:
+        new_owner = bool(self.settings) and self.settings.soloist_new_owner
+        return PROMPT_TITLE_NEW_OWNER if new_owner else PROMPT_TITLE_UPDATE
+
+    @property
+    def prompt_button(self) -> str:
+        last = bool(self.settings) and self.settings.soloist_prompt_is_last
+        return PROMPT_BUTTON_LAST if last else PROMPT_BUTTON_LATER
 
     def handle_scroll(self, delta: int, max_overflow: int):
         """Adjust scroll offset by delta, clamped to valid range."""
@@ -272,16 +373,20 @@ class SetupMenu:
         if self.spotify_prompt_active:
             if self._prompt_hold_start is not None:
                 if self.prompt_hold_progress >= 1.0:
-                    logger.info('Setup menu: Spotify Soloist prompt closed by holding')
-                    self.settings.finish_soloist_prompt()
+                    logger.info('Setup menu: faster-Mello offer held away')
+                    self.settings.postpone_soloist_prompt()
                     self.close()
                 else:
                     self._on_invalidate()   # keep the button filling up
-            elif time.time() - self._spotify_prompt_since > _SPOTIFY_PROMPT_TIMEOUT:
+            elif (time.time() - max(self._spotify_prompt_since, self.engine_setup.last_request)
+                  > _SPOTIFY_PROMPT_TIMEOUT):
                 # An open menu keeps the screen awake, so it steps aside when
-                # nobody is there. It is back the next time the speaker wakes.
-                logger.info('Setup menu: Spotify Soloist prompt put away (unattended)')
+                # nobody is there (a phone that has the page open counts as
+                # somebody). It is back the next time the speaker wakes.
+                logger.info('Setup menu: faster-Mello offer put away (unattended)')
                 self.close()
+            elif not self.engine_setup.url:
+                self._on_invalidate()       # waiting for an address: the code appears by itself
 
         # Auto-clear reset confirmation after 4 seconds
         if self._reset_confirm_pending and time.time() - self._reset_confirm_time > 4:
@@ -308,12 +413,6 @@ class SetupMenu:
                     logger.info('wifi-connect exited (code=0)')
                     self._on_toast('WiFi connected!')
                     self.close()
-                    # Whoever just set up WiFi is standing at the speaker with
-                    # a phone that is back on the home network: the moment to
-                    # offer Soloist. (Not on the WiFi page itself: that opens
-                    # in a temporary browser without internet, so the owner
-                    # could not fetch a key from Spotify and come back.)
-                    self.show_spotify_prompt()
                 else:
                     logger.info(f'wifi-connect exited (code={ret})')
                     self._reconnect_to_known_network()

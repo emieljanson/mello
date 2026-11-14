@@ -14,7 +14,7 @@ import pygame
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
     LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE,
-    SOLOIST_HOME, ENGINE_SETUP_PORT,
+    SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
@@ -29,7 +29,7 @@ from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
 from .api import LibrespotAPI, NullLibrespotAPI, SoloistAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
-from .managers.engine_setup import EngineSetup
+from .managers.engine_setup import EngineSetup, PROMPT_BENEFITS, PROMPT_SCAN_HINT
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label, set_system_volume
@@ -399,6 +399,12 @@ class Mello:
                 on_change=lambda: self.renderer.invalidate(),
             ),
         )
+        self._pairing_known = True
+        self._pairing_checked_at = 0.0
+        # A Mello that starts with nothing saved was just set up: it gets the
+        # "faster Mello" offer later, not as something new in an update.
+        if not self.mock_mode and not self.catalog_manager.items:
+            self.settings.mark_new_owner()
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
         self._menu_hold_triggered = False
@@ -1809,6 +1815,30 @@ class Mello:
         if 'touch' in reason and not self.now_playing.playing:
             self.setup_menu.show_spotify_prompt()
 
+    def _spotify_needs_pairing(self) -> bool:
+        """Whether the new player is on but Mello was never chosen in Spotify.
+
+        Right after switching, Spotify's player knows no account yet: someone
+        has to pick Mello once in the Spotify app. Until then nothing saved
+        can play, so the screen says what to do instead of showing covers.
+        (After that the login is kept; a Mello that is merely still logging
+        in after a restart is not "unpaired".)
+        """
+        if SPOTIFY_ENGINE != 'soloist' or self.mock_mode:
+            return False
+        if getattr(self.api, 'logged_in', False):
+            self._pairing_known = True
+            return False
+        now = time.time()
+        if now - self._pairing_checked_at > 2.0:
+            self._pairing_checked_at = now
+            users = SOLOIST_DATA_DIR / 'cache' / 'Users'
+            try:
+                self._pairing_known = any(users.iterdir())
+            except OSError:
+                self._pairing_known = False
+        return not self._pairing_known
+
     def _log_sleep_wait_if_due(self):
         """Log periodic sleeping heartbeat so black-screen reports have context."""
         now = time.time()
@@ -2285,6 +2315,10 @@ class Mello:
         # Snapshot BT state once to avoid race with monitor thread
         bt_dev = self.bluetooth.connected_device
 
+        # First: this starts the phone page the screen's code points at.
+        home_connect_spotify = self.setup_menu.home_connect_spotify(
+            self._get_cached_network_status(), not items)
+
         ctx = RenderContext(
             items=items,
             selected_index=self.selected_index,
@@ -2309,6 +2343,14 @@ class Mello:
             menu_spotify_items=self.setup_menu.spotify_items,
             menu_spotify_prompt=self.setup_menu.spotify_prompt_active,
             menu_prompt_hold_progress=self.setup_menu.prompt_hold_progress,
+            menu_prompt_title=self.setup_menu.prompt_title,
+            menu_prompt_benefits=PROMPT_BENEFITS,
+            menu_prompt_button=self.setup_menu.prompt_button,
+            menu_prompt_hint=PROMPT_SCAN_HINT,
+            menu_spotify_menu_items=self.setup_menu.spotify_menu_items,
+            home_lines=self.setup_menu.home_lines,
+            spotify_needs_pairing=self._spotify_needs_pairing(),
+            home_connect_spotify=home_connect_spotify,
             menu_spotify_switching=self.setup_menu.spotify_switching,
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,

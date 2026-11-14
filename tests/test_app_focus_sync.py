@@ -494,3 +494,28 @@ class TestPausedSameFocusContext:
             NowPlaying(playing=False, paused=True, stopped=False, context_uri='spotify:album:b'),
         )
         assert app._is_paused_same_focus_context(items[0]) is False
+
+
+def test_new_player_that_was_never_chosen_in_spotify_is_noticed(tmp_path, monkeypatch):
+    # Right after switching, Spotify's player knows no account until someone
+    # plays to Mello once. A restart after that must not look "unpaired".
+    import mello.app as app_module
+    monkeypatch.setattr(app_module, 'SPOTIFY_ENGINE', 'soloist')
+    monkeypatch.setattr(app_module, 'SOLOIST_DATA_DIR', tmp_path)
+    app = SimpleNamespace(mock_mode=False, api=SimpleNamespace(logged_in=False),
+                          _pairing_known=True, _pairing_checked_at=0.0)
+
+    assert Mello._spotify_needs_pairing(app) is True         # no saved login at all
+
+    users = tmp_path / 'cache' / 'Users'
+    users.mkdir(parents=True)
+    (users / 'someone').mkdir()
+    app._pairing_checked_at = 0.0
+    assert Mello._spotify_needs_pairing(app) is False        # still logging in after a restart
+
+    app.api.logged_in = True
+    assert Mello._spotify_needs_pairing(app) is False
+
+    monkeypatch.setattr(app_module, 'SPOTIFY_ENGINE', 'librespot')
+    app.api.logged_in = False
+    assert Mello._spotify_needs_pairing(app) is False        # the old player has no such step

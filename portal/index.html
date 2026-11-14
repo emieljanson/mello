@@ -138,7 +138,7 @@ button:disabled{opacity:.25;cursor:default}
     }).then(function(r){
       if(r.status !== 200) throw new Error(r.statusText);
       st.className = 'status show wait';
-      st.textContent = 'Connection attempt in progress. If it fails, Mello-Setup will reappear.';
+      st.textContent = 'Mello is connecting. Look at your Mello for the next step. If it did not work, Mello-Setup shows up again.';
       btn.textContent = 'Connecting...';
       btn.disabled = true;
     }).catch(function(e){

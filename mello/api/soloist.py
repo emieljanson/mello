@@ -437,6 +437,12 @@ class SoloistAPI:
             position += max(0.0, elapsed_ms) * speed
         return int(position)
 
+    @property
+    def logged_in(self) -> bool:
+        """Whether Soloist is logged in to a Spotify account."""
+        with self._state_lock:
+            return self._logged_in
+
     def is_connected(self) -> bool:
         """Whether the daemon is reachable (it may or may not be logged in)."""
         with self._state_lock:

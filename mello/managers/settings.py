@@ -2,6 +2,7 @@
 Settings Manager - Persistent user-configurable values stored in settings.json.
 """
 import json
+import time
 import logging
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,11 @@ AUTO_PAUSE_OPTIONS = [15, 30, 60, 120]  # minutes
 PROGRESS_EXPIRY_OPTIONS = [12, 24, 48, 96]  # hours
 
 
+# The "faster Mello" offer is made this many times, this far apart.
+SOLOIST_PROMPT_TRIES = 3
+SOLOIST_PROMPT_GAP_DAYS = 3
+
+
 class Settings:
     """Loads/saves user-configurable values from settings.json."""
 
@@ -29,9 +35,12 @@ class Settings:
         self._last_bt_device_mac: Optional[str] = None
         self._volume_overrides: Optional[list] = None  # None = use defaults
         self._share_usage_data: bool = True  # Set once during install, not changeable via UI
-        # "You can switch to Spotify Soloist" prompt: closed by someone
-        # holding its button (it is not shown again after that).
-        self._soloist_prompt_done: bool = False
+        # Connecting Spotify's own player: how often someone held the question
+        # away, the moment before which it stays away, and whether this Mello
+        # was set up new (then it is a step of setting up, not an update).
+        self._soloist_prompt_declined: int = 0
+        self._soloist_prompt_after: float = 0.0
+        self._soloist_new_owner: bool = False
         self._load()
 
     def _load(self):
@@ -44,9 +53,13 @@ class Settings:
                 self._volume_overrides = data.get('volume_levels')
                 if 'share_usage_data' in data:
                     self._share_usage_data = bool(data['share_usage_data'])
-                self._soloist_prompt_done = bool(data.get('soloist_prompt_done', False))
+                # Older versions stored one "closed on purpose" flag: never ask again.
+                closed_before = SOLOIST_PROMPT_TRIES if data.get('soloist_prompt_done') else 0
+                self._soloist_prompt_declined = int(data.get('soloist_prompt_declined', closed_before))
+                self._soloist_prompt_after = float(data.get('soloist_prompt_after', 0.0))
+                self._soloist_new_owner = bool(data.get('soloist_new_owner', False))
                 logger.info(f'Settings loaded: auto_pause={self._auto_pause_minutes}min, expiry={self._progress_expiry_hours}h')
-        except (json.JSONDecodeError, IOError, OSError) as e:
+        except (json.JSONDecodeError, IOError, OSError, ValueError, TypeError, AttributeError) as e:
             logger.warning(f'Could not load settings, using defaults: {e}')
 
     def _save(self):
@@ -57,7 +70,9 @@ class Settings:
                 'progress_expiry_hours': self._progress_expiry_hours,
                 'last_bt_device_mac': self._last_bt_device_mac,
                 'share_usage_data': self._share_usage_data,
-                'soloist_prompt_done': self._soloist_prompt_done,
+                'soloist_prompt_declined': self._soloist_prompt_declined,
+                'soloist_prompt_after': self._soloist_prompt_after,
+                'soloist_new_owner': self._soloist_new_owner,
             }
             if self._volume_overrides is not None:
                 data['volume_levels'] = self._volume_overrides
@@ -71,17 +86,40 @@ class Settings:
     def share_usage_data(self) -> bool:
         return self._share_usage_data
 
-    # --- "Switch to Spotify Soloist" prompt ---
+    # --- "A faster Mello" offer ---
 
     @property
     def soloist_prompt_due(self) -> bool:
-        """True until someone closed the prompt on purpose."""
-        return not self._soloist_prompt_done
+        """Whether the offer may be shown now."""
+        return (self._soloist_prompt_declined < SOLOIST_PROMPT_TRIES
+                and time.time() >= self._soloist_prompt_after)
 
-    def finish_soloist_prompt(self):
-        if not self._soloist_prompt_done:
-            self._soloist_prompt_done = True
+    @property
+    def soloist_prompt_is_last(self) -> bool:
+        """The offer is on its final try: holding it away now ends it for good."""
+        return self._soloist_prompt_declined == SOLOIST_PROMPT_TRIES - 1
+
+    @property
+    def soloist_new_owner(self) -> bool:
+        """This Mello was set up new (it is not told about "an update")."""
+        return self._soloist_new_owner
+
+    @property
+    def soloist_setup_step_open(self) -> bool:
+        """A new Mello that has not connected Spotify yet, nor skipped that step."""
+        return self._soloist_new_owner and self._soloist_prompt_declined == 0
+
+    def mark_new_owner(self):
+        """This Mello starts with an empty library: it was just set up."""
+        if not self._soloist_new_owner and self._soloist_prompt_declined == 0 and self._soloist_prompt_after == 0.0:
+            self._soloist_new_owner = True
             self._save()
+
+    def postpone_soloist_prompt(self):
+        """Someone held the offer (or the setup step) away: back in a few days."""
+        self._soloist_prompt_declined += 1
+        self._soloist_prompt_after = time.time() + SOLOIST_PROMPT_GAP_DAYS * 86400
+        self._save()
 
     # --- Auto-pause ---
 
