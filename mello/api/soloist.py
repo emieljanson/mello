@@ -129,6 +129,7 @@ class SoloistAPI:
         self._context: Optional[dict] = None
         self._position: Optional[dict] = None
         self._volume: Optional[int] = None
+        self._volume_reset_at = 0.0
         self._repeat = 'off'
 
         # Soloist answers a command with a command_result naming the command,
@@ -289,12 +290,33 @@ class SoloistAPI:
             became_inactive = was_active and not self._is_active
             self._state_changed.notify_all()
 
+        self._keep_spotify_volume_full()
         if became_inactive:
             logger.info('Soloist is no longer the active Spotify device')
             if self.on_inactive:
                 self.on_inactive()
         if self.on_update:
             self.on_update()
+
+    def _keep_spotify_volume_full(self):
+        """Undo a volume change made in the Spotify app.
+
+        Mello sets the loudness with the speaker itself; Spotify's own volume
+        has to stay at 100 or everything gets quieter on top of that. With
+        go-librespot a setting (external_volume) made the slider in the
+        Spotify app do nothing. Soloist has no such setting and turns the
+        music down itself, so put it back whenever it moves.
+        """
+        with self._state_lock:
+            volume, active = self._volume, self._is_active
+            now = time.monotonic()
+            # Only this speaker's own volume, and not in a tight loop if
+            # Soloist were ever to refuse.
+            if not active or volume is None or volume == 100 or now - self._volume_reset_at < 1.0:
+                return
+            self._volume_reset_at = now
+        logger.info(f'Spotify volume was moved to {volume}%, setting it back to 100%')
+        self._send('set_volume', volume=100)
 
     def _send(self, command: str, **fields) -> bool:
         """Send a command without waiting for its answer."""

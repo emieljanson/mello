@@ -42,7 +42,7 @@ def playback_state(status='playing', position_ms=45000, speed=1.0, is_active=Tru
         'item': TRACK,
         'context': entity('spotify:album:a1', 'Album Name'),
         'position': {'position_ms': position_ms, 'timestamp_ms': time.time() * 1000, 'speed': speed},
-        'volume': 65,
+        'volume': 100,
         'is_active': is_active,
         'options': {'shuffle': False, 'repeat': repeat},
     }
@@ -104,7 +104,7 @@ def test_status_maps_playing_track_to_librespot_shape():
     assert status.track_cover == 'https://img/large'
     assert status.position == 45000
     assert status.duration == 210000
-    assert status.volume == 65
+    assert status.volume == 100
     assert api.context_uri == 'spotify:album:a1'
 
 
@@ -140,13 +140,45 @@ def test_granular_events_update_cached_state():
     api._handle_event(playback_state())
 
     api._handle_event({'type': 'playback_changed', 'status': 'paused'})
-    api._handle_event({'type': 'volume_changed', 'volume': 42})
     api._handle_event({'type': 'options_changed', 'options': {'repeat': 'context'}})
 
     status = api.status()
     assert status['paused'] is True
-    assert status['volume'] == 42
     assert status['repeat_context'] is True
+
+
+def test_volume_changed_in_the_spotify_app_is_put_back_to_100():
+    # Mello sets the loudness with the speaker itself. Seen on a speaker: the
+    # slider in the Spotify app at 25% made everything quiet on top of that.
+    api = connected_api()
+    api._handle_event(playback_state())
+    api.sent.clear()
+
+    api._handle_event({'type': 'volume_changed', 'volume': 25})
+
+    assert api.sent == [{'type': 'command', 'command': 'set_volume', 'volume': 100}]
+
+
+def test_volume_is_put_back_when_playback_arrives_from_the_app_already_turned_down():
+    api = connected_api()
+    snapshot = playback_state()
+    snapshot['volume'] = 25
+
+    api._handle_event(snapshot)
+
+    assert {'type': 'command', 'command': 'set_volume', 'volume': 100} in api.sent
+
+
+def test_volume_of_another_speaker_is_left_alone():
+    # While another device plays, Soloist mirrors its state, volume included.
+    api = connected_api()
+    snapshot = playback_state(is_active=False)
+    snapshot['volume'] = 25
+
+    api._handle_event(snapshot)
+    api._handle_event({'type': 'volume_changed', 'volume': 30})
+
+    assert not [m for m in api.sent if m['command'] == 'set_volume']
 
 
 def test_track_and_context_change_only_through_full_snapshots():
