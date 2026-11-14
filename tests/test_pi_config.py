@@ -245,3 +245,160 @@ def test_activate_refuses_without_a_key(tmp_path):
     result = _run_setup_script(tmp_path, ['activate'], key=False)
     assert result.returncode == 2
     assert 'no API key' in result.stdout
+
+
+# --- run-soloist.sh: Soloist only logs in when it starts ------------------------
+
+import http.server
+import threading
+import time
+
+
+class _Internet:
+    """A local stand-in for "Spotify is reachable"."""
+
+    def __init__(self):
+        self.server = None
+        probe = http.server.ThreadingHTTPServer(('127.0.0.1', 0), http.server.BaseHTTPRequestHandler)
+        self.port = probe.server_address[1]
+        probe.server_close()
+        self.url = f'http://127.0.0.1:{self.port}/'
+
+    def up(self):
+        class Quiet(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', self.port), Quiet)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def down(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+
+
+def _soloist_home(tmp_path, paired=True, logged_in='no'):
+    """A fake ~/soloist: the "binary" notes each start and reports a login state from a file."""
+    home = tmp_path / 'soloist'
+    (home / 'data' / 'cache').mkdir(parents=True)
+    (home / 'key').write_text('k' * 37 + '\n')
+    (home / 'login').write_text(logged_in)
+    if paired:
+        (home / 'data' / 'cache' / 'Users').mkdir()
+        (home / 'data' / 'cache' / 'Users' / 'someone-user').mkdir()
+    binary = home / 'soloist'
+    binary.write_text(
+        '#!/bin/bash\n'
+        'here="$(cd "$(dirname "$0")" && pwd)"\n'
+        'if [ "$1" = ctl ]; then echo "  logged in: $(cat "$here/login")"; exit 0; fi\n'
+        'date +%s.%N >> "$here/starts"\n'
+        'trap "exit 0" TERM\n'
+        'while true; do sleep 0.2; done\n'
+    )
+    binary.chmod(0o755)
+    return home
+
+
+def _start_wrapper(home, internet, boot_wait=6):
+    env = {
+        'HOME': str(home.parent), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+        'MELLO_SOLOIST_HOME': str(home),
+        'MELLO_SOLOIST_CHECK_URL': internet.url,
+        'MELLO_SOLOIST_BOOT_WAIT': str(boot_wait),
+        'MELLO_SOLOIST_LOGIN_CHECK_EVERY': '1',
+    }
+    return subprocess.Popen(
+        ['bash', str(ROOT / 'pi/soloist/run-soloist.sh')],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+
+
+def _starts(home):
+    path = home / 'starts'
+    return len(path.read_text().split()) if path.exists() else 0
+
+
+def _wait_until(condition, timeout=12.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if condition():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _stop(process):
+    process.terminate()
+    try:
+        return process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        raise
+
+
+def test_soloist_is_not_started_before_the_internet_is_there(tmp_path):
+    # Seen on a speaker after a power cut: Soloist started while WiFi was
+    # still connecting, its one login attempt failed, and it stayed logged out.
+    home = _soloist_home(tmp_path, logged_in='yes')
+    internet = _Internet()
+    process = _start_wrapper(home, internet, boot_wait=20)
+    try:
+        time.sleep(3)
+        assert _starts(home) == 0                # still waiting for WiFi
+        internet.up()
+        assert _wait_until(lambda: _starts(home) == 1)
+    finally:
+        assert _stop(process) == 0               # being stopped is not a failure
+        internet.down()
+
+
+def test_soloist_is_started_again_when_it_is_logged_out_on_a_paired_speaker(tmp_path):
+    home = _soloist_home(tmp_path, logged_in='no')
+    internet = _Internet()
+    process = _start_wrapper(home, internet, boot_wait=2)    # gives up waiting: starts offline
+    try:
+        assert _wait_until(lambda: _starts(home) == 1)
+        time.sleep(3)
+        assert _starts(home) == 1                # offline: restarting would not help
+        internet.up()                            # WiFi comes back
+        assert _wait_until(lambda: _starts(home) == 2)
+        (home / 'login').write_text('yes')       # this time the login works
+        time.sleep(3)
+        assert _starts(home) == 2                # and it is left alone
+    finally:
+        _stop(process)
+        internet.down()
+
+
+def test_new_speaker_waiting_for_its_owner_is_not_restarted(tmp_path):
+    home = _soloist_home(tmp_path, paired=False, logged_in='no')
+    internet = _Internet()
+    internet.up()
+    process = _start_wrapper(home, internet)
+    try:
+        assert _wait_until(lambda: _starts(home) == 1)
+        time.sleep(4)
+        assert _starts(home) == 1
+    finally:
+        _stop(process)
+        internet.down()
+
+
+def test_login_that_keeps_failing_is_not_retried_for_ever(tmp_path):
+    home = _soloist_home(tmp_path, logged_in='no')           # e.g. a revoked key
+    internet = _Internet()
+    internet.up()
+    process = _start_wrapper(home, internet)
+    try:
+        assert _wait_until(lambda: _starts(home) == 6, timeout=30)   # first start + 5 retries
+        time.sleep(4)
+        assert _starts(home) == 6
+    finally:
+        _stop(process)
+        internet.down()
+
