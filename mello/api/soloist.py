@@ -36,8 +36,9 @@ _PING_TIMEOUT = 5
 _ACTIVATE_TIMEOUT = 6.0
 # Backstop for the "loading" state shown while a resume is being positioned.
 _POSITIONING_MAX = 45.0
-# Skips are sent in bursts of this size (12 and 25 at once both landed
-# correctly on the device; a burst is also the longest a swipe has to wait).
+# Skips are sent in bursts of this size. Measured on the device for 40 skips:
+# bursts of 12 took 11.6s, of 20 10.5s, and one burst of 40 lost 26 of them
+# (45s with the retries). A burst is also the longest a swipe has to wait.
 _SKIP_BURST = 12
 _SKIP_ROUNDS = 12
 # Slack for a burst to land, on top of 0.5s per skip.
@@ -585,30 +586,51 @@ class SoloistAPI:
         return True
 
     def _skip_to(self, context_uri: str, track_uri: str, wait) -> bool:
-        """Skip forward within the context that just started until `track_uri`.
+        """Skip within the context that just started until `track_uri`.
 
         Skips go out in bursts rather than one by one: measured on the device,
-        12 skips sent back to back land on the right track in 2.4s, against
-        5.3s when each skip waits for the next track to be announced. After
-        each burst the track it should have reached is confirmed before more
-        are sent, so a lost skip is noticed and a swipe away can interrupt.
+        12 skips sent back to back land on the right track in about 3s,
+        against 5s when each skip waits for the next track to be announced
+        (and a burst of 40 loses most of its skips). After each burst the
+        track it should have reached is confirmed before more are sent, so a
+        lost skip is noticed and a swipe away can interrupt.
+
+        With repeat on, "previous" at the first track wraps round to the last
+        one (seen on the device), so a track past the middle is reached
+        backwards: track 41 of 50 is 10 skips instead of 40.
 
         Returns False only when playback left our hands (another device took
         over, the context changed, or the play was aborted); a track that is
         no longer in the context leaves playback where it is and returns True.
         """
         for _ in range(_SKIP_ROUNDS):
-            if self._item_uri() == track_uri:
+            current = self._item_uri()
+            if current == track_uri:
                 return True
             upcoming = self._upcoming()
             if upcoming is None or track_uri not in upcoming:
                 logger.warning(f'Soloist resume: {track_uri} not coming up in {context_uri[:50]}')
                 return True
 
-            remaining = upcoming.index(track_uri) + 1
-            burst = min(remaining, _SKIP_BURST)
+            forward = upcoming.index(track_uri) + 1
+            command, remaining = 'skip_next', forward
+            burst = min(forward, _SKIP_BURST)
             checkpoint = upcoming[burst - 1]
-            logger.info(f'Soloist resume: skipping {burst} of {remaining} track(s) to {track_uri}')
+
+            with self._state_lock:
+                repeating = self._repeat == 'context'
+            if repeating and current in upcoming:
+                # The queue runs on into the next round of the album; where
+                # the current track comes round again is the album's length.
+                length = upcoming.index(current) + 1
+                backward = length - forward
+                if 0 < backward < forward:
+                    one_round = [current] + upcoming[:length - 1]
+                    command, remaining = 'skip_prev', backward
+                    burst = min(backward, _SKIP_BURST)
+                    checkpoint = one_round[length - burst]
+
+            logger.info(f'Soloist resume: {command} x{burst} of {remaining} to {track_uri}')
             for _ in range(burst):
                 # Never skip unless this device is playing our context: when it
                 # is not active, Soloist forwards commands to the device that is.
@@ -620,7 +642,7 @@ class SoloistAPI:
                 # Sent without waiting for each answer: Soloist only answers a
                 # skip once it has carried it out (~0.5s), and waiting for that
                 # is exactly what made one-by-one skipping slow.
-                if not self._send('skip_next'):
+                if not self._send(command):
                     return False
             if not wait(lambda: self._item_uri_unlocked() == checkpoint, _SKIP_TIMEOUT + burst * 0.5):
                 with self._state_lock:

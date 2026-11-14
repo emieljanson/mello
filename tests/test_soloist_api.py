@@ -352,12 +352,16 @@ ALBUM = 'spotify:album:a1'
 TRACKS = [f'spotify:track:t{n}' for n in range(1, 6)]
 
 
-def fake_daemon(api_box, tracks=TRACKS, takeover_after_skips=None):
-    """Answers like the real daemon: play starts track 1, skip_next moves on."""
+def fake_daemon(api_box, tracks=TRACKS, takeover_after_skips=None, repeat=False):
+    """Answers like the real daemon: play starts track 1, skips move on.
+
+    With `repeat` the album loops like on the device: the queue runs on into
+    the next round, and "previous" at the first track wraps to the last.
+    """
     state = {'index': 0, 'skips': 0}
 
     def snapshot(status='playing', is_active=True):
-        event = playback_state(status=status, is_active=is_active)
+        event = playback_state(status=status, is_active=is_active, repeat='context' if repeat else 'off')
         event['context'] = entity(ALBUM, 'Album Name')
         event['item'] = entity(tracks[state['index']], 'Track')
         return event
@@ -368,8 +372,10 @@ def fake_daemon(api_box, tracks=TRACKS, takeover_after_skips=None):
         if command == 'get_state':
             return snapshot(status=state.get('status', 'playing'))
         if command == 'get_queue':
-            upcoming = [{'uid': u, 'source': 'context', 'item': entity(u, 'Track')}
-                        for u in tracks[state['index'] + 1:]]
+            coming = tracks[state['index'] + 1:]
+            if repeat:
+                coming = coming + tracks + tracks
+            upcoming = [{'uid': u, 'source': 'context', 'item': entity(u, 'Track')} for u in coming]
             return {'type': 'queue_changed', 'previous': [], 'upcoming': upcoming}
         api._handle_event({'type': 'command_result', 'command': command})
         if command == 'play' and 'uri' in message:
@@ -382,6 +388,9 @@ def fake_daemon(api_box, tracks=TRACKS, takeover_after_skips=None):
             else:
                 state['index'] += 1
                 api._handle_event({'type': 'track_changed', 'item': entity(tracks[state['index']], 'Track')})
+        elif command == 'skip_prev':
+            state['index'] = (state['index'] - 1) % len(tracks) if repeat else max(0, state['index'] - 1)
+            api._handle_event({'type': 'track_changed', 'item': entity(tracks[state['index']], 'Track')})
         elif command == 'pause':
             state['status'] = 'paused'
             api._handle_event({'type': 'playback_changed', 'status': 'paused'})
@@ -647,3 +656,48 @@ def test_repeat_is_not_sent_again_when_already_on():
 
     assert api.set_repeat_context(True) is True
     assert api.sent == []
+
+
+def test_track_past_the_middle_is_reached_backwards_when_the_album_repeats():
+    # Seen on the device: with repeat on, "previous" at track 1 goes to the
+    # last track. Chapter 26 of 30 is then 5 skips back instead of 25 forward.
+    tracks = [f'spotify:track:c{n}' for n in range(1, 31)]
+    box = []
+    api = connected_api(reply=fake_daemon(box, tracks=tracks, repeat=True))
+    box.append(api)
+
+    assert api.play(ALBUM, skip_to_uri=tracks[25], paused=True) is True
+
+    sent = commands(api)
+    assert (sent.count('skip_prev'), sent.count('skip_next')) == (5, 0)
+    api.resume()
+    assert api.status()['track']['uri'] == tracks[25]
+
+
+def test_track_before_the_middle_is_still_reached_forwards_when_the_album_repeats():
+    tracks = [f'spotify:track:c{n}' for n in range(1, 31)]
+    box = []
+    api = connected_api(reply=fake_daemon(box, tracks=tracks, repeat=True))
+    box.append(api)
+
+    assert api.play(ALBUM, skip_to_uri=tracks[8], paused=True) is True
+
+    sent = commands(api)
+    assert (sent.count('skip_prev'), sent.count('skip_next')) == (0, 8)
+    api.resume()
+    assert api.status()['track']['uri'] == tracks[8]
+
+
+def test_far_track_goes_backwards_in_confirmed_bursts():
+    tracks = [f'spotify:track:c{n}' for n in range(1, 61)]
+    box = []
+    api = connected_api(reply=fake_daemon(box, tracks=tracks, repeat=True))
+    box.append(api)
+
+    assert api.play(ALBUM, skip_to_uri=tracks[35], paused=True) is True      # 25 back, not 35 forward
+
+    sent = commands(api)
+    assert (sent.count('skip_prev'), sent.count('skip_next')) == (25, 0)
+    assert sent.count('get_queue') == 3                                       # 12 + 12 + 1
+    api.resume()
+    assert api.status()['track']['uri'] == tracks[35]
