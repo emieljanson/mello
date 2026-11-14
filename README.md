@@ -110,7 +110,7 @@ During installation, Mello asks if you'd like to share anonymous usage data. Thi
 
 ## Known Issues
 
-**Spotify "audio key error" — tracks skip without playing.** This is an upstream issue in librespot (the library that handles Spotify Connect). It affects some Spotify accounts but not others, and there's no fix yet. Mello uses [go-librespot](https://github.com/devgianlu/go-librespot) which is affected by the same problem. Track the issue here: [librespot-org/librespot#1649](https://github.com/librespot-org/librespot/issues/1649)
+**Spotify connects but skips tracks without playing.** Spotify refuses the audio keys go-librespot needs for some accounts, including some Premium accounts. The device can still appear in Spotify Connect. [go-librespot #279](https://github.com/devgianlu/go-librespot/issues/279)
 
 ## Show Off Your Build
 

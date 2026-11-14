@@ -12,6 +12,7 @@ sys.modules.setdefault('pygame', pygame_stub)
 sys.modules.setdefault('pygame.gfxdraw', types.ModuleType('pygame.gfxdraw'))
 
 from mello.app import Mello
+from mello.models import NowPlaying
 
 
 def _make_app():
@@ -31,6 +32,8 @@ def _make_refresh_app():
     app.api.status.return_value = None
     app.api.is_connected.return_value = True
     app._connected_lock = MagicMock()
+    app._now_playing_lock = MagicMock()
+    app._now_playing = NowPlaying()
     app._connected = True
     app._connection_grace_threshold = 3
     app._status_unknown = False
@@ -39,19 +42,19 @@ def _make_refresh_app():
 
 
 @patch('mello.app.subprocess.run')
-@patch('mello.app.time.time', side_effect=[100.0, 161.0])
+@patch('mello.app.time')
 def test_reachable_but_unusable_status_restarts_after_sustained_failure(
     mock_time,
     mock_run,
 ):
     app = _make_refresh_app()
     app._status_failure_started_at = 0.0
+    mock_time.time.side_effect = [100.0, 161.0]
     mock_run.return_value = MagicMock(returncode=0, stderr='')
 
     app._refresh_status()
     app._refresh_status()
 
-    assert mock_time.call_count == 2
     mock_run.assert_called_once_with(
         ['sudo', 'systemctl', 'restart', 'mello-librespot'],
         stdout=subprocess.DEVNULL,

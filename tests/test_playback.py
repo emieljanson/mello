@@ -68,12 +68,13 @@ class TestTogglePlay:
         assert pc.play_state.pending_action == 'play'
         on_resume.assert_called_once()
 
-    def test_play_when_stopped(self):
+    @patch('mello.controllers.playback.run_async', side_effect=lambda fn, *args: fn(*args))
+    def test_play_when_stopped(self, mock_run_async):
         pc, api, _, _ = _make_controller()
         np = NowPlaying(stopped=True)
         item = _make_item(uri='spotify:album:new')
         pc.toggle_play([item], 0, np)
-        assert pc.last_user_play_uri == 'spotify:album:new'
+        assert api.play.call_args.args == (item.uri,)
 
     def test_pause_during_loading_clears_loader_immediately(self):
         pc, _, _, volume = _make_controller()
@@ -126,7 +127,7 @@ class TestStopAll:
             return False
 
         api.play.side_effect = play_then_stop
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         assert api.play.call_count == 1
 
@@ -140,7 +141,7 @@ class TestStopAll:
         pc._pending_play = ('spotify:album:queued', False, 0)
         pc.stop_all()
 
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         calls = [c.args[0] for c in api.play.call_args_list]
         assert 'spotify:album:queued' not in calls
@@ -153,26 +154,6 @@ class TestStopAll:
         items = [_make_item(uri='spotify:album:x')]
         pc.toggle_play(items, 0, np)
         assert pc._play_generation == gen_before + 1
-
-
-class TestAutoplay:
-    """Tests for autoplay detection."""
-
-    def test_detects_autoplay(self):
-        pc, _, catalog, _ = _make_controller()
-        pc.last_context_uri = 'spotify:album:old'
-        pc.last_user_play_time = 0  # Long ago
-        np = NowPlaying(playing=True, context_uri='spotify:album:new')
-        pc.check_autoplay(np)
-        catalog.clear_progress.assert_called_once_with('spotify:album:old')
-
-    def test_ignores_recent_user_action(self):
-        pc, _, catalog, _ = _make_controller()
-        pc.last_context_uri = 'spotify:album:old'
-        pc.last_user_play_time = time.time()  # Just now
-        np = NowPlaying(playing=True, context_uri='spotify:album:new')
-        pc.check_autoplay(np)
-        catalog.clear_progress.assert_not_called()
 
 
 class TestProgressSave:
@@ -258,6 +239,7 @@ class TestLoadingState:
     def test_loading_starts_when_play_in_progress(self):
         pc, _, _, _ = _make_controller()
         pc._play_in_progress = True
+        pc._playing_uri = 'spotify:album:x'
         np = NowPlaying()
         pc.update_loading_state(np, carousel_settled=True, play_timer_active=False)
         # Loading is tracked but is_loading has a 200ms delay
@@ -275,6 +257,7 @@ class TestLoadingState:
         """Loading stays active while _execute_play is running, even if now_playing shows playing."""
         pc, _, _, _ = _make_controller()
         pc._play_in_progress = True
+        pc._playing_uri = 'spotify:album:x'
         np = NowPlaying(playing=True)
         pc.update_loading_state(np, carousel_settled=True, play_timer_active=False)
         assert pc.play_state.loading_since is not None
@@ -306,7 +289,7 @@ class TestPlayFailure:
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         assert api.play.call_count == 1
         assert pc.play_state.pending_action is None
@@ -314,29 +297,24 @@ class TestPlayFailure:
         toast.assert_called_once_with('Connect via Spotify')
 
     @patch('mello.controllers.playback.time.sleep')
-    def test_transient_failure_defers_toast_to_retry(self, mock_sleep):
-        """Transient failures (False) keep loader alive for retry window — no immediate toast."""
+    def test_play_failure_clears_loader_after_bounded_retry(self, mock_sleep):
         pc, api, _, _ = _make_controller()
         api.play.return_value = False
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         assert api.play.call_count == 2
-        # Loader stays active for the retry window
-        assert pc.play_state.loading_since is not None
-        # Toast is deferred to retry_failed(), not shown immediately
-        toast.assert_not_called()
-        # Failed play is saved for retry
-        assert pc._failed_play is not None
+        assert pc.play_state.loading_since is None
+        toast.assert_called_once_with('Loading failed, try again')
 
     def test_play_success_keeps_pending_state(self):
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
 
         pc.play_state.set_pending('play')
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         assert pc.play_state.pending_action == 'play'
 
@@ -349,7 +327,7 @@ class TestRepeatContext:
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
 
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         api.set_repeat_context.assert_called_once_with(True)
 
@@ -358,7 +336,7 @@ class TestRepeatContext:
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
 
-        pc._execute_play('spotify:playlist:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:playlist:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         api.set_repeat_context.assert_called_once_with(True)
 
@@ -367,7 +345,7 @@ class TestRepeatContext:
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
 
-        pc._execute_play('spotify:track:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:track:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         api.set_repeat_context.assert_not_called()
 
@@ -378,7 +356,7 @@ class TestRepeatContext:
         api.play.return_value = True
         api.set_repeat_context.return_value = False
 
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         on_committed.assert_called_once_with('spotify:album:x', 0)
 
@@ -394,26 +372,10 @@ class TestLibrespotCrashRecovery:
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         assert api.play.call_count == 2
         toast.assert_not_called()
-
-    @patch('mello.controllers.playback.time.sleep')
-    def test_play_keeps_loader_when_never_recovers(self, mock_sleep):
-        """Librespot never comes back — loader stays active for retry window."""
-        pc, api, _, _ = _make_controller()
-        api.play.return_value = False
-        toast = MagicMock()
-        pc._on_toast = toast
-
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
-
-        assert api.play.call_count == 2
-        # Toast is deferred to retry_failed(), not shown immediately
-        toast.assert_not_called()
-        # Failed play saved for retry window
-        assert pc._failed_play is not None
 
     @patch('mello.controllers.playback.time.sleep')
     def test_play_recovers_from_mixed_failures(self, mock_sleep):
@@ -423,7 +385,7 @@ class TestLibrespotCrashRecovery:
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         assert api.play.call_count == 2
         toast.assert_not_called()
@@ -439,7 +401,7 @@ class TestLibrespotCrashRecovery:
             return False
 
         api.play.side_effect = track_loading
-        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         # After first failure, start_loading() is called before sleep,
         # so subsequent attempts should see loading_since set
@@ -503,7 +465,7 @@ class TestPlayQueueing:
 
         with patch('mello.controllers.playback.run_async') as mock_run:
             mock_run.side_effect = lambda fn, *a: fn(*a)
-            pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
+            pc._execute_play('spotify:album:first', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         calls = [c.args[0] for c in api.play.call_args_list]
         assert 'spotify:album:first' in calls
@@ -513,21 +475,20 @@ class TestPlayQueueing:
 class TestQueuedPlayStaleness:
     """Queued play handoff should drop stale work."""
 
-    @patch('mello.controllers.playback.time.sleep')
-    def test_pending_request_dropped_after_generation_change(self, mock_sleep):
+    @patch('mello.controllers.playback.run_async')
+    def test_cancelled_worker_cannot_play_and_hands_off_to_fresh_request(self, mock_run_async):
         pc, api, _, _ = _make_controller()
-        api.play.return_value = True
-        pc._pending_play = ('spotify:album:queued', False, 0)
-        pc._play_in_progress = True
+        pc.play_item('spotify:album:cancelled')
+        pc.stop_all()
+        assert not pc.has_pending_play
+        pc.play_item('spotify:album:fresh')
 
-        def invalidate_generation(*_):
-            pc.stop_all()
-
-        mock_sleep.side_effect = invalidate_generation
-        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
-
-        calls = [c.args[0] for c in api.play.call_args_list]
-        assert calls == ['spotify:album:first']
+        cancelled, *args = mock_run_async.call_args_list[0].args
+        cancelled(*args)
+        api.play.assert_not_called()
+        fresh, *args = mock_run_async.call_args_list[1].args
+        fresh(*args)
+        api.play.assert_called_once_with('spotify:album:fresh', skip_to_uri=None, paused=None)
 
     @patch('mello.controllers.playback.time.sleep')
     def test_play_success_ignored_when_pause_intent_active(self, mock_sleep):
@@ -538,7 +499,7 @@ class TestQueuedPlayStaleness:
         pc.play_state.set_pending('pause')
         pc._set_pause_override('test_pause')
 
-        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         volume.unmute.assert_not_called()
         on_committed.assert_not_called()
@@ -546,13 +507,6 @@ class TestQueuedPlayStaleness:
 
 class TestRetryBackoffGuards:
     """Tests for reconnect retry staleness and transport cooldown."""
-
-    def test_retry_failed_dropped_when_too_old(self):
-        pc, _, _, _ = _make_controller()
-        pc._failed_play = ('spotify:album:x', False, 0)
-        pc._failed_play_since = time.time() - 25
-        pc.retry_failed()
-        assert pc._failed_play is None
 
     @patch('mello.controllers.playback.run_async')
     def test_pause_command_suppressed_by_cooldown(self, mock_run_async):
@@ -572,7 +526,7 @@ class TestRetryBackoffGuards:
         pc._pending_play = ('spotify:album:queued', False, 0)
         pc._play_in_progress = True
 
-        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
+        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0, generation=pc._play_generation)
 
         calls = [c.args[0] for c in api.play.call_args_list]
         assert calls == ['spotify:album:first']

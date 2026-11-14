@@ -48,7 +48,7 @@ class LibrespotStatus:
         resolved_context_uri = raw_context_uri or context_uri
 
         return cls(
-            playing=not data.get('stopped', True) and not data.get('paused', False),
+            playing=not (data.get('stopped', True) or data.get('paused', False) or data.get('buffering', False)),
             paused=data.get('paused', False),
             stopped=data.get('stopped', True),
             volume=data.get('volume'),

@@ -60,9 +60,8 @@ class PlaybackController:
         self._pause_override_until: float = 0.0
 
         # Play request queuing (non-blocking, latest wins).
-        # _play_generation is an incrementing counter; each _execute_play
-        # thread captures its generation at start and bails out whenever
-        # the current generation has moved on (i.e. stop_all was called).
+        # Capture the generation when queuing so stop_all also cancels work
+        # that has not started running in the thread pool yet.
         self._play_lock = threading.Lock()
         self._play_in_progress = False
         self._playing_uri: Optional[str] = None
@@ -72,16 +71,7 @@ class PlaybackController:
         # UI loading/spinner state
         self.play_state = PlayState()
 
-        # Track user-initiated plays (for autoplay detection)
-        self.last_user_play_time: float = 0
-        self.last_user_play_uri: Optional[str] = None
-
-        # Failed play request to retry on reconnect
-        self._failed_play: Optional[tuple] = None
-        self._failed_play_since: float = 0.0
-
         # Progress tracking
-        self.last_context_uri: Optional[str] = None
         self.last_progress_save: float = 0
         self.last_saved_track_uri: Optional[str] = None
 
@@ -99,7 +89,7 @@ class PlaybackController:
         if not items:
             return
 
-        if self._play_in_progress or self.play_state.should_show_loading:
+        if self.has_pending_play:
             logger.info('Cancelling in-flight play request')
             self._execute_pause('pause_during_loading')
         elif now_playing.playing:
@@ -122,8 +112,6 @@ class PlaybackController:
 
     def play_item(self, uri: str, from_beginning: bool = False, epoch: int = 0):
         """Queue a play request (non-blocking). Only the latest request runs."""
-        self.last_user_play_time = time.time()
-        self.last_user_play_uri = uri
         self._clear_pause_override('new_play_intent')
         # Clear stale pause-intent so loading spinner can show for new play.
         if self.play_state.pending_action == 'pause':
@@ -139,35 +127,9 @@ class PlaybackController:
                 return
             self._play_in_progress = True
             self._playing_uri = uri
+            generation = self._play_generation
 
-        run_async(self._execute_play, uri, from_beginning, epoch)
-
-    def retry_failed(self):
-        """Retry a previously failed play request (call on reconnect)."""
-        failed = self._failed_play
-        if not failed:
-            return
-        failed_age = time.time() - self._failed_play_since if self._failed_play_since else 0.0
-        if failed_age > 20.0:
-            logger.info(f'Dropping stale failed retry by age: {failed_age:.1f}s')
-            self._failed_play = None
-            self._failed_play_since = 0.0
-            self._emit_toast('Loading failed, try again')
-            logger.warning(
-                'TOAST shown | message="Loading failed, try again" '
-                f'| reason=retry_window_expired | age={failed_age:.1f}s'
-            )
-            return
-        uri, from_beginning, epoch = failed
-        if not self._is_request_current(epoch, uri):
-            logger.info(f'Dropping stale failed retry: {uri[:50]}')
-            self._failed_play = None
-            self._failed_play_since = 0.0
-            return
-        self._failed_play = None
-        self._failed_play_since = 0.0
-        logger.info(f'Retrying failed play on reconnect: {uri[:50]}')
-        self.play_item(uri, from_beginning, epoch)
+        run_async(self._execute_play, uri, from_beginning, epoch, generation)
 
     def stop_all(self):
         """Invalidate any running or pending play requests.
@@ -181,23 +143,7 @@ class PlaybackController:
             self._play_generation += 1
             self._pending_play = None
             self._playing_uri = None
-        self._failed_play = None
-        self._failed_play_since = 0.0
         self.play_state.clear()
-
-    def check_autoplay(self, now_playing: NowPlaying):
-        """Detect autoplay and clear progress when context finishes naturally."""
-        new_context = now_playing.context_uri
-        old_context = self.last_context_uri
-
-        if (old_context and new_context and
-                old_context != new_context and
-                now_playing.playing):
-            recent_user_action = time.time() - self.last_user_play_time < 5
-            expected_context = new_context == self.last_user_play_uri
-            if not recent_user_action and not expected_context:
-                logger.info(f'Context finished: {old_context}')
-                self.catalog_manager.clear_progress(old_context)
 
     def save_progress(self, now_playing: NowPlaying, force: bool = False):
         """Queue a periodic progress save if due (or immediately if force=True)."""
@@ -255,7 +201,7 @@ class PlaybackController:
             self.play_state.stop_loading()
             return
 
-        has_active_play_work = play_timer_active or self._play_in_progress or self._failed_play is not None
+        has_active_play_work = play_timer_active or self.play_in_progress
         if self.play_state.pending_action == 'pause' and not has_active_play_work:
             self.play_state.stop_loading()
             return
@@ -273,12 +219,13 @@ class PlaybackController:
     @property
     def has_pending_play(self) -> bool:
         """True when a play request is in flight or UI still shows loading."""
-        return self._play_in_progress or self.play_state.should_show_loading
+        return self.play_in_progress or self.play_state.should_show_loading
 
     @property
     def play_in_progress(self) -> bool:
-        """True when a play request thread is actively executing."""
-        return self._play_in_progress
+        """True while a current play request is queued or executing."""
+        with self._play_lock:
+            return self._playing_uri is not None or self._pending_play is not None
 
     @property
     def pause_intent_active(self) -> bool:
@@ -298,25 +245,21 @@ class PlaybackController:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _execute_play(self, uri: str, from_beginning: bool, epoch: int):
-        """Execute the play request (runs in thread pool).
-
-        Captures _play_generation at start so it can bail out early when
-        stop_all() has been called (generation moves on).
-        """
-        with self._play_lock:
-            my_gen = self._play_generation
-
+    def _execute_play(self, uri: str, from_beginning: bool, epoch: int, generation: int):
+        """Execute a play request while its local intent is current."""
         logger.warning(
-            f'Execute play [gen={my_gen}, epoch={epoch}]: '
+            f'Execute play [gen={generation}, epoch={epoch}]: '
             f'context_uri={uri[:50]}..., from_beginning={from_beginning}'
         )
 
         def _stale() -> bool:
             with self._play_lock:
-                return self._play_generation != my_gen
+                cancelled = self._play_generation != generation
+            return cancelled or not self._is_request_current(epoch, uri)
 
         try:
+            if _stale():
+                return
             self.volume.ensure_spotify_at_100()
 
             skip_to_uri = None
@@ -333,10 +276,9 @@ class PlaybackController:
 
             result = False
             max_attempts = 2
-            retry_delay = 3
             for attempt in range(1, max_attempts + 1):
                 if _stale():
-                    logger.info(f'  Play cancelled (gen={my_gen}), aborting')
+                    logger.info(f'  Play cancelled (gen={generation}), aborting')
                     return
                 result = self.api.play(uri, skip_to_uri=skip_to_uri, paused=need_seek)
                 logger.info(f'  Play request attempt {attempt}/{max_attempts}: result={result}')
@@ -349,101 +291,46 @@ class PlaybackController:
                     self.play_state.start_loading()
                     for _ in range(8):
                         if _stale():
-                            logger.info(f'  Play cancelled during retry wait (gen={my_gen})')
+                            logger.info(f'  Play cancelled during retry wait (gen={generation})')
                             return
                         time.sleep(0.5)
 
-            if _stale():
+            if _stale() or self.pause_intent_active:
                 return
 
-            success = result is True
-            if not success:
-                self._failed_play = (uri, from_beginning, epoch)
-                self._failed_play_since = time.time()
-                status_ctx = None
-                status_playing = None
-                try:
-                    status = self.api.status()
-                    if isinstance(status, dict):
-                        status_ctx = status.get('context_uri')
-                        status_playing = status.get('playing')
-                except Exception:
-                    pass
-                logger.warning(
-                    'Play failed, saved for retry: '
-                    f'uri={uri[:50]} | epoch={epoch} | from_beginning={from_beginning} | '
-                    f'status_ctx={(status_ctx or "none")[:40]} | status_playing={status_playing}'
-                )
-                if result is None:
-                    # No active Spotify session: definitive failure, clear loader immediately.
-                    self.play_state.clear()
-                    self._emit_toast('Connect via Spotify')
-                    logger.warning(
-                        'TOAST shown | message="Connect via Spotify" '
-                        f'| failed_uri={uri[:50]} | epoch={epoch}'
-                    )
-                else:
-                    # Timeout/network error: keep loader on while retry window is open.
-                    # Toast and loader-stop happen in retry_failed() if retry also fails.
-                    logger.warning(
-                        'Keeping loader alive for retry window '
-                        f'| failed_uri={uri[:50]} | epoch={epoch}'
-                    )
+            if result is not True:
+                self.play_state.clear()
+                self._emit_toast('Connect via Spotify' if result is None else 'Loading failed, try again')
                 self._on_play_failed(uri, epoch)
+                return
 
-            if success and need_seek:
+            if need_seek:
                 position = saved_progress['position']
                 if self.api.seek(position):
                     logger.info(f'Seeked to {position // 1000}s')
+                if _stale():
+                    return
                 self.api.resume()
                 logger.info('  Resumed after seek')
 
-            if success:
-                if not self._is_request_current(epoch, uri):
-                    logger.info(f'Play success ignored (stale epoch={epoch}): {uri[:50]}')
-                    self.play_state.stop_loading()
-                    return
-                if self.pause_intent_active:
-                    logger.info(
-                        f'stale_play_dropped | reason=pause_intent_active | epoch={epoch} | uri={uri[:50]}'
-                    )
-                    self.play_state.stop_loading()
-                    return
-                self._failed_play = None
-                self._failed_play_since = 0.0
-                self._enable_repeat_context_if_needed(uri, 'play_success')
-                self.volume.unmute()
-                self.play_state.stop_loading()
-                self._on_play_committed(uri, epoch)
+            if _stale():
+                return
+            self._enable_repeat_context_if_needed(uri, 'play_success')
+            if _stale():
+                return
+            self.volume.unmute()
+            self.play_state.stop_loading()
+            self._on_play_committed(uri, epoch)
         finally:
             with self._play_lock:
-                self._play_in_progress = False
-                self._playing_uri = None
-                stale = self._play_generation != my_gen
-                pending = self._pending_play if not stale else None
+                pending = self._pending_play
                 self._pending_play = None
+                self._play_in_progress = pending is not None
+                self._playing_uri = pending[0] if pending else None
+                next_generation = self._play_generation
 
-            if pending:
-                should_execute_pending = True
-                time.sleep(0.5)
-                with self._play_lock:
-                    if self._play_generation != my_gen:
-                        logger.debug('Dropping queued request after generation change')
-                        should_execute_pending = False
-                    if self._pending_play:
-                        pending = self._pending_play
-                        self._pending_play = None
-                if should_execute_pending and not self._is_request_current(pending[2], pending[0]):
-                    logger.debug(f'Dropping stale queued request: {pending[0][:50]}')
-                    should_execute_pending = False
-                if should_execute_pending and self.pause_intent_active:
-                    logger.info(
-                        f'stale_play_dropped | reason=pause_intent_active_queued | uri={pending[0][:50]}'
-                    )
-                    should_execute_pending = False
-                if should_execute_pending:
-                    logger.debug(f'Executing queued request: {pending[0]}')
-                    self.play_item(pending[0], pending[1], pending[2])
+            if pending is not None:
+                run_async(self._execute_play, *pending, next_generation)
 
     def _emit_toast(self, message: str, cooldown_s: float = 6.0):
         """Emit toast with small cooldown to prevent spam loops."""

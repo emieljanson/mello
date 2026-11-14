@@ -53,6 +53,12 @@ class TestLibrespotStatus:
         assert s.playing is False
         assert s.paused is True
 
+    def test_buffering_does_not_confirm_playback(self):
+        status = LibrespotStatus.from_dict({'stopped': False, 'paused': False, 'buffering': True})
+
+        assert status.playing is False
+        assert status.stopped is False
+
     def test_parses_stopped_state(self):
         raw = {'stopped': True, 'paused': False, 'track': {}}
         s = LibrespotStatus.from_dict(raw)
