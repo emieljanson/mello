@@ -30,7 +30,9 @@ class RenderContext:
     menu_state: MenuState = MenuState.CLOSED
     menu_known_networks: List[str] = field(default_factory=list)
     menu_current_network: Optional[str] = None
-    menu_spotify_lines: List[str] = field(default_factory=list)
+    menu_spotify_items: List[tuple] = field(default_factory=list)
+    menu_spotify_prompt: bool = False        # opened by itself: hold to close, no close button
+    menu_prompt_hold_progress: float = 0.0
     auto_pause_minutes: int = 30
     progress_expiry_hours: int = 96
     app_version_label: str = ''

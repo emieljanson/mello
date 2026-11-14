@@ -102,12 +102,6 @@ _fetch_into() {
 cmd_refresh() {
   # Only speakers whose owner entered a key use Soloist at all.
   has_key || return 0
-  # Key entered during WiFi setup, but the switch could not happen yet
-  # (no internet at the time): finish it now.
-  if [ -f "$SOLOIST_HOME/activate-pending" ] && [ "$(engine)" != "soloist" ]; then
-    cmd_activate
-    return
-  fi
   local age=""
   if [ -x "$SOLOIST_HOME/soloist" ] && age=$(build_age_days "$SOLOIST_HOME/soloist") \
      && [ "$age" -lt "$RENEW_AFTER_DAYS" ] && [ "${1:-}" != "--force" ]; then
@@ -142,7 +136,6 @@ cmd_activate() {
   sudo systemctl enable mello-soloist
   sudo systemctl restart mello-soloist
   set_engine soloist
-  rm -f "$SOLOIST_HOME/activate-pending"
   log "Soloist is now this speaker's Spotify engine"
   sudo systemctl restart mello-native
 }

@@ -10,19 +10,15 @@ other time.
 
 Saving a key hands over to pi/soloist/soloist-setup.sh, which downloads
 Soloist, switches the speaker's Spotify engine and restarts the app.
-
-The same page also backs the optional key field on the WiFi setup page
-(portal/index.html). The speaker has no internet at that moment, so the key
-is only stored and marked "pending"; the switch happens once it is online.
 """
 import html
 import logging
 import os
+import platform
 import re
 import socket
 import subprocess
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -38,51 +34,78 @@ SETUP_SCRIPT = _REPO_DIR / 'pi' / 'soloist' / 'soloist-setup.sh'
 _KEY_PATTERN = re.compile(r'^[A-Za-z0-9._~+/=-]{16,256}$')
 _MAX_BODY = 4096
 
+# Where an owner gets a key (Spotify's own steps, from its Soloist "getting started").
+KEY_DASHBOARD_URL = 'https://developer.spotify.com/dashboard/soloist'
+
 _PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mello - Spotify</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mello</title>
 <style>
- body{{font-family:-apple-system,system-ui,sans-serif;max-width:30em;margin:2em auto;padding:0 1em;color:#222}}
- input[type=text]{{width:100%;box-sizing:border-box;font-size:1em;padding:.7em;margin:.5em 0 1em}}
- button{{font-size:1em;padding:.7em 1.2em;border:0;border-radius:.5em;background:#7c5cff;color:#fff}}
- button.plain{{background:#ddd;color:#222}}
- .note{{background:#f3f0ff;padding:.8em 1em;border-radius:.5em}}
- .error{{background:#ffe9e9}}
- small{{color:#666}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#0d0d0d;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;padding:32px 20px;min-height:100vh;-webkit-font-smoothing:antialiased;max-width:30em;margin:0 auto}}
+h1{{font-size:20px;font-weight:600;letter-spacing:-.02em;margin-bottom:6px}}
+.sub{{font-size:13px;color:#666;margin-bottom:28px}}
+label{{display:block;font-size:12px;font-weight:500;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}}
+input[type=text]{{width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:10px;padding:13px 14px;font-size:15px;color:#fff;outline:none;margin-bottom:20px}}
+input[type=text]:focus{{border-color:#bd65fc}}
+input::placeholder{{color:#444}}
+button{{width:100%;background:#bd65fc;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:600;color:#fff;cursor:pointer}}
+button.plain{{background:#1c1c1c;color:#aaa;border:1px solid #2a2a2a;font-weight:500}}
+.steps{{background:#141414;border:1px solid #2a2a2a;border-radius:10px;padding:14px 16px;margin-bottom:24px;font-size:14px;line-height:1.5;color:#bbb}}
+.steps b{{color:#fff;font-weight:600;display:block;margin-bottom:6px}}
+.steps ol{{padding-left:20px}}
+.steps a{{color:#bd65fc}}
+.note{{margin-bottom:24px;padding:13px 14px;border-radius:10px;font-size:14px;background:#1a2e1a;color:#4ade80;border:1px solid #264d26}}
+.note.error{{background:#2e1a1a;color:#f87171;border-color:#4d2626}}
+.lead{{font-size:14px;color:#bbb;line-height:1.5;margin-bottom:24px}}
+.small{{font-size:12px;color:#666;line-height:1.5;margin-top:16px}}
+hr{{border:0;border-top:1px solid #222;margin:28px 0 20px}}
 </style></head><body>
 <h1>Mello</h1>
 {body}
 </body></html>"""
 
-_FORM = """<p>This speaker now plays Spotify through <b>{engine}</b>.</p>
+_HOW_TO = """<div class="steps"><b>Get your key</b><ol>
+<li>Open <a href="{dashboard}" target="_blank" rel="noopener">developer.spotify.com/dashboard/soloist</a> (needs Spotify Premium).</li>
+<li>Log in, accept the terms and generate an API key.</li>
+<li>Paste it here.</li>
+</ol></div>""".format(dashboard=KEY_DASHBOARD_URL)
+
+_FORM = """<p class="sub">Now playing through {engine}</p>
+<p class="lead">Spotify Soloist is Spotify's own player for speakers. Play, pause and skip respond faster.</p>
 {message}
+""" + _HOW_TO + """
 <form method="post" action="/key">
- <label for="key">Spotify Soloist API key</label>
- <input type="text" id="key" name="key" autocomplete="off" autocapitalize="off" spellcheck="false" required>
- <button type="submit">Save and switch to Soloist</button>
+ <label for="key">Soloist API key</label>
+ <input type="text" id="key" name="key" placeholder="Paste your key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+ <button type="submit">Save</button>
 </form>
-<p><small>Request your own key at developer.spotify.com (Soloist). It stays on
-this speaker. After switching, choose the speaker once in your Spotify app.</small></p>
+<p class="small">Your key stays on this speaker.</p>
 {back}"""
 
 _BACK = """<hr><form method="post" action="/librespot">
  <button type="submit" class="plain">Switch back to go-librespot</button>
 </form>"""
 
-_SAVED = """<p class="note">Key saved. Mello switches to Soloist as soon as it is online.</p>"""
-
-# How long to wait for internet after WiFi was set up before giving up for now
-# (the nightly update tries again).
-_ONLINE_WAIT = 180
-_DOWNLOAD_HOST = ('soloist-builds.spotifycdn.com', 443)
-
 _BUSY = """<p class="note">{text}</p>
-<p>The speaker restarts by itself when it is ready (about a minute). You can close this page.</p>"""
+<p class="lead">Mello restarts in about a minute. Then open Spotify, tap the speaker icon and pick Mello once.</p>"""
 
 
 def valid_key(key: str) -> bool:
     return bool(_KEY_PATTERN.match(key))
+
+
+def qr_matrix(text: str) -> Optional[List[List[bool]]]:
+    """QR code for `text` as rows of dark/light modules, or None if unavailable."""
+    try:
+        import qrcode
+    except ImportError:
+        return None  # dependency not installed yet: the address is shown as text instead
+    code = qrcode.QRCode(border=0, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    code.add_data(text)
+    code.make(fit=True)
+    return code.get_matrix()
 
 
 def lan_address() -> Optional[str]:
@@ -113,14 +136,13 @@ class EngineSetup:
         self._on_change = on_change or (lambda: None)
 
         self._server: Optional[ThreadingHTTPServer] = None
-        # True while serving next to the WiFi setup page: no internet yet,
-        # so a key is stored for later instead of acted on.
-        self._defer = False
         self._lock = threading.Lock()
-        # 'waiting' | 'saved' | 'switching' | 'failed'
+        # 'waiting' | 'switching' | 'failed'
         self.state = 'waiting'
         self.error: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
+        self._qr_url: Optional[str] = None
+        self._qr: Optional[List[List[bool]]] = None
 
     # ------------------------------------------------------------------
     # Web page lifecycle
@@ -135,18 +157,8 @@ class EngineSetup:
         address = lan_address()
         return f'http://{address}:{self.port}' if address else None
 
-    @property
-    def pending_file(self) -> Path:
-        return self.soloist_home / 'activate-pending'
-
-    def start(self, defer: bool = False) -> bool:
-        """Serve the page. Returns False when the port cannot be opened.
-
-        Args:
-            defer: store a submitted key for later instead of switching now
-                   (used while the speaker is its own WiFi hotspot).
-        """
-        self._defer = defer
+    def start(self) -> bool:
+        """Serve the page. Returns False when the port cannot be opened."""
         if self._server:
             return True
         setup = self
@@ -154,13 +166,6 @@ class EngineSetup:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 setup._respond(self, setup._render())
-
-            def do_OPTIONS(self):
-                # The WiFi setup page lives on another port of this speaker.
-                self.send_response(204)
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Access-Control-Allow-Methods', 'POST')
-                self.end_headers()
 
             def do_POST(self):
                 length = int(self.headers.get('Content-Length') or 0)
@@ -203,7 +208,6 @@ class EngineSetup:
         handler.send_header('Content-Type', 'text/html; charset=utf-8')
         handler.send_header('Content-Length', str(len(payload)))
         handler.send_header('Cache-Control', 'no-store')
-        handler.send_header('Access-Control-Allow-Origin', '*')
         handler.end_headers()
         handler.wfile.write(payload)
 
@@ -211,9 +215,7 @@ class EngineSetup:
         with self._lock:
             state, error = self.state, self.error
         if state == 'switching':
-            return _BUSY.format(text='Switching the speaker over&hellip;')
-        if state == 'saved':
-            return _SAVED
+            return _BUSY.format(text='Switching to Soloist&hellip;')
         message = ''
         if state == 'failed' and error:
             message = f'<p class="note error">{html.escape(error)}</p>'
@@ -240,36 +242,7 @@ class EngineSetup:
             self._set('failed', 'The key could not be saved on the speaker.')
             return False
         logger.info('Soloist API key saved')
-        if self._defer:
-            self.pending_file.touch()
-            self._set('saved')
-            return True
         return self._run_script('activate')
-
-    def activate_pending_when_online(self):
-        """Finish a switch whose key was entered during WiFi setup.
-
-        Safe to call any time (app start, WiFi just connected): does nothing
-        unless a key is waiting. Waits in the background for internet.
-        """
-        if not self.pending_file.exists():
-            return
-
-        def _wait_and_switch():
-            deadline = time.time() + _ONLINE_WAIT
-            while time.time() < deadline:
-                try:
-                    socket.create_connection(_DOWNLOAD_HOST, timeout=5).close()
-                except OSError:
-                    time.sleep(5)
-                    continue
-                if self.pending_file.exists():
-                    logger.info('Online: switching to Soloist with the key entered during WiFi setup')
-                    self._run_script('activate')
-                return
-            logger.warning('Soloist switch still pending: no internet yet (the nightly update retries)')
-
-        threading.Thread(target=_wait_and_switch, daemon=True).start()
 
     def switch_back(self) -> bool:
         return self._run_script('deactivate')
@@ -324,23 +297,44 @@ class EngineSetup:
     # What the speaker's own screen shows
     # ------------------------------------------------------------------
 
-    def screen_lines(self) -> List[str]:
-        """Text for the setup menu's Spotify screen ('' = blank line)."""
+    def can_offer_soloist(self) -> bool:
+        """Whether this speaker could switch and has not been set up for it yet."""
+        return (
+            self.engine != 'soloist'
+            and platform.machine() in ('aarch64', 'arm64')   # the only Soloist build Mello knows
+            and not (self.soloist_home / 'key').exists()
+        )
+
+    def screen_items(self) -> List[tuple]:
+        """What the speaker's Spotify screen shows.
+
+        ('text', line), ('spacer',) or ('qr', matrix) where matrix is rows of
+        booleans. A phone camera opens the key page straight from the code.
+        """
         with self._lock:
             state, error = self.state, self.error
         if state == 'switching':
-            return ['Switching over...', '', 'Mello restarts by itself', 'when it is ready.']
+            return [('text', 'Switching to Soloist...'), ('text', 'Mello restarts by itself')]
         url = self.url if self.running else None
         if not url:
-            return ['Connect Mello to WiFi first.']
-        lines = [
-            'Soloist' if self.engine == 'soloist' else 'go-librespot',
-            'is in use.',
-            '',
-            'To change it, open on',
-            'your phone or computer:',
-            url.replace('http://', ''),
-        ]
+            return [('text', 'Connect Mello to WiFi first')]
+
+        if self.engine == 'soloist':
+            items = [('text', 'Spotify Soloist is in use'), ('spacer',)]
+            hint = 'Scan to change it'
+        else:
+            items = [('text', 'Faster play, pause and skip'), ('text', 'with Spotify Soloist'), ('spacer',)]
+            hint = 'Scan to set it up'
+        if url != self._qr_url:
+            # Asked for every frame the screen is drawn; build it once per address.
+            self._qr_url, self._qr = url, qr_matrix(url)
+        matrix = self._qr
+        if matrix:
+            items.append(('qr', matrix))
+            items.append(('spacer',))
+        else:
+            hint = 'Open on your phone'
+        items += [('text', hint), ('text', url.replace('http://', ''))]
         if state == 'failed' and error:
-            lines += ['', 'Last try did not work.']
-        return lines
+            items += [('spacer',), ('text', 'Last try did not work')]
+        return items

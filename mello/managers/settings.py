@@ -29,6 +29,9 @@ class Settings:
         self._last_bt_device_mac: Optional[str] = None
         self._volume_overrides: Optional[list] = None  # None = use defaults
         self._share_usage_data: bool = True  # Set once during install, not changeable via UI
+        # "You can switch to Spotify Soloist" prompt: closed by someone
+        # holding its button (it is not shown again after that).
+        self._soloist_prompt_done: bool = False
         self._load()
 
     def _load(self):
@@ -41,6 +44,7 @@ class Settings:
                 self._volume_overrides = data.get('volume_levels')
                 if 'share_usage_data' in data:
                     self._share_usage_data = bool(data['share_usage_data'])
+                self._soloist_prompt_done = bool(data.get('soloist_prompt_done', False))
                 logger.info(f'Settings loaded: auto_pause={self._auto_pause_minutes}min, expiry={self._progress_expiry_hours}h')
         except (json.JSONDecodeError, IOError, OSError) as e:
             logger.warning(f'Could not load settings, using defaults: {e}')
@@ -53,6 +57,7 @@ class Settings:
                 'progress_expiry_hours': self._progress_expiry_hours,
                 'last_bt_device_mac': self._last_bt_device_mac,
                 'share_usage_data': self._share_usage_data,
+                'soloist_prompt_done': self._soloist_prompt_done,
             }
             if self._volume_overrides is not None:
                 data['volume_levels'] = self._volume_overrides
@@ -65,6 +70,18 @@ class Settings:
     @property
     def share_usage_data(self) -> bool:
         return self._share_usage_data
+
+    # --- "Switch to Spotify Soloist" prompt ---
+
+    @property
+    def soloist_prompt_due(self) -> bool:
+        """True until someone closed the prompt on purpose."""
+        return not self._soloist_prompt_done
+
+    def finish_soloist_prompt(self):
+        if not self._soloist_prompt_done:
+            self._soloist_prompt_done = True
+            self._save()
 
     # --- Auto-pause ---
 

@@ -245,12 +245,3 @@ def test_activate_refuses_without_a_key(tmp_path):
     result = _run_setup_script(tmp_path, ['activate'], key=False)
     assert result.returncode == 2
     assert 'no API key' in result.stdout
-
-
-def test_refresh_finishes_a_switch_that_was_waiting_for_internet(tmp_path):
-    home = tmp_path / 'home'
-    (home / 'soloist').mkdir(parents=True)
-    (home / 'soloist' / 'activate-pending').touch()
-    result = _run_setup_script(tmp_path, ['refresh'], fake_age_days=5)
-    # It went for the switch (and stops at the first thing this fake home lacks).
-    assert 'mello-soloist service is not installed' in result.stdout or result.returncode != 0

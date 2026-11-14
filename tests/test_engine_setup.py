@@ -98,7 +98,7 @@ def test_page_exists_only_between_start_and_stop_and_never_shows_the_key(tmp_pat
         answer = urllib.request.urlopen(
             urllib.request.Request(f'{url}/key', data=f'key={KEY}'.encode()), timeout=3,
         ).read().decode()
-        assert 'Switching the speaker over' in answer
+        assert 'Switching to Soloist' in answer
         assert KEY not in answer
     finally:
         setup.stop()
@@ -146,77 +146,121 @@ def test_menu_serves_the_page_only_while_the_spotify_screen_is_open(tmp_path):
 def test_screen_tells_where_to_go_and_what_is_in_use(tmp_path, monkeypatch):
     import mello.managers.engine_setup as engine_setup
     monkeypatch.setattr(engine_setup, 'lan_address', lambda: '192.168.1.50')
+    monkeypatch.setattr(engine_setup, 'qr_matrix', lambda text: [[True]] if text == 'http://192.168.1.50:8080' else None)
     setup = setup_for(tmp_path)
     setup.port = 8080
 
-    assert setup.screen_lines() == ['Connect Mello to WiFi first.']    # page not running yet
+    assert setup.screen_items() == [('text', 'Connect Mello to WiFi first')]    # page not running yet
 
-    setup._server = object()                                           # as if started
-    lines = setup.screen_lines()
-    assert '192.168.1.50:8080' in lines
-    assert lines[0] == 'go-librespot'
+    setup._server = object()                                                     # as if started
+    items = setup.screen_items()
+    assert ('qr', [[True]]) in items                 # scannable: opens the key page
+    assert ('text', '192.168.1.50:8080') in items    # and typeable
     setup._server = None
 
 
-def test_key_from_wifi_setup_is_kept_until_the_speaker_is_online(tmp_path, monkeypatch):
+def test_screen_falls_back_to_the_address_when_no_qr_code_can_be_made(tmp_path, monkeypatch):
     import mello.managers.engine_setup as engine_setup
+    monkeypatch.setattr(engine_setup, 'lan_address', lambda: '192.168.1.50')
+    monkeypatch.setattr(engine_setup, 'qr_matrix', lambda _text: None)   # library not installed yet
     setup = setup_for(tmp_path)
-    setup.start(defer=True)
+    setup.port = 8080
+    setup._server = object()
+
+    items = setup.screen_items()
+    assert not [item for item in items if item[0] == 'qr']
+    assert ('text', '192.168.1.50:8080') in items
+    setup._server = None
+
+
+# --- the prompt that tells an updated speaker's owner about Soloist ------------
+
+class FakeSettings:
+    def __init__(self):
+        self.done = False
+
+    @property
+    def soloist_prompt_due(self):
+        return not self.done
+
+    def finish_soloist_prompt(self):
+        self.done = True
+
+
+def prompt_menu(tmp_path, monkeypatch, machine='aarch64'):
+    import mello.managers.engine_setup as engine_setup
+    monkeypatch.setattr(engine_setup.platform, 'machine', lambda: machine)
+    setup = setup_for(tmp_path)
+    menu = make_menu(setup)
+    menu.settings = FakeSettings()
+    return menu, setup
+
+
+def test_prompt_cannot_be_tapped_away_only_held_away(tmp_path, monkeypatch):
+    import mello.managers.setup_menu as setup_menu
+    menu, setup = prompt_menu(tmp_path, monkeypatch)
     try:
-        assert setup.submit_key(KEY) is True
+        assert menu.show_spotify_prompt() is True
+        assert menu.state == MenuState.SPOTIFY and setup.running
+
+        rects = {'prompt_close': FakeRect(), 'close': FakeRect()}
+        menu.handle_tap((0, 0), rects)                       # a child taps around
+        assert menu.is_open
+
+        clock = [1000.0]
+        monkeypatch.setattr(setup_menu.time, 'time', lambda: clock[0])
+        menu.handle_press((0, 0), rects)
+        clock[0] += 1.0
+        menu.update()
+        assert menu.is_open and 0.3 < menu.prompt_hold_progress < 0.4
+        menu.handle_release()                                # let go too early
+        clock[0] += 5.0
+        menu.update()
+        assert menu.is_open and menu.prompt_hold_progress == 0.0
+
+        menu.handle_press((0, 0), rects)                     # a parent holds it
+        clock[0] += setup_menu.PROMPT_HOLD_SECONDS
+        menu.update()
+        assert not menu.is_open
+        assert menu.settings.done is True
+        assert setup.running is False
+
+        assert menu.show_spotify_prompt() is False           # closed on purpose: stays away
     finally:
         setup.stop()
 
-    # Stored, marked pending, but nothing switched: there is no internet yet.
-    assert (tmp_path / 'soloist' / 'key').read_text() == KEY + '\n'
-    assert setup.pending_file.exists()
-    assert not (tmp_path / 'calls').exists()
-    assert setup.state == 'saved'
 
-    # Once online (app start, or WiFi just connected) the switch runs.
-    class Reachable:
-        def close(self):
-            pass
-    monkeypatch.setattr(engine_setup.socket, 'create_connection', lambda *_a, **_k: Reachable())
-    setup.activate_pending_when_online()
-
-    assert wait_for(lambda: (tmp_path / 'calls').exists())
-    assert (tmp_path / 'calls').read_text().split() == ['activate']
-
-
-def test_nothing_happens_online_when_no_key_is_waiting(tmp_path):
-    setup = setup_for(tmp_path)
-
-    setup.activate_pending_when_online()
-    time.sleep(0.1)
-
-    assert not (tmp_path / 'calls').exists()
-
-
-def test_wifi_setup_serves_the_key_page_in_deferred_mode(tmp_path, monkeypatch):
-    setup = setup_for(tmp_path)
-    menu = make_menu(setup)
-    monkeypatch.setattr(menu, '_kill_wifi_processes', lambda: None)
-    monkeypatch.setattr(menu, '_delete_stale_ap_profile', lambda: None)
-    monkeypatch.setattr(menu, '_launch_wifi_connect', lambda: None)
-    monkeypatch.setattr(menu, '_restore_wifi_autoconnect', lambda: None)
-    monkeypatch.setattr(menu, '_reconnect_to_known_network', lambda: None)
+def test_unattended_prompt_steps_aside_and_returns_at_the_next_wake(tmp_path, monkeypatch):
+    # An open menu keeps the screen on, so it must not sit there all night.
     import mello.managers.setup_menu as setup_menu
-    monkeypatch.setattr(setup_menu.subprocess, 'run', lambda *_a, **_k: None)
-    monkeypatch.setattr(setup_menu.time, 'sleep', lambda _s: None)
+    menu, setup = prompt_menu(tmp_path, monkeypatch)
+    try:
+        clock = [1000.0]
+        monkeypatch.setattr(setup_menu.time, 'time', lambda: clock[0])
+        assert menu.show_spotify_prompt() is True
+        clock[0] += setup_menu._SPOTIFY_PROMPT_TIMEOUT + 1
+        menu.update()
+        assert not menu.is_open and setup.running is False
+        assert menu.settings.done is False
 
-    menu._start_wifi_ap()
-    assert menu.state == MenuState.WIFI_AP
-    assert setup.running is True and setup._defer is True
-
-    menu.handle_tap((0, 0), {'close': FakeRect()})        # back out of WiFi setup
-    assert setup.running is False
+        assert menu.show_spotify_prompt() is True            # next wake
+    finally:
+        setup.stop()
 
 
-def test_wifi_page_posts_the_key_to_mello_before_the_wifi_details():
-    page = (Path(__file__).parent.parent / 'portal' / 'index.html').read_text()
-    assert "':8080/key'" in page
-    assert page.index("':8080/key'") < page.index("fetch('/connect'")
+def test_prompt_is_not_shown_where_soloist_is_no_option_or_already_set_up(tmp_path, monkeypatch):
+    menu, setup = prompt_menu(tmp_path, monkeypatch, machine='armv7l')     # 32-bit: no Soloist build
+    assert menu.show_spotify_prompt() is False
+
+    menu, setup = prompt_menu(tmp_path, monkeypatch)
+    (tmp_path / 'soloist').mkdir(exist_ok=True)
+    (tmp_path / 'soloist' / 'key').write_text('k' * 37)                    # key already entered
+    assert menu.show_spotify_prompt() is False
+
+    (tmp_path / 'other').mkdir()
+    menu, setup = prompt_menu(tmp_path / 'other', monkeypatch)
+    setup.engine = 'soloist'                                               # already switched
+    assert menu.show_spotify_prompt() is False
 
 
 def test_backing_out_while_wifi_setup_is_starting_puts_the_speaker_back_online(tmp_path, monkeypatch):
@@ -242,3 +286,26 @@ def test_backing_out_while_wifi_setup_is_starting_puts_the_speaker_back_online(t
 
     assert 'launch' not in calls
     assert calls[-2:] == ['restore', 'reconnect']
+
+
+def test_soloist_is_offered_on_the_speaker_right_after_wifi_setup_not_on_the_wifi_page(tmp_path, monkeypatch):
+    # The WiFi page opens in a temporary browser without internet: nobody can
+    # fetch a key from Spotify there and come back. So the offer is made on
+    # the speaker once WiFi is up.
+    menu, setup = prompt_menu(tmp_path, monkeypatch)
+    monkeypatch.setattr(menu, '_restore_wifi_autoconnect', lambda: None)
+
+    class Finished:
+        def poll(self):
+            return 0
+    try:
+        menu.state = MenuState.WIFI_AP
+        menu._wifi_process = Finished()
+        menu.update()
+        assert menu.state == MenuState.SPOTIFY and menu.spotify_prompt_active
+        assert setup.running is True
+    finally:
+        setup.stop()
+
+    page = (Path(__file__).parent.parent / 'portal' / 'index.html').read_text()
+    assert 'soloist' not in page.lower()

@@ -399,9 +399,6 @@ class Mello:
                 on_change=lambda: self.renderer.invalidate(),
             ),
         )
-        if self.setup_menu.engine_setup:
-            # A Soloist key entered during WiFi setup may still be waiting.
-            self.setup_menu.engine_setup.activate_pending_when_online()
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
         self._menu_hold_triggered = False
@@ -1387,6 +1384,7 @@ class Mello:
                 logger.debug(f'Event: MOUSEBUTTONUP at {event.pos}')
                 if not self.sleep_manager.is_sleeping:
                     if self.setup_menu.is_open and self._menu_touch_start is not None:
+                        self.setup_menu.handle_release()
                         if not self._menu_touch_scrolled:
                             # Flash pressed state on close/back button
                             close_rect = self.renderer.menu_button_rects.get('close')
@@ -1421,6 +1419,7 @@ class Mello:
         if self.setup_menu.is_open:
             self._menu_touch_start = pos
             self._menu_touch_scrolled = False
+            self.setup_menu.handle_press(pos, self.renderer.menu_button_rects)
             return
         
         x, y = pos
@@ -1804,6 +1803,11 @@ class Mello:
         )
         self.sleep_manager.wake_up(reason)
         self._on_wake()
+        # Someone touched the speaker awake: the moment to mention, a few
+        # times at most, that it can switch to Spotify Soloist. Not when it
+        # woke by itself because music started, and never over playing music.
+        if 'touch' in reason and not self.now_playing.playing:
+            self.setup_menu.show_spotify_prompt()
 
     def _log_sleep_wait_if_due(self):
         """Log periodic sleeping heartbeat so black-screen reports have context."""
@@ -2302,7 +2306,9 @@ class Mello:
             menu_state=self.setup_menu.state,
             menu_known_networks=self.setup_menu.known_networks,
             menu_current_network=self.setup_menu.current_network,
-            menu_spotify_lines=self.setup_menu.spotify_lines,
+            menu_spotify_items=self.setup_menu.spotify_items,
+            menu_spotify_prompt=self.setup_menu.spotify_prompt_active,
+            menu_prompt_hold_progress=self.setup_menu.prompt_hold_progress,
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
             app_version_label=self.app_version_label,

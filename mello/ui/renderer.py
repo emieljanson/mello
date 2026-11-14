@@ -649,6 +649,7 @@ class Renderer:
     _MENU_TITLE_X = 670         # title (fixed top)
     _MENU_CONTENT_TOP = 530     # first button x (below gradient fade)
     _MENU_CONTENT_BOT = 20      # content extends to near screen edge
+    _MENU_QR_SIZE = 210          # QR code edge, including its white margin
     _MENU_NAV_SIZE = 60          # close/back icon button diameter
     _MENU_NAV_CENTER = (670, 50)   # close/back icon button center (user's top-left)
 
@@ -685,7 +686,12 @@ class Renderer:
         elif ctx.menu_state == MenuState.SPOTIFY:
             title = 'Spotify'
             nav_icon = 'back'
-            items = [('text', line) if line else ('spacer',) for line in ctx.menu_spotify_lines]
+            if ctx.menu_spotify_prompt:
+                # Opened by itself: not a settings page but a message, so it
+                # looks like Mello's other full-screen message, the empty state.
+                self._draw_soloist_prompt(ctx)
+                return
+            items = list(ctx.menu_spotify_items)
         elif ctx.menu_state == MenuState.BT_LIST:
             title = 'Bluetooth'
             nav_icon = 'back'
@@ -726,6 +732,77 @@ class Renderer:
             self._MENU_NAV_SIZE, self._MENU_NAV_SIZE)
 
         self._needs_full_redraw = True
+
+    def _draw_soloist_prompt(self, ctx: 'RenderContext'):
+        """Full-screen message offering Spotify Soloist (see SetupMenu.show_spotify_prompt).
+
+        Same look as the empty state: logo, medium grey lines, one pill
+        button. There is no close button; the pill has to be held, and fills
+        up while it is.
+        """
+        self._draw_background()
+        self.menu_button_rects = {}
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+
+        logo = self.icons.get('logo')
+        if logo:
+            logo_width = 200
+            scale = logo_width / logo.get_width()
+            logo_scaled = pygame.transform.smoothscale(logo, (logo_width, int(logo.get_height() * scale)))
+            logo_rotated = pygame.transform.rotate(logo_scaled, -90)
+            self.screen.blit(logo_rotated, logo_rotated.get_rect(center=(center_x + 245, center_y)))
+
+        # Lines above the code, the code, lines below it: 30px apart like the
+        # empty state. The panel is sideways, so "down" is towards smaller x.
+        x = center_x + 170
+        for item in ctx.menu_spotify_items:
+            kind = item[0]
+            if kind == 'text':
+                line = self._render_text_rotated(item[1], self.font_medium, COLORS['text_secondary'])
+                self.screen.blit(line, line.get_rect(center=(x, center_y)))
+                x -= 30
+            elif kind == 'spacer':
+                x -= 12
+            elif kind == 'qr':
+                self._draw_qr(item[1], x)
+                x -= self._MENU_QR_SIZE + 12
+
+        # Hold-to-close pill, sized to its text like the empty state's button.
+        label = self._render_text_rotated('Hold to close', self.font_medium, COLORS['text_primary'])
+        label_rect = label.get_rect(center=(x - 34, center_y))
+        pad_x, pad_y = 16, 34
+        pill = pygame.Rect(label_rect.x - pad_x, label_rect.y - pad_y,
+                           label_rect.width + pad_x * 2, label_rect.height + pad_y * 2)
+        pygame.draw.rect(self.screen, COLORS['bg_elevated'], pill, border_radius=12)
+        progress = ctx.menu_prompt_hold_progress
+        if progress > 0:
+            filled = pygame.Rect(pill.x, pill.y, pill.width, max(24, int(pill.height * progress)))
+            pygame.draw.rect(self.screen, COLORS['accent'], filled, border_radius=12)
+        self.screen.blit(label, label_rect)
+        self.menu_button_rects['prompt_close'] = pill
+        self._needs_full_redraw = True
+
+    def _draw_qr(self, matrix: list, x: int):
+        """Draw a QR code whose top edge (as the user sees it) is at `x`.
+
+        A QR code reads the same in any orientation, so unlike text it needs
+        no rotation for the portrait panel.
+        """
+        size = self._MENU_QR_SIZE
+        margin = 16
+        module = max(1, (size - 2 * margin) // len(matrix))
+        code = module * len(matrix)
+        left = x + 16 - size                      # top edge lines up with a text row
+        top = CAROUSEL_CENTER_Y - size // 2
+        pygame.draw.rect(self.screen, (255, 255, 255), pygame.Rect(left, top, size, size), border_radius=12)
+        origin_x = left + (size - code) // 2
+        origin_y = top + (size - code) // 2
+        for row_index, row in enumerate(matrix):
+            for col_index, dark in enumerate(row):
+                if dark:
+                    pygame.draw.rect(self.screen, (0, 0, 0), pygame.Rect(
+                        origin_x + row_index * module, origin_y + col_index * module, module, module))
 
     def _build_main_content(self, ctx: 'RenderContext') -> list:
         items = [
@@ -819,6 +896,8 @@ class Renderer:
                 total_height += 30
             elif kind == 'text':
                 total_height += 35
+            elif kind == 'qr':
+                total_height += self._MENU_QR_SIZE + 10
             elif kind == 'spacer':
                 total_height += 15
             elif kind == 'vol_row':
@@ -868,6 +947,10 @@ class Renderer:
 
             elif kind == 'spacer':
                 x -= 15
+
+            elif kind == 'qr':
+                self._draw_qr(item[1], x)
+                x -= self._MENU_QR_SIZE + 10
 
             elif kind == 'vol_row':
                 _, i, output_type, name, val = item

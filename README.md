@@ -115,17 +115,17 @@ Mello plays Spotify through [go-librespot](https://github.com/devgianlu/go-libre
 
 **Switching an installed speaker**
 
-1. Request a Soloist API key at [developer.spotify.com](https://developer.spotify.com/documentation/soloist/tutorials/getting-started)
+1. Get a Soloist API key: with a Spotify Premium account, open [developer.spotify.com/dashboard/soloist](https://developer.spotify.com/dashboard/soloist), accept the terms if asked and generate a key. Every owner needs their own key
 2. On the speaker, open the settings menu (hold the volume button for 3 seconds) and tap **Spotify**
-3. The screen shows an address such as `192.168.1.50:8080`. Open it on a phone or computer on the same WiFi
+3. Scan the QR code on the screen with your phone, or open the address shown under it (such as `192.168.1.50:8080`) on a phone or computer on the same WiFi
 4. Paste the key and save. Mello downloads Soloist, switches over and restarts (about a minute)
 5. Open Spotify, tap the speaker icon and select "Mello" once, like the first time
 
-The address only works while that settings screen is open. The same page has a button to switch back to go-librespot.
+The address only works while that settings screen is open. After an update that adds Soloist, a speaker still on go-librespot shows this screen by itself when it is woken up (not while music plays). It has no close button, so a child does not tap it away: it disappears when you enter a key, or when you hold **Hold to close** for three seconds. The same page has a button to switch back to go-librespot.
 
-**During WiFi setup**
+**Right after WiFi setup**
 
-The "Mello-Setup" WiFi page has an optional *Spotify Soloist key* field. Fill it in together with your WiFi password and Mello switches as soon as it is online.
+Once the speaker is connected it shows the same screen with the QR code, so a new speaker can be switched straight away. The WiFi page itself only asks for WiFi: it opens in a temporary browser without internet, where you could not fetch a key from Spotify.
 
 **Good to know**
 

@@ -25,6 +25,12 @@ _REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
 # SSIDs to exclude when scanning or forgetting WiFi networks
 _WIFI_SKIP_SSIDS = {'Mello-Setup', 'mello-ap', 'mello-setup'}
 
+# How long the self-opened Soloist prompt may stay up without being touched.
+_SPOTIFY_PROMPT_TIMEOUT = 180
+# How long "Hold to close" must be held: long enough that a child's tap or
+# swipe does not close it by accident.
+PROMPT_HOLD_SECONDS = 3.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +58,9 @@ class SetupMenu:
         # Key entry page for switching to Spotify Soloist (served only while
         # the Spotify screen is open).
         self.engine_setup = engine_setup
+        self.spotify_prompt_active = False
+        self._spotify_prompt_since = 0.0
+        self._prompt_hold_start: Optional[float] = None
 
         self.state = MenuState.CLOSED
         self.scroll_offset: int = 0  # pixels scrolled in current menu screen
@@ -99,20 +108,49 @@ class SetupMenu:
         if self.bluetooth and self.state == MenuState.BT_LIST:
             self.bluetooth.stop_scan()
         self._leave_spotify_screen()
+        self.spotify_prompt_active = False
+        self._prompt_hold_start = None
         self._reset_confirm_pending = False
         self.state = MenuState.CLOSED
         self.current_network = None
         self._on_invalidate()
 
+    # ------------------------------------------------------------------
+    # Soloist prompt: hold to close
+    # ------------------------------------------------------------------
+
+    def handle_press(self, pos, button_rects: dict):
+        """A finger went down while the menu is open."""
+        rect = button_rects.get('prompt_close')
+        if self.spotify_prompt_active and rect and rect.collidepoint(*pos):
+            self._prompt_hold_start = time.time()
+            self._spotify_prompt_since = self._prompt_hold_start   # touched: not unattended
+            self._on_invalidate()   # the button lights up at once
+
+    def handle_release(self):
+        """The finger came up again."""
+        if self._prompt_hold_start is not None:
+            self._prompt_hold_start = None
+            self._on_invalidate()
+
+    @property
+    def prompt_hold_progress(self) -> float:
+        """0.0-1.0: how far the "Hold to close" press has come."""
+        if self._prompt_hold_start is None:
+            return 0.0
+        return min(1.0, (time.time() - self._prompt_hold_start) / PROMPT_HOLD_SECONDS)
+
     def handle_tap(self, pos, button_rects: dict):
         """Handle a tap while the menu is open."""
+        if self.spotify_prompt_active:
+            return  # only the hold button does something here
         x, y = pos
 
         if 'close' in button_rects and button_rects['close'].collidepoint(x, y):
             if self.state == MenuState.MAIN:
                 self.close()
+
             elif self.state == MenuState.WIFI_AP:
-                self._leave_spotify_screen()
                 self._restore_wifi_autoconnect()
                 if self._wifi_process:
                     self._kill_wifi_processes()
@@ -191,13 +229,34 @@ class SetupMenu:
         self._on_invalidate()
 
     def _leave_spotify_screen(self):
-        """Stop the key page when leaving a screen that serves it."""
-        if self.engine_setup and self.state in (MenuState.SPOTIFY, MenuState.WIFI_AP):
+        if self.engine_setup and self.state == MenuState.SPOTIFY:
             self.engine_setup.stop()
 
     @property
-    def spotify_lines(self) -> list:
-        return self.engine_setup.screen_lines() if self.engine_setup else []
+    def spotify_items(self) -> list:
+        return self.engine_setup.screen_items() if self.engine_setup else []
+
+    def show_spotify_prompt(self) -> bool:
+        """Open the Spotify screen by itself to say Soloist is available.
+
+        It has no close button: it goes away when a key is entered (the
+        speaker switches and restarts) or when someone holds "Hold to close"
+        for a few seconds, so a child does not tap it away before a parent
+        has seen it. Until then it comes back each time the speaker is woken.
+
+        Returns False when there is nothing to offer (already switched, no
+        Soloist build for this speaker, or it was closed on purpose before).
+        """
+        if self.is_open or not self.engine_setup or not self.settings:
+            return False
+        if not self.settings.soloist_prompt_due or not self.engine_setup.can_offer_soloist():
+            return False
+        logger.info('Setup menu: showing the Spotify Soloist prompt')
+        self.spotify_prompt_active = True
+        self._prompt_hold_start = None
+        self._spotify_prompt_since = time.time()
+        self._show_spotify_screen()
+        return True
 
     def handle_scroll(self, delta: int, max_overflow: int):
         """Adjust scroll offset by delta, clamped to valid range."""
@@ -206,6 +265,20 @@ class SetupMenu:
 
     def update(self):
         """Called each frame to detect wifi-connect / update exit."""
+        if self.spotify_prompt_active:
+            if self._prompt_hold_start is not None:
+                if self.prompt_hold_progress >= 1.0:
+                    logger.info('Setup menu: Spotify Soloist prompt closed by holding')
+                    self.settings.finish_soloist_prompt()
+                    self.close()
+                else:
+                    self._on_invalidate()   # keep the button filling up
+            elif time.time() - self._spotify_prompt_since > _SPOTIFY_PROMPT_TIMEOUT:
+                # An open menu keeps the screen awake, so it steps aside when
+                # nobody is there. It is back the next time the speaker wakes.
+                logger.info('Setup menu: Spotify Soloist prompt put away (unattended)')
+                self.close()
+
         # Auto-clear reset confirmation after 4 seconds
         if self._reset_confirm_pending and time.time() - self._reset_confirm_time > 4:
             self._reset_confirm_pending = False
@@ -231,8 +304,12 @@ class SetupMenu:
                     logger.info('wifi-connect exited (code=0)')
                     self._on_toast('WiFi connected!')
                     self.close()
-                    if self.engine_setup:
-                        self.engine_setup.activate_pending_when_online()
+                    # Whoever just set up WiFi is standing at the speaker with
+                    # a phone that is back on the home network: the moment to
+                    # offer Soloist. (Not on the WiFi page itself: that opens
+                    # in a temporary browser without internet, so the owner
+                    # could not fetch a key from Spotify and come back.)
+                    self.show_spotify_prompt()
                 else:
                     logger.info(f'wifi-connect exited (code={ret})')
                     self._reconnect_to_known_network()
@@ -456,10 +533,6 @@ class SetupMenu:
         self.state = MenuState.WIFI_AP
         self.scroll_offset = 0
         self._on_invalidate()
-        # The WiFi setup page offers an optional Soloist key field; it posts
-        # to this page. No internet now, so the key is kept for later.
-        if self.engine_setup:
-            self.engine_setup.start(defer=True)
 
         self._wifi_ap_attempt += 1
         attempt = self._wifi_ap_attempt

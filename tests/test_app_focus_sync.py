@@ -51,7 +51,7 @@ def _make_mello(items: list[CatalogItem], now_playing: NowPlaying) -> Mello:
     )
     app.api = SimpleNamespace(pause=MagicMock(), set_repeat_context=MagicMock(return_value=True))
     app.volume = SimpleNamespace(unmute=MagicMock(), mute=MagicMock())
-    app.renderer = SimpleNamespace(invalidate=MagicMock())
+    app.renderer = SimpleNamespace(menu_button_rects={}, invalidate=MagicMock())
     app._focus_epoch = 0
     app._pending_focus_uri = None
     app._pending_focus_since = 0.0
@@ -93,7 +93,10 @@ def playback_app(monkeypatch):
     app.carousel.update = MagicMock()
     app.touch.check_long_press = lambda: False
     app.play_timer.cancel = MagicMock()
-    app.setup_menu = SimpleNamespace(state=MenuState.CLOSED, is_open=False, update=MagicMock())
+    app.setup_menu = SimpleNamespace(
+        state=MenuState.CLOSED, is_open=False, update=MagicMock(),
+        handle_press=MagicMock(), handle_release=MagicMock(),
+    )
     app.sleep_manager = SimpleNamespace(is_sleeping=False, check_sleep=MagicMock())
     app.tracker = MagicMock()
     app.auto_pause = MagicMock()
