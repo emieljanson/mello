@@ -97,6 +97,7 @@ def playback_app(monkeypatch):
         state=MenuState.CLOSED, is_open=False, update=MagicMock(),
         handle_press=MagicMock(), handle_release=MagicMock(),
     )
+    app.wifi_keeper = SimpleNamespace(take_restored=lambda: False)
     app.sleep_manager = SimpleNamespace(is_sleeping=False, check_sleep=MagicMock())
     app.tracker = MagicMock()
     app.auto_pause = MagicMock()

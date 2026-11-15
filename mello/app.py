@@ -30,6 +30,7 @@ from .api import LibrespotAPI, NullLibrespotAPI, SoloistAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
 from .managers.engine_setup import EngineSetup, PROMPT_BENEFITS, PROMPT_SCAN_HINT
+from .managers.wifi_keeper import WifiKeeper
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label, set_system_volume
@@ -398,6 +399,11 @@ class Mello:
                 port=ENGINE_SETUP_PORT,
                 on_change=lambda: self.renderer.invalidate(),
             ),
+        )
+        # Rejoins a known WiFi network when NetworkManager has given up.
+        self.wifi_keeper = WifiKeeper(
+            is_online=self._has_network_connection,
+            is_busy=lambda: self.setup_menu.wifi_setup_running,
         )
         self._pairing_known = True
         self._pairing_checked_at = 0.0
@@ -881,6 +887,7 @@ class Mello:
 
             # Start Bluetooth monitoring
             self.bluetooth.start_monitoring()
+            self.wifi_keeper.start()
         else:
             logger.info('Running in MOCK MODE')
             self._startup_ready = True
@@ -953,6 +960,7 @@ class Mello:
         self._save_progress_on_shutdown()
         self.tracker.on_shutdown()
         self.bluetooth.stop()
+        self.wifi_keeper.stop()
         
         # Restore display before exit so next boot doesn't start with black screen
         if self.sleep_manager.is_sleeping:
@@ -2193,6 +2201,9 @@ class Mello:
             self._pending_focus_uri is not None
         )
         
+        if self.wifi_keeper.take_restored():
+            self._cached_has_network = True
+            self.setup_menu.network_restored()
         self.setup_menu.update()
 
         # Volume hold detection: open menu after MENU_HOLD_TIME seconds

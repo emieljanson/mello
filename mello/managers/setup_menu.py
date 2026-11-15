@@ -75,6 +75,9 @@ class SetupMenu:
         self._ssid_to_con_name: dict = {}
         self._wifi_process: Optional[subprocess.Popen] = None
         self._wifi_ap_attempt = 0
+        # The WiFi screen is up because Mello found itself offline, not
+        # because somebody opened it.
+        self._wifi_opened_itself = False
         # The home screen itself is asking to connect Spotify (new Mello).
         self._home_page = False
         self._home_page_retry_at = 0.0
@@ -107,6 +110,23 @@ class SetupMenu:
             logger.info('show_wifi() ignored — AP mode active')
             return
         self._show_wifi_screen()
+        self._wifi_opened_itself = True
+
+    @property
+    def wifi_setup_running(self) -> bool:
+        """True while Mello is its own hotspot for joining a new network."""
+        return self.state == MenuState.WIFI_AP or self._wifi_process is not None
+
+    def network_restored(self):
+        """The connection came back by itself.
+
+        A WiFi screen that opened by itself because there was no connection
+        goes away by itself too; one the owner opened stays.
+        """
+        if self._wifi_opened_itself and self.state == MenuState.WIFI_LIST:
+            logger.info('Setup menu: connection is back, closing the WiFi screen')
+            self._on_toast('WiFi connected!')
+            self.close()
 
     def close(self):
         """Close the setup menu, stopping wifi-connect and BT scan if running."""
@@ -577,14 +597,17 @@ class SetupMenu:
     def _collect_known_networks(self):
         """Populate known_networks and current_network via nmcli."""
         try:
+            # "--active" also lists a network Mello is still trying to join.
+            # Only one that is really up counts as connected: otherwise the
+            # list shows it as connected while the speaker is offline.
             active_result = subprocess.run(
-                ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show', '--active'],
+                ['nmcli', '-t', '-f', 'NAME,TYPE,STATE', 'con', 'show', '--active'],
                 capture_output=True, text=True, timeout=3,
             )
             active_con_names = [
-                line.split(':')[0]
+                line.rsplit(':', 2)[0]
                 for line in active_result.stdout.strip().split('\n')
-                if line and '802-11-wireless' in line
+                if line.endswith(':802-11-wireless:activated')
             ]
             all_result = subprocess.run(
                 ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
@@ -623,6 +646,7 @@ class SetupMenu:
 
     def _show_wifi_screen(self):
         logger.info('Setup menu: WiFi screen')
+        self._wifi_opened_itself = False
         self._collect_known_networks()
         self.state = MenuState.WIFI_LIST
         self.scroll_offset = 0
