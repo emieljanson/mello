@@ -332,6 +332,11 @@ UDEV
 sudo udevadm control --reload-rules 2>/dev/null || true
 sudo udevadm trigger 2>/dev/null || true
 
+# Keep the WiFi chip awake: with power save on the router drops the Pi
+# several times a day (see pi/networkmanager/99-mello-wifi-powersave.conf)
+sudo mkdir -p /etc/NetworkManager/conf.d
+sudo install -m 644 ~/mello/pi/networkmanager/99-mello-wifi-powersave.conf /etc/NetworkManager/conf.d/99-mello-wifi-powersave.conf
+
 # Disable getty on tty1 so Mello can own the display (kmsdrm requires a free VT)
 sudo systemctl mask getty@tty1.service 2>/dev/null || true
 sudo systemctl stop getty@tty1.service 2>/dev/null || true
@@ -362,6 +367,18 @@ chmod +x ~/mello/pi/auto-update.sh
 if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
   echo "ondemand" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
   echo "CPU governor set to 'ondemand'"
+fi
+
+# ============================================
+# 13. Faster boot: skip cloud-init after the first boot
+# ============================================
+# Raspberry Pi Imager's settings (user, WiFi, SSH) are applied by cloud-init
+# on the very first boot. After that it still runs on every boot, in front
+# of Mello (~8 s on a Pi 3), with nothing left to do.
+CLOUD_STATUS="$(cloud-init status 2>/dev/null || true)"   # exits 2 on "degraded done"
+if [ -d /etc/cloud ] && grep -qE 'status: (done|error)' <<<"$CLOUD_STATUS"; then
+  sudo touch /etc/cloud/cloud-init.disabled
+  echo "cloud-init disabled for later boots"
 fi
 
 # ============================================

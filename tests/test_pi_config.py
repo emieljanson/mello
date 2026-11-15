@@ -418,3 +418,68 @@ def test_menu_update_still_runs_without_systemd_run(monkeypatch, tmp_path):
     monkeypatch.setattr(sm.shutil, 'which', lambda name: None)
     cmd = sm._update_command(tmp_path / 'u.log')
     assert cmd[0] == 'bash' and 'auto-update.sh' in cmd[-1] and str(tmp_path / 'u.log') in cmd[-1]
+
+
+def test_wifi_power_save_is_switched_off_on_new_and_existing_speakers(tmp_path):
+    setup = (ROOT / 'pi/setup.sh').read_text()
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    conf = (ROOT / 'pi/networkmanager/99-mello-wifi-powersave.conf').read_text()
+    assert 'wifi.powersave = 2' in conf
+    assert '99-mello-wifi-powersave.conf /etc/NetworkManager/conf.d/' in setup
+    assert 'run_migration "017"' in migrate
+
+    body = migrate.split('_migrate_017() {', 1)[1].split('\n}', 1)[0]
+    home = tmp_path / 'home'
+    (home / 'mello/pi/networkmanager').mkdir(parents=True)
+    (home / 'mello/pi/networkmanager/99-mello-wifi-powersave.conf').write_text(conf)
+    conf_dir = tmp_path / 'nm'
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        HOME={str(home)!r}
+        MELLO_NM_CONF_DIR={str(conf_dir)!r}
+        log() {{ :; }}
+        sudo() {{ case "$1" in *iw) return 0;; esac; "$@"; }}
+        _migrate_017() {{
+        {body}
+        }}
+        _migrate_017
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert (conf_dir / '99-mello-wifi-powersave.conf').read_text() == conf
+
+
+def _run_migration_018(tmp_path, cloud_status, exit_code=0):
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    body = migrate.split('_migrate_018() {', 1)[1].split('\n}', 1)[0]
+    cloud_dir = tmp_path / 'cloud'
+    cloud_dir.mkdir()
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        MELLO_CLOUD_DIR={str(cloud_dir)!r}
+        log() {{ :; }}
+        sudo() {{ "$@"; }}
+        cloud-init() {{ echo {cloud_status!r}; return {exit_code}; }}
+        _migrate_018() {{
+        {body}
+        }}
+        _migrate_018
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    return (cloud_dir / 'cloud-init.disabled').exists()
+
+
+def test_cloud_init_is_skipped_on_later_boots(tmp_path):
+    assert 'run_migration "018"' in (ROOT / 'pi/migrate.sh').read_text()
+    assert 'cloud-init.disabled' in (ROOT / 'pi/setup.sh').read_text()
+    assert _run_migration_018(tmp_path, 'status: done') is True
+
+
+def test_cloud_init_first_boot_is_never_cut_short(tmp_path):
+    assert _run_migration_018(tmp_path, 'status: running') is False
+
+
+def test_cloud_init_done_with_warnings_counts_as_done(tmp_path):
+    # Real Pi: "status: done" with exit code 2 (degraded done)
+    assert _run_migration_018(tmp_path, 'status: done', exit_code=2) is True

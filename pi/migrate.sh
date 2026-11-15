@@ -848,6 +848,57 @@ _migrate_016() {
 }
 
 # ============================================
+# Migration 017: Keep the WiFi chip awake
+# ============================================
+_migrate_017() {
+  # With WiFi power save on, the Pi's WiFi chip dozes and the router drops it
+  # (wpa_supplicant "CTRL-EVENT-DISCONNECTED reason=6/7"), several times a day.
+  # The NetworkManager setting makes it stick across reconnects and reboots;
+  # iw switches it off right away without dropping the current connection.
+  local CODE_DIR="$HOME/mello"
+  local CONF_DIR="${MELLO_NM_CONF_DIR:-/etc/NetworkManager/conf.d}"
+  local SRC="$CODE_DIR/pi/networkmanager/99-mello-wifi-powersave.conf"
+  if [ ! -f "$SRC" ]; then
+    log "ERROR: $SRC missing"
+    return 1
+  fi
+  sudo mkdir -p "$CONF_DIR"
+  sudo install -m 644 "$SRC" "$CONF_DIR/99-mello-wifi-powersave.conf"
+  log "Installed WiFi power save config"
+  local IW
+  IW="$(command -v iw || echo /sbin/iw)"
+  if [ -x "$IW" ]; then
+    sudo "$IW" dev wlan0 set power_save off 2>/dev/null || log "Could not switch WiFi power save off now (applies on next connect)"
+  fi
+}
+
+# ============================================
+# Migration 018: Faster boot, skip cloud-init after the first boot
+# ============================================
+_migrate_018() {
+  # cloud-init applies Raspberry Pi Imager's settings on the first boot only,
+  # but keeps running on every boot in front of Mello (~8 s on a Pi 3).
+  # WiFi lives in NetworkManager's own files, so nothing depends on it.
+  local CLOUD_DIR="${MELLO_CLOUD_DIR:-/etc/cloud}"
+  if [ ! -d "$CLOUD_DIR" ]; then
+    log "No cloud-init on this speaker"
+    return 0
+  fi
+  # "cloud-init status" exits 2 when its first boot finished with warnings
+  # ("degraded done"); with pipefail that would read as "not finished".
+  local STATUS
+  STATUS="$(cloud-init status 2>/dev/null || true)"
+  if ! grep -qE 'status: (done|error|disabled)' <<<"$STATUS"; then
+    # Never cut a first boot short. (A speaker runs updates only after
+    # install.sh, long after its first boot, so this is a safety net.)
+    log "cloud-init has not finished its first boot, leaving it on"
+    return 0
+  fi
+  sudo touch "$CLOUD_DIR/cloud-init.disabled"
+  log "cloud-init disabled for later boots"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -866,3 +917,5 @@ run_migration "013" "Disable Spotify suggested autoplay"
 run_migration "014" "Keep librespot independent of UI sleep/restarts"
 run_migration "015" "Allow automatic librespot recovery"
 run_migration "016" "Let a speaker switch to Spotify Soloist"
+run_migration "017" "Keep the WiFi chip awake (no power save)"
+run_migration "018" "Faster boot: skip cloud-init after the first boot"

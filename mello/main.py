@@ -19,6 +19,7 @@ from .config import (
     LOG_DIR, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
 )
 from .app import Mello
+from . import crash_log
 
 
 def setup_logging():
@@ -145,6 +146,7 @@ def main():
     setup_logging()
     
     logger = logging.getLogger(__name__)
+    crash_log.install(LOG_DIR)
     
     # Log system info first
     log_system_info(logger)

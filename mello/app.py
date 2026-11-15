@@ -11,7 +11,9 @@ from typing import Optional, List
 
 import pygame
 
+from . import crash_log
 from .config import (
+    LOG_DIR,
     SCREEN_WIDTH, SCREEN_HEIGHT,
     LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE,
     SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
@@ -367,9 +369,13 @@ class Mello:
         self._cached_has_network: bool = True
         self._network_check_time: float = 0.0
         
-        # Register signal handlers for graceful shutdown
+        # Register signal handlers for graceful shutdown. SIGHUP too: the
+        # service owns tty1 through a login session, and on reboot/shutdown
+        # that session ends first and hangs up the tty. Unhandled, SIGHUP
+        # killed Mello at once, before it saved where each album was.
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGHUP, self._handle_signal)
         
         # Performance logging
         self._last_fps_log = time.time()
@@ -856,9 +862,10 @@ class Mello:
         self.renderer.invalidate()
 
     def _handle_signal(self, signum, frame):
-        """Handle SIGTERM/SIGINT for graceful shutdown."""
-        sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
+        """Handle SIGTERM/SIGINT/SIGHUP for graceful shutdown."""
+        sig_name = signal.Signals(signum).name
         logger.info(f'Received {sig_name}, shutting down...')
+        crash_log.stop_requested()
         self.running = False
     
     def start(self):
@@ -897,6 +904,7 @@ class Mello:
         
         # Main loop
         while self.running:
+            crash_log.heartbeat()
             self._apply_spotify_inactive()
             self._check_touch_health()
             # Sleep mode: wait for touch/key to wake up
@@ -969,6 +977,7 @@ class Mello:
         self.events.stop()
         self.evdev_touch.stop()
         pygame.quit()
+        crash_log.mark_clean_exit(LOG_DIR)
         logger.info('Mello stopped')
     
     def _target_fps(self) -> int:

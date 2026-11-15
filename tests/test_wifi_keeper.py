@@ -17,6 +17,7 @@ class World:
         self.keeper = WifiKeeper(
             is_online=lambda: self.online, is_busy=lambda: self.busy,
             saved=lambda: self.saved, join=self._join, clock=lambda: self.now,
+            link_summary=lambda: 'ap aa:bb, signal -60 dBm',
         )
 
     def _join(self):
@@ -261,3 +262,27 @@ def test_a_network_joined_again_is_not_doubled(monkeypatch):
     assert nm.added == []
     menu._restore_wifi_autoconnect()            # a second clean-up does nothing either
     assert nm.added == []
+
+
+def test_log_says_which_access_point_and_signal_when_wifi_drops(caplog):
+    w = World()
+    caplog.set_level('INFO', logger='mello.managers.wifi_keeper')
+    w.online = False
+    w.wait(15)
+    w.online = True
+    w.wait(15)
+    lines = [r.getMessage() for r in caplog.records]
+    assert 'WiFi keeper: offline (ap aa:bb, signal -60 dBm)' in lines
+    assert any(l.startswith('WiFi keeper: back online') and 'signal -60 dBm' in l for l in lines)
+
+
+def test_link_summary_reads_access_point_signal_and_power_save(monkeypatch):
+    from types import SimpleNamespace
+    from mello.managers import wifi_keeper
+    outputs = {
+        'link': 'Connected to 08:36:c9:73:ed:8f (on wlan0)\n\tSSID: Home\n\tfreq: 2452.0\n\tsignal: -66 dBm\n',
+        'get': 'Power save: off\n',
+    }
+    monkeypatch.setattr(wifi_keeper.subprocess, 'run',
+                        lambda cmd, **kw: SimpleNamespace(stdout=outputs[cmd[3]]))
+    assert wifi_keeper.wifi_link_summary() == 'ap 08:36:c9:73:ed:8f, freq 2452.0, signal -66 dBm, power save: off'
