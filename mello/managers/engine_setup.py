@@ -114,9 +114,9 @@ PROMPT_SCAN_HINT = 'Scan to turn it on'
 
 # The same question on the home screen of a new Mello, once it is online.
 SETUP_SPOTIFY_TITLE = 'Connect Spotify'          # heading of the phone page
-SETUP_LINES = ('Scan the code with your phone', 'to connect Spotify')
+SETUP_LINES = ('Scan with a phone on the same WiFi', 'to connect Spotify')
 # Under Settings > Spotify, for a Mello that was offered it and once it is in use.
-SETTINGS_OFFER_LINES = ('Scan the code with your phone', 'to make Mello faster')
+SETTINGS_OFFER_LINES = ('Scan with a phone on the same WiFi', 'to make Mello faster')
 SETTINGS_CONNECTED_LINES = ('Faster playback is on', 'Scan the code to change it')
 
 # What the owner reads when it did not work; the technical reason is in the log.

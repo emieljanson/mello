@@ -292,7 +292,7 @@ def test_a_new_mello_asks_to_connect_spotify_on_its_home_screen(tmp_path, monkey
 
         assert menu.home_connect_spotify(has_network=True, library_empty=True) is True
         assert setup.running and not menu.is_open            # no menu, nothing to tap away
-        assert menu.home_lines == ('Scan the code with your phone', 'to connect Spotify')
+        assert menu.home_lines == ('Scan with a phone on the same WiFi', 'to connect Spotify')
         assert menu.show_spotify_prompt() is False           # and no pop-up on top of it
 
         page = setup._render('/')                            # the phone: straight to the code, nothing "new" or "faster"
@@ -326,7 +326,7 @@ def test_settings_says_what_scanning_the_code_does(tmp_path, monkeypatch):
         menu.open()
         menu._show_spotify_screen()
         items = menu.spotify_menu_items
-        assert items[:2] == [('text', 'Scan the code with your phone'), ('text', 'to make Mello faster')]
+        assert items[:2] == [('text', 'Scan with a phone on the same WiFi'), ('text', 'to make Mello faster')]
         setup.engine = 'soloist'
         assert menu.spotify_menu_items[0] == ('text', 'Faster playback is on')
     finally:
