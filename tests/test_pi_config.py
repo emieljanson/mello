@@ -402,3 +402,19 @@ def test_login_that_keeps_failing_is_not_retried_for_ever(tmp_path):
         _stop(process)
         internet.down()
 
+
+
+def test_menu_update_runs_outside_mello_so_the_restart_does_not_cut_it_off(monkeypatch, tmp_path):
+    import mello.managers.setup_menu as sm
+    monkeypatch.setattr(sm.shutil, 'which', lambda name: '/usr/bin/systemd-run')
+    cmd = sm._update_command(tmp_path / 'mello-update.log')
+    assert cmd[:3] == ['systemd-run', '--user', '--wait']   # a job of its own, result still reported
+    assert f'StandardOutput=append:{tmp_path}/mello-update.log' in cmd
+    assert cmd[-2:] == ['bash', f'{sm._REPO_DIR}/pi/auto-update.sh']
+
+
+def test_menu_update_still_runs_without_systemd_run(monkeypatch, tmp_path):
+    import mello.managers.setup_menu as sm
+    monkeypatch.setattr(sm.shutil, 'which', lambda name: None)
+    cmd = sm._update_command(tmp_path / 'u.log')
+    assert cmd[0] == 'bash' and 'auto-update.sh' in cmd[-1] and str(tmp_path / 'u.log') in cmd[-1]

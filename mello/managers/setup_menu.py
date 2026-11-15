@@ -43,6 +43,28 @@ PROMPT_HOLD_SECONDS = 3.0
 logger = logging.getLogger(__name__)
 
 
+def _update_command(log_path: Path) -> list:
+    """How the settings menu starts an update.
+
+    The update ends by restarting Mello, which stops everything Mello itself
+    started: run from here, the script was cut off at that point, so its
+    last check and "Update complete" never happened. Started as a job of
+    the user's own service manager instead, it lives on like the nightly
+    run does. The output goes to the same log the nightly run uses (a pipe
+    nobody reads fills up during apt/pip and then hangs the update).
+    """
+    script = f'{_REPO_DIR}/pi/auto-update.sh'
+    if shutil.which('systemd-run'):
+        return [
+            'systemd-run', '--user', '--wait', '--collect', '--quiet',
+            f'--unit=mello-manual-update-{int(time.time())}',
+            '-p', f'StandardOutput=append:{log_path}',
+            '-p', f'StandardError=append:{log_path}',
+            'bash', script,
+        ]
+    return ['bash', '-c', f'exec bash "{script}" >> "{log_path}" 2>&1']
+
+
 class SetupMenu:
     """Manages the setup menu overlay (WiFi, library clear, settings)."""
 
@@ -514,14 +536,11 @@ class SetupMenu:
         self._on_invalidate()
         self._on_toast("Updating... don't unplug")
         try:
-            # Into the same log the nightly run uses. A pipe nobody reads
-            # fills up (apt, pip) and then the update hangs with its lock held.
-            with open(Path.home() / 'mello-update.log', 'ab') as update_log:
-                self._update_process = subprocess.Popen(
-                    ['bash', f'{_REPO_DIR}/pi/auto-update.sh'],
-                    stdout=update_log,
-                    stderr=subprocess.STDOUT,
-                )
+            self._update_process = subprocess.Popen(
+                _update_command(Path.home() / 'mello-update.log'),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             logger.info('Manual update triggered')
         except Exception as e:
             logger.error(f'Failed to start update: {e}')
