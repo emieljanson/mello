@@ -17,7 +17,7 @@ Kids swipe through album covers and tap to play. Parents control the music libra
 - **Auto-pause** — Music stops after 30 minutes (configurable) to prevent all-day playback
 - **Progress memory** — Remembers where each album left off for up to 96 hours
 - **Bluetooth** — Connect wireless headphones or speakers
-- **WiFi setup** — Creates a hotspot for easy configuration if WiFi drops
+- **WiFi setup** — Creates a hotspot for easy configuration, and gets back onto a known network by itself if WiFi drops
 - **Auto-updates** — Pulls latest changes from GitHub nightly
 - **No account needed on the device** — Authentication happens via Spotify on your phone
 
@@ -90,10 +90,10 @@ Albums and playlists you play are automatically saved to the device. Kids can th
 Once open, you'll see a scrollable menu with these sections:
 
 ### Connections
-- **WiFi** — View saved networks, connect to a new one, or switch. If WiFi drops, Mello creates a "Mello-Setup" hotspot you can connect to from your phone
+- **WiFi** — View saved networks, connect to a new one, or switch. To add a network, tap **+ New network**: Mello creates a "Mello-Setup" hotspot you connect to from your phone, then you pick your WiFi and enter its password. If joining fails, the screen says so and you can simply try again; the networks Mello already knew are kept. If WiFi drops, Mello keeps trying to rejoin a known network by itself
 - **Bluetooth** — Pair and connect wireless headphones or speakers. Shows paired devices and nearby discoverable devices
 - **Volume levels** — Set separate volume levels (low/mid/high) for the built-in speaker and Bluetooth output
-- **Spotify** — Shows which Spotify engine the speaker uses and lets you switch to Spotify Soloist (see [Spotify Soloist](#spotify-soloist-optional))
+- **Spotify** — A QR code to turn on faster playback (Spotify Soloist), or to change it once it is on (see [Spotify Soloist](#spotify-soloist-optional))
 
 ### Playback settings
 - **Auto-pause** — How long Mello plays before automatically pausing (15, 30, 60, or 120 minutes). Tap to cycle through options. Default: 30 minutes
@@ -113,19 +113,23 @@ During installation, Mello asks if you'd like to share anonymous usage data. Thi
 
 Mello plays Spotify through [go-librespot](https://github.com/devgianlu/go-librespot) by default. You can switch a speaker to **Spotify Soloist**, Spotify's own headless Connect client, which responds faster to play, pause and skip and does not hang on busy input. It needs a 64-bit Raspberry Pi OS and your own API key from Spotify; Mello downloads Soloist from Spotify itself.
 
-**Switching an installed speaker**
+**Turning it on**
 
-1. Get a Soloist API key: with a Spotify Premium account, open [developer.spotify.com/dashboard/soloist](https://developer.spotify.com/dashboard/soloist), accept the terms if asked and generate a key. Every owner needs their own key
-2. On the speaker, open the settings menu (hold the volume button for 3 seconds) and tap **Spotify**
-3. Scan the QR code on the screen with your phone, or open the address shown under it (such as `192.168.1.50:8080`) on a phone or computer on the same WiFi
-4. Paste the key and save. Mello downloads Soloist, switches over and restarts (about a minute)
-5. Open Spotify, tap the speaker icon and select "Mello" once, like the first time
+1. On the speaker, open the settings menu (hold the volume button for 3 seconds) and tap **Spotify**
+2. Scan the QR code with a phone on the **same WiFi** as Mello. The page explains the steps
+3. Get your code from Spotify: with a Spotify Premium account, open [developer.spotify.com/dashboard/soloist](https://developer.spotify.com/dashboard/soloist), accept the terms if asked and generate a key. Every owner needs their own key
+4. Paste the code and tap **Connect**. Mello downloads Soloist, switches over and restarts by itself (about half a minute)
+5. If Spotify was never connected on this speaker: open Spotify, tap the speaker icon and select "Mello" once
 
-The address only works while that settings screen is open. After an update that adds Soloist, a speaker still on go-librespot shows this screen by itself when it is woken up (not while music plays). It has no close button, so a child does not tap it away: it disappears when you enter a key, or when you hold **Hold to close** for three seconds. The same page has a button to switch back to go-librespot.
+The page only works while the speaker shows the QR code. The same page has a button to switch back.
 
-**Right after WiFi setup**
+**After an update**
 
-Once the speaker is connected it shows the same screen with the QR code, so a new speaker can be switched straight away. The WiFi page itself only asks for WiFi: it opens in a temporary browser without internet, where you could not fetch a key from Spotify.
+A speaker that gets Soloist through an update keeps working as before. When it is woken up (not while music plays) it offers **New: a faster Mello** with the QR code next to it. The offer has no close button, so a child does not tap it away: it goes away when you enter a code, or when you hold **Hold to do it later** for three seconds. It then comes back after three days; the third time the button says **Hold to skip this**, and after that it no longer appears by itself (it stays under Settings → Spotify). It also steps aside after three minutes when nobody uses it.
+
+**New speaker**
+
+After the WiFi step the home screen shows the Mello logo with **Scan with a phone on the same WiFi to connect Spotify** and the QR code, so a new speaker is set up with Soloist straight away. The WiFi page itself only asks for WiFi: it opens in a temporary browser without internet, where you could not fetch a code from Spotify.
 
 **Good to know**
 
