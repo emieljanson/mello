@@ -884,7 +884,11 @@ _migrate_018() {
     log "No cloud-init on this speaker"
     return 0
   fi
-  if ! cloud-init status 2>/dev/null | grep -qE 'status: (done|error|disabled)'; then
+  # "cloud-init status" exits 2 when its first boot finished with warnings
+  # ("degraded done"); with pipefail that would read as "not finished".
+  local STATUS
+  STATUS="$(cloud-init status 2>/dev/null || true)"
+  if ! grep -qE 'status: (done|error|disabled)' <<<"$STATUS"; then
     # Never cut a first boot short. (A speaker runs updates only after
     # install.sh, long after its first boot, so this is a safety net.)
     log "cloud-init has not finished its first boot, leaving it on"

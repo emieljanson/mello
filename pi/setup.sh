@@ -375,7 +375,8 @@ fi
 # Raspberry Pi Imager's settings (user, WiFi, SSH) are applied by cloud-init
 # on the very first boot. After that it still runs on every boot, in front
 # of Mello (~8 s on a Pi 3), with nothing left to do.
-if [ -d /etc/cloud ] && cloud-init status 2>/dev/null | grep -qE 'status: (done|error)'; then
+CLOUD_STATUS="$(cloud-init status 2>/dev/null || true)"   # exits 2 on "degraded done"
+if [ -d /etc/cloud ] && grep -qE 'status: (done|error)' <<<"$CLOUD_STATUS"; then
   sudo touch /etc/cloud/cloud-init.disabled
   echo "cloud-init disabled for later boots"
 fi

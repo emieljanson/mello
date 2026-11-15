@@ -449,7 +449,7 @@ def test_wifi_power_save_is_switched_off_on_new_and_existing_speakers(tmp_path):
     assert (conf_dir / '99-mello-wifi-powersave.conf').read_text() == conf
 
 
-def _run_migration_018(tmp_path, cloud_status):
+def _run_migration_018(tmp_path, cloud_status, exit_code=0):
     migrate = (ROOT / 'pi/migrate.sh').read_text()
     body = migrate.split('_migrate_018() {', 1)[1].split('\n}', 1)[0]
     cloud_dir = tmp_path / 'cloud'
@@ -459,7 +459,7 @@ def _run_migration_018(tmp_path, cloud_status):
         MELLO_CLOUD_DIR={str(cloud_dir)!r}
         log() {{ :; }}
         sudo() {{ "$@"; }}
-        cloud-init() {{ echo {cloud_status!r}; }}
+        cloud-init() {{ echo {cloud_status!r}; return {exit_code}; }}
         _migrate_018() {{
         {body}
         }}
@@ -478,3 +478,8 @@ def test_cloud_init_is_skipped_on_later_boots(tmp_path):
 
 def test_cloud_init_first_boot_is_never_cut_short(tmp_path):
     assert _run_migration_018(tmp_path, 'status: running') is False
+
+
+def test_cloud_init_done_with_warnings_counts_as_done(tmp_path):
+    # Real Pi: "status: done" with exit code 2 (degraded done)
+    assert _run_migration_018(tmp_path, 'status: done', exit_code=2) is True
