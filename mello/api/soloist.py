@@ -36,6 +36,12 @@ _PING_TIMEOUT = 5
 _ACTIVATE_TIMEOUT = 6.0
 # Backstop for the "loading" state shown while a resume is being positioned.
 _POSITIONING_MAX = 45.0
+# Soloist reports "buffering" when a track starts loading but does not always
+# report "playing" once it plays: after a few quick skips the daughter's
+# speaker said buffering for a minute while the episode played on, and Mello
+# kept restarting it as "not started". While it says buffering, ask for the
+# full state this often; that answer has the real status.
+_BUFFERING_RECHECK = 2.0
 # Skips are sent in bursts of this size. Measured on the device for 40 skips:
 # bursts of 12 took 11.6s, of 20 10.5s, and one burst of 40 lost 26 of them
 # (45s with the retries). A burst is also the longest a swipe has to wait.
@@ -125,6 +131,8 @@ class SoloistAPI:
         self._logged_in = False
         self._is_active = False
         self._status = 'idle'
+        self._status_since = 0.0
+        self._last_recheck = 0.0
         self._item: Optional[dict] = None
         self._context: Optional[dict] = None
         self._position: Optional[dict] = None
@@ -254,7 +262,7 @@ class SoloistAPI:
                 if not self._logged_in:
                     self._clear_playback()
             elif event_type == 'playback_state':
-                self._status = event.get('status') or 'idle'
+                self._set_status(event.get('status'))
                 context = event.get('context')
                 item = _playable(event.get('item'))
                 same_context = (context or {}).get('uri') == (self._context or {}).get('uri')
@@ -270,7 +278,7 @@ class SoloistAPI:
                 self._is_active = bool(event.get('is_active'))
                 self._repeat = (event.get('options') or {}).get('repeat') or 'off'
             elif event_type == 'playback_changed':
-                self._status = event.get('status') or 'idle'
+                self._set_status(event.get('status'))
             elif event_type == 'volume_changed':
                 self._volume = event.get('volume')
             elif event_type == 'device_changed':
@@ -333,6 +341,27 @@ class SoloistAPI:
     def _request_snapshot(self):
         self._send('get_state')
 
+    def _set_status(self, status: Optional[str]):
+        status = status or 'idle'
+        if status != self._status:
+            self._status_since = time.time()
+        self._status = status
+
+    def _recheck_if_stuck_buffering(self):
+        """Ask for the real status when "buffering" has lasted a while."""
+        now = time.time()
+        with self._state_lock:
+            stuck = (
+                self._status == 'buffering'
+                and now - self._status_since >= _BUFFERING_RECHECK
+                and now - self._last_recheck >= _BUFFERING_RECHECK
+            )
+            if stuck:
+                self._last_recheck = now
+        if stuck:
+            logger.info('Soloist still says buffering, asking for the current state')
+            self._request_snapshot()
+
     def _clear_playback(self):
         self._status = 'idle'
         self._item = None
@@ -364,6 +393,7 @@ class SoloistAPI:
                   in, idle, or another device is active).
             None: The daemon is unreachable (status unknown).
         """
+        self._recheck_if_stuck_buffering()
         with self._state_lock:
             if not self._socket_open:
                 return None

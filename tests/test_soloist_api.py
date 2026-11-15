@@ -733,3 +733,45 @@ def test_far_track_goes_backwards_in_confirmed_bursts():
     assert sent.count('get_queue') == 3                                       # 12 + 12 + 1
     api.resume()
     assert api.status()['track']['uri'] == tracks[35]
+
+
+def test_buffering_that_never_turns_into_playing_is_checked_with_a_snapshot(monkeypatch):
+    """Seen on the daughter's speaker: after quick skips Soloist said
+    "buffering" for a minute while the episode played, and Mello restarted it
+    again and again. A fresh snapshot has the real status."""
+    import mello.api.soloist as soloist_mod
+    clock = [1000.0]
+    monkeypatch.setattr(soloist_mod.time, 'time', lambda: clock[0])
+
+    def reply(message):
+        if message['command'] == 'get_state':
+            return playback_state(status='playing')
+        return {'type': 'command_result', 'command': message['command']}
+
+    api = connected_api(reply=reply)
+    api._handle_event({'type': 'playback_changed', 'status': 'buffering'})
+    api.sent.clear()
+
+    assert LibrespotStatus.from_dict(api.status()).playing is False   # a short load: just wait
+    assert not [m for m in api.sent if m['command'] == 'get_state']
+
+    clock[0] += 2.5
+    assert LibrespotStatus.from_dict(api.status()).playing is True    # asked, and it plays
+    assert [m['command'] for m in api.sent].count('get_state') == 1
+
+
+def test_stuck_buffering_is_rechecked_at_most_every_two_seconds(monkeypatch):
+    import mello.api.soloist as soloist_mod
+    clock = [1000.0]
+    monkeypatch.setattr(soloist_mod.time, 'time', lambda: clock[0])
+    api = connected_api(reply=lambda m: {'type': 'command_result', 'command': m['command']})
+    api._handle_event({'type': 'playback_changed', 'status': 'buffering'})
+    api.sent.clear()
+    clock[0] += 3
+    for _ in range(10):                 # the app asks for status many times a second
+        api.status()
+    clock[0] += 1
+    api.status()
+    clock[0] += 1.5
+    api.status()
+    assert [m['command'] for m in api.sent].count('get_state') == 2
