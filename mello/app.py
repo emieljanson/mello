@@ -369,9 +369,13 @@ class Mello:
         self._cached_has_network: bool = True
         self._network_check_time: float = 0.0
         
-        # Register signal handlers for graceful shutdown
+        # Register signal handlers for graceful shutdown. SIGHUP too: the
+        # service owns tty1 through a login session, and on reboot/shutdown
+        # that session ends first and hangs up the tty. Unhandled, SIGHUP
+        # killed Mello at once, before it saved where each album was.
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGHUP, self._handle_signal)
         
         # Performance logging
         self._last_fps_log = time.time()
@@ -858,8 +862,8 @@ class Mello:
         self.renderer.invalidate()
 
     def _handle_signal(self, signum, frame):
-        """Handle SIGTERM/SIGINT for graceful shutdown."""
-        sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
+        """Handle SIGTERM/SIGINT/SIGHUP for graceful shutdown."""
+        sig_name = signal.Signals(signum).name
         logger.info(f'Received {sig_name}, shutting down...')
         crash_log.stop_requested()
         self.running = False

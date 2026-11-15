@@ -99,3 +99,16 @@ def test_stop_that_hangs_dumps_stacks_before_systemd_kills_it(tmp_path, monkeypa
     time.sleep(0.6)
     text = (tmp_path / 'crash.log').read_text()
     assert 'Thread' in text or 'Stack' in text
+
+
+def test_hangup_on_reboot_stops_mello_gracefully():
+    """On reboot the login session ends first and hangs up tty1 (SIGHUP);
+    Mello must treat that like SIGTERM so it still saves progress."""
+    import signal
+    from types import SimpleNamespace
+    from mello.app import Mello
+    app = SimpleNamespace(running=True)
+    Mello._handle_signal(app, signal.SIGHUP, None)
+    assert app.running is False
+    src = (__import__('pathlib').Path(__file__).parent.parent / 'mello/app.py').read_text()
+    assert 'signal.signal(signal.SIGHUP, self._handle_signal)' in src
