@@ -21,6 +21,7 @@ def restore_hooks():
         crash_log._crash_stream.close()
         crash_log._crash_stream = None
     crash_log._last_beat = 0.0
+    crash_log._stopping = False
 
 
 def messages(caplog):
@@ -85,5 +86,16 @@ def test_frozen_main_loop_dumps_stacks_to_crash_log(tmp_path, monkeypatch):
     crash_log.install(tmp_path)
     crash_log.heartbeat()
     time.sleep(0.6)       # no heartbeat: the "screen" is frozen
+    text = (tmp_path / 'crash.log').read_text()
+    assert 'Thread' in text or 'Stack' in text
+
+
+def test_stop_that_hangs_dumps_stacks_before_systemd_kills_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(crash_log, 'STOP_STUCK_AFTER', 0.2)
+    crash_log.install(tmp_path)
+    crash_log.heartbeat()
+    crash_log.stop_requested()
+    crash_log.heartbeat(now=10_000)   # must not push the dump further away
+    time.sleep(0.6)
     text = (tmp_path / 'crash.log').read_text()
     assert 'Thread' in text or 'Stack' in text

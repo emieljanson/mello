@@ -31,6 +31,8 @@ HANG_AFTER = 30.0   # main loop silent this long: dump every thread's stack
 _REARM_EVERY = 5.0
 _crash_stream = None
 _last_beat = 0.0
+_stopping = False
+STOP_STUCK_AFTER = 3.0   # systemd kills the app after 5 s (TimeoutStopSec)
 
 
 def _boot_time() -> Optional[float]:
@@ -75,10 +77,19 @@ def heartbeat(now: Optional[float] = None):
     stuck into crash.log, and the next start copies that into the log."""
     global _last_beat
     now = time.monotonic() if now is None else now
-    if _crash_stream is None or now - _last_beat < _REARM_EVERY:
+    if _crash_stream is None or _stopping or now - _last_beat < _REARM_EVERY:
         return
     _last_beat = now
     faulthandler.dump_traceback_later(HANG_AFTER, repeat=False, file=_crash_stream)
+
+
+def stop_requested():
+    """Asked to stop (SIGTERM). If stopping takes so long that systemd will
+    kill the app, write where it is stuck into crash.log first."""
+    global _stopping
+    _stopping = True
+    if _crash_stream is not None:
+        faulthandler.dump_traceback_later(STOP_STUCK_AFTER, repeat=False, file=_crash_stream)
 
 
 def mark_clean_exit(log_dir: Path):

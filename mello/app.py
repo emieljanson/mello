@@ -861,6 +861,7 @@ class Mello:
         """Handle SIGTERM/SIGINT for graceful shutdown."""
         sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
         logger.info(f'Received {sig_name}, shutting down...')
+        crash_log.stop_requested()
         self.running = False
     
     def start(self):
