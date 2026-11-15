@@ -12,6 +12,7 @@ import logging
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Callable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,40 @@ def join_known_network() -> str:
     return lines[-1] if lines else f'exit {result.returncode}'
 
 
+def _iw() -> str:
+    for path in ('/usr/sbin/iw', '/sbin/iw'):
+        if Path(path).exists():
+            return path
+    return 'iw'
+
+
+def wifi_link_summary() -> str:
+    """One line on the WiFi link for the log: access point, signal, power save.
+
+    The daily log review needs this to tell a weak signal, roaming between
+    access points and a dozing chip apart when the speaker drops off WiFi.
+    """
+    parts = []
+    try:
+        link = subprocess.run([_iw(), 'dev', 'wlan0', 'link'],
+                              capture_output=True, text=True, timeout=5).stdout
+        for line in link.splitlines():
+            line = line.strip()
+            if line.startswith('Connected to '):
+                parts.append(f"ap {line.split()[2]}")
+            elif line.startswith(('signal:', 'freq:')):
+                parts.append(line.replace(':', '', 1))
+        if not parts:
+            parts.append('not connected')
+        ps = subprocess.run([_iw(), 'dev', 'wlan0', 'get', 'power_save'],
+                            capture_output=True, text=True, timeout=5).stdout.strip()
+        if ps:
+            parts.append(ps.lower())
+    except Exception as e:
+        return f'unknown ({e})'
+    return ', '.join(parts)
+
+
 class WifiKeeper:
     """Watches the connection and rejoins a known network when it is gone."""
 
@@ -71,6 +106,7 @@ class WifiKeeper:
         saved: Callable[[], List[str]] = saved_networks,
         join: Callable[[], str] = join_known_network,
         clock: Callable[[], float] = time.time,
+        link_summary: Callable[[], str] = wifi_link_summary,
     ):
         self._is_online = is_online
         # True while the owner is setting up a new network: the WiFi chip is
@@ -79,6 +115,7 @@ class WifiKeeper:
         self._saved = saved
         self._join = join
         self._clock = clock
+        self._link_summary = link_summary
         self._offline_since: Optional[float] = None
         self._last_try = 0.0
         self._restored = threading.Event()
@@ -101,6 +138,7 @@ class WifiKeeper:
         return False
 
     def _run(self):
+        logger.info(f'WiFi keeper: started ({self._link_summary()})')
         while not self._stop.wait(CHECK_EVERY):
             try:
                 self.check()
@@ -112,13 +150,14 @@ class WifiKeeper:
         now = self._clock()
         if self._is_online():
             if self._offline_since is not None:
-                logger.info(f'WiFi keeper: back online after {now - self._offline_since:.0f}s')
+                logger.info(f'WiFi keeper: back online after {now - self._offline_since:.0f}s '
+                            f'({self._link_summary()})')
                 self._offline_since = None
                 self._restored.set()
             return
         if self._offline_since is None:
             self._offline_since = now
-            logger.info('WiFi keeper: offline')
+            logger.info(f'WiFi keeper: offline ({self._link_summary()})')
         if self._is_busy():
             return
         if now - self._offline_since < OFFLINE_GRACE or now - self._last_try < RETRY_EVERY:

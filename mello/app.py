@@ -11,7 +11,9 @@ from typing import Optional, List
 
 import pygame
 
+from . import crash_log
 from .config import (
+    LOG_DIR,
     SCREEN_WIDTH, SCREEN_HEIGHT,
     LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE,
     SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
@@ -897,6 +899,7 @@ class Mello:
         
         # Main loop
         while self.running:
+            crash_log.heartbeat()
             self._apply_spotify_inactive()
             self._check_touch_health()
             # Sleep mode: wait for touch/key to wake up
@@ -969,6 +972,7 @@ class Mello:
         self.events.stop()
         self.evdev_touch.stop()
         pygame.quit()
+        crash_log.mark_clean_exit(LOG_DIR)
         logger.info('Mello stopped')
     
     def _target_fps(self) -> int:

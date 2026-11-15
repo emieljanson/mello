@@ -332,6 +332,11 @@ UDEV
 sudo udevadm control --reload-rules 2>/dev/null || true
 sudo udevadm trigger 2>/dev/null || true
 
+# Keep the WiFi chip awake: with power save on the router drops the Pi
+# several times a day (see pi/networkmanager/99-mello-wifi-powersave.conf)
+sudo mkdir -p /etc/NetworkManager/conf.d
+sudo install -m 644 ~/mello/pi/networkmanager/99-mello-wifi-powersave.conf /etc/NetworkManager/conf.d/99-mello-wifi-powersave.conf
+
 # Disable getty on tty1 so Mello can own the display (kmsdrm requires a free VT)
 sudo systemctl mask getty@tty1.service 2>/dev/null || true
 sudo systemctl stop getty@tty1.service 2>/dev/null || true
