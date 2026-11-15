@@ -4,6 +4,7 @@ Setup Menu - WiFi management and library reset.
 Extracted from app.py to keep system-admin concerns separate from the player.
 """
 import json
+import re
 import time
 import logging
 import subprocess
@@ -30,6 +31,8 @@ _REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # SSIDs to exclude when scanning or forgetting WiFi networks
 _WIFI_SKIP_SSIDS = {'Mello-Setup', 'mello-ap', 'mello-setup'}
+# wifi-connect's line when the chosen network could not be joined.
+_JOIN_FAILED = re.compile(r"Connection to access point not activated '(.*)'")
 
 # How long the self-opened Soloist prompt may stay up without being touched.
 _SPOTIFY_PROMPT_TIMEOUT = 180
@@ -75,6 +78,11 @@ class SetupMenu:
         self._ssid_to_con_name: dict = {}
         self._wifi_process: Optional[subprocess.Popen] = None
         self._wifi_ap_attempt = 0
+        # Network the owner picked on the phone that could not be joined.
+        self.wifi_join_failed: Optional[str] = None
+        # Known networks as they were before the hotspot started:
+        # {connection name: (ssid, password)}. Only kept in memory.
+        self._networks_before_hotspot: dict = {}
         # The WiFi screen is up because Mello found itself offline, not
         # because somebody opened it.
         self._wifi_opened_itself = False
@@ -134,6 +142,8 @@ class SetupMenu:
         if self._wifi_process:
             self._kill_wifi_processes()
             self._wifi_process = None
+        if self.state == MenuState.WIFI_AP:
+            self._restore_wifi_autoconnect()
         if self.bluetooth and self.state == MenuState.BT_LIST:
             self.bluetooth.stop_scan()
         self._leave_spotify_screen()
@@ -657,6 +667,7 @@ class SetupMenu:
         # Clear _wifi_process BEFORE killing old processes, so update()
         # won't treat the old process's clean exit (code=0) as success.
         self._wifi_process = None
+        self.wifi_join_failed = None
         self.state = MenuState.WIFI_AP
         self.scroll_offset = 0
         self._on_invalidate()
@@ -699,6 +710,7 @@ class SetupMenu:
                 pass
             self._kill_wifi_processes()
             self._delete_stale_ap_profile()
+            self._remember_networks()
             if still_wanted():
                 self._launch_wifi_connect()
             if not still_wanted():
@@ -726,13 +738,30 @@ class SetupMenu:
             )
             logger.info('wifi-connect started')
 
+            process = self._wifi_process
+
             def _log_output():
-                for line in self._wifi_process.stdout:
-                    logger.info(f'wifi-connect: {line.decode().rstrip()}')
+                for line in process.stdout:
+                    text = line.decode(errors='replace').rstrip()
+                    logger.info(f'wifi-connect: {text}')
+                    self._note_wifi_connect_line(text)
 
             threading.Thread(target=_log_output, daemon=True).start()
         except Exception as e:
             logger.error(f'Failed to start wifi-connect: {e}')
+
+    def _note_wifi_connect_line(self, text: str):
+        """Follow what the hotspot is doing, so the screen can say so.
+
+        When joining the chosen network fails, wifi-connect quietly brings
+        the hotspot back and the phone shows the password page again: the
+        owner then thinks the password was wrong. The screen says what
+        happened instead.
+        """
+        match = _JOIN_FAILED.search(text)
+        if match:
+            self.wifi_join_failed = match.group(1)
+            self._on_invalidate()
 
     def _kill_wifi_processes(self):
         """Kill any lingering wifi-connect and dnsmasq processes.
@@ -781,6 +810,71 @@ class SetupMenu:
             )
         except Exception:
             pass
+        self._restore_forgotten_networks()
+
+    def _wifi_connection_names(self) -> list:
+        result = subprocess.run(
+            ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
+            capture_output=True, text=True, timeout=5,
+        )
+        names = []
+        for line in result.stdout.splitlines():
+            name, _, kind = line.rpartition(':')
+            if kind == '802-11-wireless' and name and name not in _WIFI_SKIP_SSIDS:
+                names.append(name)
+        return names
+
+    def _remember_networks(self):
+        """Note the known networks before the hotspot starts.
+
+        Typing the password for a network Mello already knows makes
+        wifi-connect delete the old entry first. If joining then fails, the
+        speaker has forgotten its home network: it can no longer get back
+        to it by itself. With this note it can be put back.
+        """
+        remembered = {}
+        try:
+            for name in self._wifi_connection_names():
+                result = subprocess.run(
+                    ['sudo', 'nmcli', '-s', '-g',
+                     '802-11-wireless.ssid,802-11-wireless-security.psk', 'con', 'show', name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                lines = result.stdout.splitlines()
+                if result.returncode == 0 and lines and lines[0]:
+                    remembered[name] = (lines[0], lines[1] if len(lines) > 1 else '')
+        except Exception as e:
+            logger.warning(f'Could not note known WiFi networks: {e}')
+        self._networks_before_hotspot = remembered
+        logger.info(f'Known WiFi before setup: {sorted(remembered)}')
+
+    def _restore_forgotten_networks(self):
+        """Put back known networks that went missing while the hotspot ran."""
+        remembered, self._networks_before_hotspot = self._networks_before_hotspot, {}
+        if not remembered:
+            return
+        try:
+            present = set(self._wifi_connection_names())
+            present_ssids = {self._resolve_ssid(n) for n in present}
+        except Exception as e:
+            logger.warning(f'Could not check known WiFi networks: {e}')
+            return
+        for name, (ssid, psk) in remembered.items():
+            if name in present or ssid in present_ssids:
+                continue
+            cmd = ['sudo', 'nmcli', 'con', 'add', 'type', 'wifi', 'ifname', 'wlan0',
+                   'con-name', name, 'ssid', ssid]
+            if psk:
+                cmd += ['wifi-sec.key-mgmt', 'wpa-psk', 'wifi-sec.psk', psk]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    logger.info(f'Put back forgotten WiFi network: {name}')
+                else:
+                    logger.warning(f'Could not put back WiFi network {name}: '
+                                   f'{(result.stderr or result.stdout).strip()[-200:]}')
+            except Exception as e:
+                logger.warning(f'Could not put back WiFi network {name}: {e}')
 
     def _reconnect_to_known_network(self):
         if self.known_networks:

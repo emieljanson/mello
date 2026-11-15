@@ -5,7 +5,8 @@ NetworkManager stops trying by itself once joining has failed a few times
 (a router that was slow to answer after a power cut is enough). Until
 something asks again the speaker stays offline, even with the network back
 and in range: it then sat on the WiFi screen all night. So while Mello is
-offline, this asks again every minute.
+offline, this asks again: a few times straight away, since on some speakers
+only about half the attempts get through, then every half minute.
 """
 import logging
 import subprocess
@@ -17,8 +18,10 @@ logger = logging.getLogger(__name__)
 
 CHECK_EVERY = 15      # seconds between looks at the connection
 OFFLINE_GRACE = 20    # NetworkManager gets this long to come back by itself
-RETRY_EVERY = 60      # seconds between our own attempts
-_CONNECT_TIMEOUT = 45
+RETRY_EVERY = 30      # seconds between rounds of our own attempts
+QUICK_TRIES = 3       # attempts in a row per round
+_JOIN_WAIT = 30       # NetworkManager's own limit for one attempt
+_CONNECT_TIMEOUT = _JOIN_WAIT + 10
 _NOT_OURS = {'Mello-Setup', 'mello-ap', 'mello-setup'}
 
 
@@ -47,7 +50,7 @@ def join_known_network() -> str:
     """
     try:
         result = subprocess.run(
-            ['sudo', 'nmcli', 'device', 'connect', 'wlan0'],
+            ['sudo', 'nmcli', '--wait', str(_JOIN_WAIT), 'device', 'connect', 'wlan0'],
             capture_output=True, text=True, timeout=_CONNECT_TIMEOUT,
         )
     except Exception as e:
@@ -125,8 +128,12 @@ class WifiKeeper:
         if not names:
             return      # a Mello that never joined a network has nothing to go back to
         logger.info(f'WiFi keeper: offline for {now - self._offline_since:.0f}s, rejoining (known: {names})')
-        problem = self._join()
-        if problem:
-            logger.info(f'WiFi keeper: could not rejoin: {problem}')
-        else:
-            logger.info('WiFi keeper: rejoin accepted')
+        for attempt in range(1, QUICK_TRIES + 1):
+            problem = self._join()
+            if not problem:
+                logger.info(f'WiFi keeper: rejoin accepted (attempt {attempt})')
+                return
+            logger.info(f'WiFi keeper: attempt {attempt} could not rejoin: {problem}')
+            if self._is_busy() or self._is_online():
+                return
+        self._last_try = self._clock()     # the next round counts from the end of this one

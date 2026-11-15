@@ -709,6 +709,13 @@ class Renderer:
                 ('spacer',),
                 ('text', '3. Enter the password'),
             ]
+            if ctx.menu_wifi_join_failed:
+                # The phone just shows the password page again; say why.
+                items = [
+                    ('text', f'Could not join {ctx.menu_wifi_join_failed}'),
+                    ('text', 'This happens sometimes, please try again'),
+                    ('spacer',),
+                ] + items
         elif ctx.menu_state == MenuState.SPOTIFY:
             title = 'Spotify'
             nav_icon = 'back'
