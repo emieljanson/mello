@@ -62,7 +62,10 @@ class CatalogManager:
         
         # Thread locks for file operations
         self._catalog_lock = threading.Lock()
-        self._progress_lock = threading.Lock()
+        # Re-entrant: a whole read-change-write of progress.json holds it, so
+        # two saves at once cannot each write back the other's old copy and
+        # drop an album's saved place.
+        self._progress_lock = threading.RLock()
         self._playlist_covers_lock = threading.Lock()
         
         # Ensure images directory exists
@@ -683,7 +686,15 @@ class CatalogManager:
             try:
                 if self.progress_path.exists():
                     return json.loads(self.progress_path.read_text())
-            except (json.JSONDecodeError, IOError, OSError) as e:
+            except json.JSONDecodeError as e:
+                # Unreadable for good (e.g. power cut mid-write on an old
+                # version). Keep it aside rather than silently starting over.
+                logger.warning(f'Progress file is corrupt, setting it aside: {e}')
+                try:
+                    os.replace(self.progress_path, self.progress_path.with_suffix('.json.corrupt'))
+                except OSError:
+                    pass
+            except (IOError, OSError) as e:
                 logger.warning(f'Error reading progress file: {e}')
             return {}
 
@@ -708,44 +719,52 @@ class CatalogManager:
                 item.current_track = entry
 
     def save_progress(self, context_uri: str, track_uri: str,
-                      position: int, track_name: str = None, artist: str = None):
-        """Save playback progress to progress.json."""
+                      position: int, track_name: str = None, artist: str = None,
+                      duration: int = None):
+        """Save playback progress to progress.json.
+
+        `duration` (track length in ms) lets the cover show where the child
+        was before Spotify has loaded anything.
+        """
         if self.mock_mode or not context_uri or not track_uri:
             return
 
         try:
-            progress_data = self._load_progress_data()
-            position = max(0, int(position or 0))
-            existing = progress_data.get(context_uri) if isinstance(progress_data, dict) else None
+            with self._progress_lock:
+                progress_data = self._load_progress_data()
+                position = max(0, int(position or 0))
+                existing = progress_data.get(context_uri) if isinstance(progress_data, dict) else None
 
-            if isinstance(existing, dict) and existing.get('uri') == track_uri:
-                existing_position = max(0, int(existing.get('position', 0) or 0))
-                regressed = existing_position - position
-                if regressed > 2000:
-                    # Reject stale regressions (especially accidental 0s) for same track.
-                    logger.info(
-                        'progress_write_rejected | reason=position_regression | '
-                        f'context_uri={context_uri[:40]} | track_uri={track_uri[:40]} | '
-                        f'old_pos={existing_position // 1000}s | new_pos={position // 1000}s'
-                    )
-                    return
+                if isinstance(existing, dict) and existing.get('uri') == track_uri:
+                    existing_position = max(0, int(existing.get('position', 0) or 0))
+                    regressed = existing_position - position
+                    if regressed > 2000:
+                        # Reject stale regressions (especially accidental 0s) for same track.
+                        logger.info(
+                            'progress_write_rejected | reason=position_regression | '
+                            f'context_uri={context_uri[:40]} | track_uri={track_uri[:40]} | '
+                            f'old_pos={existing_position // 1000}s | new_pos={position // 1000}s'
+                        )
+                        return
 
-            entry = {
-                'uri': track_uri,
-                'position': position,
-                'name': track_name,
-                'artist': artist,
-                'updatedAt': datetime.now().isoformat()
-            }
-            progress_data[context_uri] = entry
-            self._save_progress_data(progress_data)
+                entry = {
+                    'uri': track_uri,
+                    'position': position,
+                    'name': track_name,
+                    'artist': artist,
+                    'updatedAt': datetime.now().isoformat()
+                }
+                if duration and duration > 0:
+                    entry['duration'] = int(duration)
+                progress_data[context_uri] = entry
+                self._save_progress_data(progress_data)
 
-            for mem_item in self.items:
-                if mem_item.uri == context_uri:
-                    mem_item.current_track = entry
-                    break
+                for mem_item in self.items:
+                    if mem_item.uri == context_uri:
+                        mem_item.current_track = entry
+                        break
 
-            logger.debug(f'Saved progress: {track_name} @ {position // 1000}s')
+                logger.debug(f'Saved progress: {track_name} @ {position // 1000}s')
 
         except Exception as e:
             logger.warning(f'Error saving progress: {e}', exc_info=True)
@@ -783,15 +802,17 @@ class CatalogManager:
             return
 
         try:
-            progress_data = self._load_progress_data()
-            if context_uri in progress_data:
+            with self._progress_lock:
+                progress_data = self._load_progress_data()
+                if context_uri not in progress_data:
+                    return
                 del progress_data[context_uri]
                 self._save_progress_data(progress_data)
-                for mem_item in self.items:
-                    if mem_item.uri == context_uri:
-                        mem_item.current_track = None
-                        break
-                logger.debug(f'Cleared progress for: {context_uri[:40]}')
+            for mem_item in self.items:
+                if mem_item.uri == context_uri:
+                    mem_item.current_track = None
+                    break
+            logger.debug(f'Cleared progress for: {context_uri[:40]}')
 
         except Exception as e:
             logger.warning(f'Error clearing progress: {e}', exc_info=True)

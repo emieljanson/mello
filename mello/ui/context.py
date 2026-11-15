@@ -30,6 +30,19 @@ class RenderContext:
     menu_state: MenuState = MenuState.CLOSED
     menu_known_networks: List[str] = field(default_factory=list)
     menu_current_network: Optional[str] = None
+    menu_wifi_join_failed: Optional[str] = None   # picked on the phone, could not join
+    menu_spotify_items: List[tuple] = field(default_factory=list)
+    menu_spotify_prompt: bool = False        # opened by itself: hold to close, no close button
+    menu_prompt_hold_progress: float = 0.0
+    menu_prompt_title: str = ''
+    menu_prompt_benefits: tuple = ()
+    menu_prompt_button: str = ''
+    menu_prompt_hint: str = ''
+    home_connect_spotify: bool = False       # new Mello, online: the home screen asks to connect Spotify
+    home_lines: tuple = ()                   # ...with these lines under the logo
+    menu_spotify_menu_items: List[tuple] = field(default_factory=list)   # Settings > Spotify
+    spotify_needs_pairing: bool = False      # new player is on but Mello was never chosen in Spotify
+    menu_spotify_switching: bool = False     # the speaker is changing engines right now
     auto_pause_minutes: int = 30
     progress_expiry_hours: int = 96
     app_version_label: str = ''

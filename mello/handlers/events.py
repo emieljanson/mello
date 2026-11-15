@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 class EventListener:
     """Listens to go-librespot WebSocket events."""
     
-    def __init__(self, url: str, on_update: Callable[[], None], on_connect: Callable[[], None] = None):
+    def __init__(
+        self, url: str, on_update: Callable[[], None],
+        on_connect: Optional[Callable[[], None]] = None,
+        on_inactive: Optional[Callable[[], None]] = None,
+    ):
         """
         Initialize event listener.
         
@@ -23,10 +27,12 @@ class EventListener:
             url: WebSocket URL (e.g., ws://localhost:3678/events)
             on_update: Callback when playback state changes
             on_connect: Callback when WebSocket (re)connects
+            on_inactive: Callback when the local Spotify Connect device becomes inactive
         """
         self.url = url
         self.on_update = on_update
         self.on_connect = on_connect
+        self.on_inactive = on_inactive
         self.ws: Optional[websocket.WebSocketApp] = None
         self.thread: Optional[threading.Thread] = None
         self.running = False
@@ -85,6 +91,10 @@ class EventListener:
             if event_type == 'playing':
                 self.context_uri = data.get('data', {}).get('context_uri')
                 logger.debug(f'Playing event, context: {self.context_uri}')
+            elif event_type == 'inactive':
+                self.context_uri = None
+                if self.on_inactive:
+                    self.on_inactive()
             
             # Notify app to refresh state
             self.on_update()

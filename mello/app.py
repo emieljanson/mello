@@ -13,7 +13,8 @@ import pygame
 
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    LIBRESPOT_URL, LIBRESPOT_WS,
+    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE,
+    SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
@@ -25,9 +26,11 @@ from .config import (
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
 from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
-from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
+from .api import LibrespotAPI, NullLibrespotAPI, SoloistAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
+from .managers.engine_setup import EngineSetup, PROMPT_BENEFITS, PROMPT_SCAN_HINT
+from .managers.wifi_keeper import WifiKeeper
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label, set_system_volume
@@ -40,6 +43,11 @@ LIBRESPOT_RESTART_COOLDOWN = 300.0
 
 class Mello:
     """Main Mello application."""
+
+    # What _sync_to_playing last logged (it runs every frame, see there).
+    _last_sync_situation: Optional[tuple] = None
+    _last_sync_outcome: Optional[str] = None
+    _loader_mismatch_logged = False
     
     def __init__(self, fullscreen: bool = False):
         # Restore display BEFORE pygame takes over DRM device.
@@ -206,7 +214,17 @@ class Mello:
         self.mock_mode = MOCK_MODE
         
         # API & Catalog (use NullAPI in mock mode)
-        self.api = NullLibrespotAPI() if self.mock_mode else LibrespotAPI(LIBRESPOT_URL)
+        if self.mock_mode:
+            self.api = NullLibrespotAPI()
+        elif SPOTIFY_ENGINE == 'soloist':
+            # Soloist has one socket for commands and events, so the same
+            # object is both the API and the event listener.
+            self.api = SoloistAPI(
+                SOLOIST_WS, self._on_ws_update, self._on_ws_reconnect,
+                on_inactive=self._on_spotify_inactive,
+            )
+        else:
+            self.api = LibrespotAPI(LIBRESPOT_URL)
         self.settings = Settings()
         self.catalog_manager = CatalogManager(
             CATALOG_PATH, IMAGES_DIR, mock_mode=self.mock_mode,
@@ -222,7 +240,13 @@ class Mello:
         
         # Handlers
         self.touch = TouchHandler()
-        self.events = EventListener(LIBRESPOT_WS, self._on_ws_update, self._on_ws_reconnect)
+        if isinstance(self.api, SoloistAPI):
+            self.events = self.api
+        else:
+            self.events = EventListener(
+                LIBRESPOT_WS, self._on_ws_update, self._on_ws_reconnect,
+                on_inactive=self._on_spotify_inactive,
+            )
         
         # Evdev touch handler for KMSDRM mode (reads /dev/input directly)
         self.evdev_touch = EvdevTouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -280,6 +304,7 @@ class Mello:
         self._running = threading.Event()
         self._running.set()
         self._poll_wake_event = threading.Event()
+        self._spotify_inactive = threading.Event()
         self._last_sleep_wait_log: float = 0.0
         
         # TempItem and delete mode (with lock for thread-safe access)
@@ -294,17 +319,12 @@ class Mello:
         # While True, _sync_to_playing only accepts confirmation of our own play request.
         # While False, _sync_to_playing accepts anything (external Spotify control).
         self._user_driving = False
-        self._user_driving_since: float = 0.0
         self._focus_epoch: int = 0
         self._pending_focus_uri: Optional[str] = None
         self._pending_focus_since: float = 0.0
-        self._pending_external_focus_uri: Optional[str] = None
-        self._last_focus_gate_log: float = 0.0
         self._requested_focus_epoch: Optional[int] = None
         self._requested_focus_uri: Optional[str] = None
         self._requested_focus_since: float = 0.0
-        self._last_requested_hold_log: float = 0.0
-        self._last_title_diag_log: float = 0.0
         self._last_status_ok_at: float = 0.0
         # True when status is temporarily unknown (timeout/error). While unknown
         # we keep the last known now_playing snapshot and block auto-retrigger.
@@ -312,21 +332,15 @@ class Mello:
         self._last_status_unknown_log: float = 0.0
         self._status_failure_started_at: float = 0.0
         self._last_librespot_restart_at: float = 0.0
-        self._last_status_not_ready_log: float = 0.0
-        self._user_activated_playback: bool = False
         self._last_play_commit_uri: Optional[str] = None
         self._last_play_commit_at: float = 0.0
         self._last_snap_pause_at: float = 0.0
-        self._last_restore_handled_at: float = 0.0
-        self._restore_dedup_count: int = 0
         self._repeat_context_uri: Optional[str] = None
         self._repeat_context_last_attempt: float = 0.0
         # Blocks auto-play after an explicit user pause until user gives a
         # positive play intent (play tap or context switch).
         self._manual_pause_lock: bool = False
         self._manual_pause_context_uri: Optional[str] = None
-        self._autoplay_stall_since: float = 0.0
-        self._last_autoplay_stall_log: float = 0.0
         self._context_switch_stall_since: float = 0.0
         self._last_context_watchdog_log: float = 0.0
         
@@ -379,7 +393,24 @@ class Mello:
             on_library_cleared=self._on_library_cleared,
             bluetooth_manager=self.bluetooth,
             on_volume_preview=self._preview_volume,
+            engine_setup=None if self.mock_mode else EngineSetup(
+                engine=SPOTIFY_ENGINE,
+                soloist_home=SOLOIST_HOME,
+                port=ENGINE_SETUP_PORT,
+                on_change=lambda: self.renderer.invalidate(),
+            ),
         )
+        # Rejoins a known WiFi network when NetworkManager has given up.
+        self.wifi_keeper = WifiKeeper(
+            is_online=self._has_network_connection,
+            is_busy=lambda: self.setup_menu.wifi_setup_running,
+        )
+        self._pairing_known = True
+        self._pairing_checked_at = 0.0
+        # A Mello that starts with nothing saved was just set up: it gets the
+        # "faster Mello" offer later, not as something new in an update.
+        if not self.mock_mode and not self.catalog_manager.items:
+            self.settings.mark_new_owner()
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
         self._menu_hold_triggered = False
@@ -424,10 +455,14 @@ class Mello:
     def _bump_focus_epoch(self, reason: str):
         """Increment focus epoch so stale play responses can be ignored."""
         self._focus_epoch += 1
+        self._reset_pending_focus(reason)
+        self._clear_requested_focus()
+        logger.info(f'Focus epoch -> {self._focus_epoch} ({reason})')
+
+    def _clear_requested_focus(self):
         self._requested_focus_epoch = None
         self._requested_focus_uri = None
         self._requested_focus_since = 0.0
-        logger.info(f'Focus epoch -> {self._focus_epoch} ({reason})')
 
     def _current_focused_uri(self) -> Optional[str]:
         """Return currently focused URI, or None."""
@@ -438,7 +473,11 @@ class Mello:
 
     def _is_play_request_current(self, epoch: int, uri: str) -> bool:
         """True when play response still matches latest focus intent."""
-        return epoch == self._focus_epoch and uri == self._current_focused_uri()
+        return (
+            not self._spotify_inactive.is_set()
+            and epoch == self._focus_epoch
+            and uri == self._current_focused_uri()
+        )
 
     def _has_active_user_focus_intent(self) -> bool:
         """True while user intent should block remote context focus sync."""
@@ -452,19 +491,6 @@ class Mello:
             or self.play_timer.item is not None
             or requested_focus_active
         )
-
-    def _should_prioritize_remote_focus(self, focused_item: Optional[CatalogItem]) -> bool:
-        """True when playing context should win over focused auto-play request."""
-        if not focused_item:
-            return False
-        if not self.now_playing.playing:
-            return False
-        playing_ctx = self.now_playing.context_uri
-        if not playing_ctx:
-            return False
-        if playing_ctx == focused_item.uri:
-            return False
-        return not self._has_active_user_focus_intent()
 
     def _focus_on_uri_without_interrupt(self, context_uri: str, reason: str) -> bool:
         """Move focus to context URI without interrupting playback."""
@@ -481,8 +507,6 @@ class Mello:
         self.selected_index = target_index
         self.carousel.set_target(target_index)
         self._bump_focus_epoch(f'{reason} {old_index}->{target_index}')
-        self._reset_pending_focus()
-        self._pending_external_focus_uri = None
         self._user_driving = False
         self.renderer.invalidate()
         logger.info(
@@ -510,33 +534,25 @@ class Mello:
         self._manual_pause_lock = False
         self._manual_pause_context_uri = None
 
-    def _display_title_for_item(self, item: Optional[CatalogItem]) -> tuple[str, str]:
-        """Return (title_source, title_text) used by renderer track header."""
-        if not item:
-            return ('none', '')
-        if (self.now_playing.context_uri == item.uri and
-                self.now_playing.track_name and
-                (self.now_playing.playing or self.now_playing.paused)):
-            return ('now_playing', self.now_playing.track_name)
-        return ('none', '')
-
     def _on_play_committed(self, uri: str, epoch: int):
         """Called by PlaybackController when a play request is accepted."""
+        if not self._is_play_request_current(epoch, uri):
+            return
         self._user_driving = False
-        # Keep requested marker until status confirms focused context is active.
-        # This prevents duplicate re-requests while /status lags behind.
-        self.playback.last_context_uri = uri
+        # Keep the marker for loading feedback until /status confirms playback.
         self._last_play_commit_uri = uri
         self._last_play_commit_at = time.time()
+        # The wait for Spotify to confirm starts now, not when the request was
+        # queued: reaching a late chapter can take longer than the whole
+        # confirmation window, and ended in a false "Loading failed".
+        self._requested_focus_since = self._last_play_commit_at
+        self._poll_wake_event.set()
         logger.info(f'Play committed: uri={uri[:40]} epoch={epoch}')
 
     def _on_play_failed(self, uri: str, epoch: int):
         """Called by PlaybackController when play request failed."""
-        # Keep requested marker after a failed attempt so update-loop does not
-        # instantly fire the same request again. Retry happens via stale-timeout.
-        if self._requested_focus_epoch == epoch and self._requested_focus_uri == uri and self._requested_focus_since <= 0:
-            self._requested_focus_since = time.time()
         if self._is_play_request_current(epoch, uri):
+            self._clear_requested_focus()
             self._user_driving = False
             logger.warning(f'Play failed for current focus: uri={uri[:40]} epoch={epoch}')
         else:
@@ -568,14 +584,8 @@ class Mello:
             f'requested_epoch={self._requested_focus_epoch} | focus_epoch={self._focus_epoch}'
         )
         self.playback.stop_all()
-        self.playback.last_context_uri = None
-        self._reset_pending_focus('watchdog_trip')
-        self._pending_external_focus_uri = None
-        self._requested_focus_epoch = None
-        self._requested_focus_uri = None
-        self._requested_focus_since = 0.0
+        self._bump_focus_epoch('watchdog_trip')
         self._user_driving = False
-        self._user_driving_since = 0.0
         self.volume.mute()
         run_async(self.api.pause)
         self._show_toast('Loading cancelled, try again')
@@ -602,8 +612,7 @@ class Mello:
             and self.now_playing.context_uri != focused_uri
         )
         stalled_switch = (
-            self._user_activated_playback
-            and not self._manual_pause_lock
+            not self._manual_pause_lock
             and not self._is_item_playing(focused_item)
             and (waiting_for_switch_commit or (self._user_driving and context_mismatch))
         )
@@ -642,6 +651,9 @@ class Mello:
 
     def _on_library_cleared(self):
         """Reset in-memory state after library clear (called by SetupMenu)."""
+        self._bump_focus_epoch('library_cleared')
+        self._user_driving = False
+        self.playback.stop_all()
         self.catalog_manager.load()
         with self._temp_item_lock:
             self.temp_item = None
@@ -760,14 +772,32 @@ class Mello:
     def _on_ws_update(self):
         """Called when WebSocket receives an event."""
         logger.debug(f'WebSocket event, context: {self.events.context_uri}')
-        if self.sleep_manager.is_sleeping:
+        # Soloist pushes its full state, so reading it is free: refresh right
+        # away instead of waiting up to 3s for the next poll.
+        if self.sleep_manager.is_sleeping or isinstance(self.api, SoloistAPI):
             self._poll_wake_event.set()
     
     def _on_ws_reconnect(self):
         """Called when WebSocket reconnects after disconnect."""
         logger.info('WebSocket reconnected - refreshing state')
-        self._connection_fail_count = 0
-        run_async(self._refresh_status)
+        self._poll_wake_event.set()
+
+    def _on_spotify_inactive(self):
+        """Fence pending play requests as soon as Spotify leaves this device."""
+        with self._now_playing_lock:
+            self._spotify_inactive.set()
+            self._now_playing = NowPlaying()
+        self._poll_wake_event.set()
+
+    def _apply_spotify_inactive(self):
+        if not self._spotify_inactive.is_set():
+            return
+        self._bump_focus_epoch('spotify_inactive')
+        self._user_driving = False
+        self.playback.stop_all()
+        self._clear_manual_pause_lock('spotify_inactive')
+        self._spotify_inactive.clear()
+        logger.info('SPOTIFY inactive | cancelled pending local playback')
     
     @property
     def display_items(self) -> List[CatalogItem]:
@@ -846,15 +876,18 @@ class Mello:
             # Set system volume at startup (also unmutes as safety reset)
             self.volume.init()
             
-            # Start status polling
-            run_async(self._poll_status)
-            logger.info(f'Polling {LIBRESPOT_URL}')
+            # Status polling and the initial connect run for as long as the
+            # app does; in the shared pool of 4 they would leave only two
+            # workers for pause, skip and saving progress.
+            threading.Thread(target=self._poll_status, daemon=True, name='status-poll').start()
+            logger.info(f'Polling {SOLOIST_WS if SPOTIFY_ENGINE == "soloist" else LIBRESPOT_URL} ({SPOTIFY_ENGINE})')
 
             # Force initial connection check (don't wait for first poll interval)
-            run_async(self._initial_connect)
+            threading.Thread(target=self._initial_connect, daemon=True, name='initial-connect').start()
 
             # Start Bluetooth monitoring
             self.bluetooth.start_monitoring()
+            self.wifi_keeper.start()
         else:
             logger.info('Running in MOCK MODE')
             self._startup_ready = True
@@ -864,9 +897,14 @@ class Mello:
         
         # Main loop
         while self.running:
+            self._apply_spotify_inactive()
             self._check_touch_health()
             # Sleep mode: wait for touch/key to wake up
             if self.sleep_manager.is_sleeping:
+                # Time asleep is not a frame: without this the first frame
+                # after waking is handed hours of dt and logged as a freeze.
+                self.clock.tick()
+                dt = 1.0 / 60
                 # Primary wake: evdev threading.Event (reliable across threads)
                 # Fallback: pygame.event.wait with timeout (catches KEYDOWN/QUIT)
                 self.evdev_touch.wake_event.wait(0.2)
@@ -901,9 +939,11 @@ class Mello:
             
             if target_fps <= 5 and not is_animating:
                 # Idle: true sleep instead of busy-wait, CPU can idle
-                frame_start = time.time()
+                # Keep the frame clock running while idling: otherwise the
+                # first frame after idle is handed the whole idle time as dt
+                # and logged as a multi-second freeze.
                 pygame.time.wait(200)
-                dt = time.time() - frame_start
+                dt = self.clock.tick() / 1000.0
             else:
                 dt = self.clock.tick(target_fps) / 1000.0
             
@@ -920,6 +960,7 @@ class Mello:
         self._save_progress_on_shutdown()
         self.tracker.on_shutdown()
         self.bluetooth.stop()
+        self.wifi_keeper.stop()
         
         # Restore display before exit so next boot doesn't start with black screen
         if self.sleep_manager.is_sleeping:
@@ -964,7 +1005,7 @@ class Mello:
         logger.info(
             f'STATE | focused="{focused}" | playing="{playing_name}" | ctx={playing_ctx[:40]} '
             f'| driving={self._user_driving} | loading={is_loading} | connected={self.connected} '
-            f'| fps={avg_fps:.0f}/{target_fps} | restore_dedup={self._restore_dedup_count} '
+            f'| fps={avg_fps:.0f}/{target_fps} '
             f'| api_suppressed={suppressed} | api_failures={failures}'
         )
 
@@ -974,7 +1015,7 @@ class Mello:
             logger.warning(
                 f'MISMATCH | screen="{focused}" | audio="{playing_name}" '
                 f'| focused_uri={focused_uri[:40]} | playing_ctx={playing_ctx[:40]} '
-                f'| last_ctx={self.playback.last_context_uri} | interacting={self.user_interacting} '
+                f'| interacting={self.user_interacting} '
                 f'| settled={self.carousel.settled} | timer={self.play_timer.item is not None}'
             )
         
@@ -1031,6 +1072,7 @@ class Mello:
     
     def _refresh_status(self):
         """Refresh playback status from librespot."""
+        previous = self.now_playing
         raw = self.api.status()
         was_connected = self.connected
         
@@ -1049,26 +1091,17 @@ class Mello:
         # Log connection state changes
         if was_connected != self.connected:
             if self.connected:
-                now = time.time()
-                if now - self._last_restore_handled_at < 0.5:
-                    self._restore_dedup_count += 1
-                    logger.info(f'CONNECTION RESTORED deduped (count={self._restore_dedup_count})')
-                else:
-                    self._last_restore_handled_at = now
-                    logger.info(f'CONNECTION RESTORED (was disconnected)')
-                    self._startup_ready = True
-                    self.playback.retry_failed()
+                logger.info('CONNECTION RESTORED (was disconnected)')
                 self._startup_ready = True
             else:
                 logger.warning(f'CONNECTION LOST after {self._connection_fail_count} failures')
             logger.info(f'  fail_count={self._connection_fail_count}, status={raw is not None}')
         
         if raw and isinstance(raw, dict):
-            self._status_failure_started_at = 0.0
-            self._last_status_ok_at = time.time()
-            self._status_unknown = False
             api_context_uri = raw.get('context_uri')
-            ws_context_uri = self.events.context_uri
+            ws_context_uri = None
+            if not raw.get('stopped', True) or raw.get('paused', False):
+                ws_context_uri = self.events.context_uri
             if api_context_uri and ws_context_uri and api_context_uri != ws_context_uri:
                 logger.warning(
                     'CONTEXT source mismatch | '
@@ -1076,11 +1109,7 @@ class Mello:
                     f'track="{(raw.get("track") or {}).get("name") if isinstance(raw.get("track"), dict) else "none"}"'
                 )
             status = LibrespotStatus.from_dict(raw, context_uri=ws_context_uri)
-
-            old_ctx = self.now_playing.context_uri
-            old_playing = self.now_playing.playing
-            
-            self.now_playing = NowPlaying(
+            current = NowPlaying(
                 playing=status.playing,
                 paused=status.paused,
                 stopped=status.stopped,
@@ -1094,25 +1123,37 @@ class Mello:
                 duration=status.duration,
                 repeat_context=status.repeat_context,
             )
+            with self._now_playing_lock:
+                if self._now_playing is not previous:
+                    return  # An inactive event or a fresher status replaced this snapshot.
+                # Older daemons may briefly return no session while handing off.
+                # Also handle a missed inactive event if the session is already back but idle.
+                if not previous.stopped and status.stopped and not status.paused and not status.track_uri:
+                    self._spotify_inactive.set()
+                self._now_playing = current
+                self._status_failure_started_at = 0.0
+                self._last_status_ok_at = time.time()
+                self._status_unknown = False
 
-            if status.context_uri != old_ctx or status.playing != old_playing:
-                state = 'playing' if status.playing else ('paused' if status.paused else 'stopped')
+            if status.context_uri != previous.context_uri or status.playing != previous.playing:
+                state = 'playing' if status.playing else 'buffering'
+                if status.paused or status.stopped:
+                    state = 'paused' if status.paused else 'stopped'
                 logger.info(f'SPOTIFY changed | {state} "{status.track_name}" | ctx={status.context_uri or "none"}')
 
             pending_action = self.playback.play_state.pending_action
             if pending_action == 'pause':
-                if status.paused or status.stopped or not status.playing:
+                if status.paused or status.stopped:
                     self.playback.play_state.pending_action = None
                     logger.info('pending_action_cleared | action=pause | status_ack=not_playing')
                 else:
-                    logger.info('pending_action_hold | action=pause | waiting_status_ack=playing')
+                    logger.info('pending_action_hold | action=pause | awaiting confirmation')
             elif pending_action == 'play' and status.playing:
                 self.playback.play_state.pending_action = None
                 logger.info('pending_action_cleared | action=play | status_ack=playing')
             self.tracker.update(self.now_playing)
             
             self._update_temp_item()
-            self._check_autoplay()
             self._ensure_repeat_context_for_current_status()
             
             if status.playing and self.sleep_manager.is_sleeping:
@@ -1161,7 +1202,7 @@ class Mello:
         )
         try:
             result = subprocess.run(
-                ['sudo', 'systemctl', 'restart', 'mello-librespot'],
+                ['sudo', 'systemctl', 'restart', SPOTIFY_ENGINE_SERVICE],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1180,10 +1221,6 @@ class Mello:
         except Exception as exc:
             logger.error(f'LIBRESPOT recovery | restart error: {exc}', exc_info=True)
     
-    def _check_autoplay(self):
-        """Detect autoplay and clear progress when context finishes."""
-        self.playback.check_autoplay(self.now_playing)
-
     def _ensure_repeat_context_for_current_status(self):
         """Keep externally-started albums/playlists inside their context."""
         np = self.now_playing
@@ -1239,6 +1276,11 @@ class Mello:
                 self.renderer.invalidate()
             return
         
+        if not self.now_playing.track_uri:
+            # Spotify switched to this album but has not said which track is
+            # playing yet; its name and cover would come from nowhere.
+            return
+
         # Create/update tempItem
         is_playlist = 'playlist' in context_uri
         collected_covers = self.catalog_manager.get_collected_covers(context_uri) if is_playlist else None
@@ -1322,7 +1364,6 @@ class Mello:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 logger.debug(f'Event: MOUSEBUTTONDOWN at {event.pos}')
                 if self.sleep_manager.is_sleeping:
-                    self._user_activated_playback = True
                     self._wake_from_sleep(f'pygame_touch:{event.pos}')
                     continue
                 self.sleep_manager.reset_timer()
@@ -1330,7 +1371,6 @@ class Mello:
             
             elif event.type == pygame.KEYDOWN:
                 if self.sleep_manager.is_sleeping:
-                    self._user_activated_playback = True
                     self._wake_from_sleep(f'pygame_key:{event.key}')
                     continue
                 self.sleep_manager.reset_timer()
@@ -1358,6 +1398,7 @@ class Mello:
                 logger.debug(f'Event: MOUSEBUTTONUP at {event.pos}')
                 if not self.sleep_manager.is_sleeping:
                     if self.setup_menu.is_open and self._menu_touch_start is not None:
+                        self.setup_menu.handle_release()
                         if not self._menu_touch_scrolled:
                             # Flash pressed state on close/back button
                             close_rect = self.renderer.menu_button_rects.get('close')
@@ -1373,7 +1414,6 @@ class Mello:
     
     def _handle_key(self, key):
         """Handle keyboard input."""
-        self._user_activated_playback = True
         if key == pygame.K_ESCAPE:
             self.running = False
         elif key == pygame.K_LEFT:
@@ -1389,11 +1429,11 @@ class Mello:
     
     def _handle_touch_down(self, pos):
         """Handle touch/mouse down."""
-        self._user_activated_playback = True
         # Menu intercept — track touch start for scroll vs tap detection
         if self.setup_menu.is_open:
             self._menu_touch_start = pos
             self._menu_touch_scrolled = False
+            self.setup_menu.handle_press(pos, self.renderer.menu_button_rects)
             return
         
         x, y = pos
@@ -1646,28 +1686,26 @@ class Mello:
             self.selected_index = target_index
             self.carousel.set_target(target_index)
             self._bump_focus_epoch(f'snap {old_index}->{target_index}')
-            self._reset_pending_focus('snap_focus_changed')
             self._clear_manual_pause_lock('focus_changed')
 
             self.play_timer.cancel()
+            was_playing_or_loading = self.now_playing.playing or self.playback.play_in_progress
             self.playback.stop_all()
-            self.playback.last_context_uri = None
             self.volume.mute()
             now = time.time()
             should_pause_remote = (
                 now - self._last_snap_pause_at > 0.4 and
-                (self.now_playing.playing or self.playback.has_pending_play)
+                was_playing_or_loading
             )
             if should_pause_remote:
                 self._last_snap_pause_at = now
                 run_async(self.api.pause)
-            self._user_driving = True
-            self._user_driving_since = time.time()
-
             item = items[target_index]
-            if not item.is_temp and not self._is_item_playing(item):
+            self._user_driving = not item.is_temp and not self._is_item_playing(item)
+            if self._user_driving:
+                self._pending_focus_uri = item.uri
                 self.playback.play_state.start_loading()
-            logger.info(f'Snap: {old_index} -> {target_index}, item={item.name}, _user_driving=True')
+            logger.info(f'Snap: {old_index} -> {target_index}, item={item.name}, play_pending={self._user_driving}')
         else:
             self.carousel.set_target(target_index)
     
@@ -1692,8 +1730,7 @@ class Mello:
         )
 
     def _skip_track(self, api_fn):
-        """Save progress, mark as user action, then skip prev/next."""
-        self.playback.last_user_play_time = time.time()
+        """Save progress, then skip prev/next."""
         self.playback.save_progress(self.now_playing, force=True)
 
         def _do_skip():
@@ -1706,25 +1743,27 @@ class Mello:
 
     def _toggle_play(self):
         """Toggle play/pause."""
-        self._user_activated_playback = True
         if self.mock_mode:
             self._toggle_mock_play()
             return
-        if self.now_playing.playing or self.playback.has_pending_play:
+        items = self.display_items
+        now_playing = self.now_playing
+        if now_playing.playing or self.playback.has_pending_play:
+            if now_playing.playing:
+                # Remember the exact spot: play after pause resumes from saved
+                # progress, which is otherwise up to 10s old.
+                self.playback.save_progress(now_playing, force=True)
             self._set_manual_pause_lock('pause_tap')
+            self._bump_focus_epoch('pause_tap')
+            self._user_driving = False
         else:
             self._clear_manual_pause_lock('play_tap')
-        items = self.display_items
-        if self.now_playing.paused and items and self.selected_index < len(items):
-            focused_item = items[self.selected_index]
-            if not focused_item.is_temp:
-                logger.info(
-                    'Paused state: forcing focused context play '
-                    f'(focused={focused_item.uri[:40]}, paused_ctx={(self.now_playing.context_uri or "none")[:40]})'
-                )
-                self._play_item(focused_item.uri)
-                return
-        self.playback.toggle_play(self.display_items, self.selected_index, self.now_playing)
+            if self.selected_index < len(items):
+                item = items[self.selected_index]
+                if not now_playing.paused or not item.is_temp:
+                    self._play_item(item.uri)
+                    return
+        self.playback.toggle_play(items, self.selected_index, now_playing)
     
     def _toggle_mock_play(self):
         """Toggle mock playback (no real API calls)."""
@@ -1748,43 +1787,23 @@ class Mello:
     def _play_item(self, uri: str, from_beginning: bool = False):
         """Queue a play request via the playback controller."""
         logger.warning(f'PLAY enqueue | uri={uri[:40]} | epoch={self._focus_epoch} | from_beginning={from_beginning}')
+        self._reset_pending_focus('play_enqueued')
         self._user_driving = True
-        self._user_driving_since = time.time()
-        if self.now_playing.context_uri and self.now_playing.context_uri != uri:
-            self.playback.save_progress(self.now_playing, force=True)
+        self._requested_focus_epoch = self._focus_epoch
+        self._requested_focus_uri = uri
+        self._requested_focus_since = time.time()
+        self.playback.play_state.start_loading()
+        now_playing = self.now_playing
+        if now_playing.context_uri and now_playing.context_uri != uri:
+            self.playback.save_progress(now_playing, force=True)
         self.playback.play_item(uri, from_beginning, self._focus_epoch)
     
     def _on_wake(self):
-        """Called when waking from sleep - reconnect and reset state."""
+        """Resume monitoring and refresh Spotify status after sleep."""
         self.bluetooth.resume_monitoring()
-        self._user_driving = False
-        self._reset_pending_focus('play_enqueued')
         self.tracker.on_wake()
-        logger.info('=' * 40)
-        logger.info('WAKE UP START')
-        logger.info(f'  Connection state: {self.connected}')
-        logger.info(f'  Fail count: {self._connection_fail_count}')
-        logger.info(f'  Playing: {self.now_playing.playing}')
-        
-        # Mark disconnected so CONNECTION RESTORED fires on next successful poll,
-        # which triggers retry_failed() for any play request that timed out.
-        self._connection_fail_count = 0
-        self.connected = False
-        
-        # Force immediate status refresh in background
-        def wake_refresh():
-            try:
-                self._refresh_status()
-                logger.info(f'  Post-refresh connected: {self.connected}')
-                logger.info(f'  Post-refresh playing: {self.now_playing.playing}')
-                logger.info('WAKE UP COMPLETE')
-                logger.info('=' * 40)
-            except Exception as e:
-                logger.error(f'  Wake refresh failed: {e}')
-                logger.info('WAKE UP FAILED')
-                logger.info('=' * 40)
-        
-        run_async(wake_refresh)
+        logger.info('WAKE UP | refreshing Spotify status')
+        self._poll_wake_event.set()
 
     def _wake_from_sleep(self, reason: str):
         """Wake from sleep and emit one high-signal diagnostic line."""
@@ -1798,6 +1817,35 @@ class Mello:
         )
         self.sleep_manager.wake_up(reason)
         self._on_wake()
+        # Someone touched the speaker awake: the moment to mention, a few
+        # times at most, that it can switch to Spotify Soloist. Not when it
+        # woke by itself because music started, and never over playing music.
+        if 'touch' in reason and not self.now_playing.playing:
+            self.setup_menu.show_spotify_prompt()
+
+    def _spotify_needs_pairing(self) -> bool:
+        """Whether the new player is on but Mello was never chosen in Spotify.
+
+        Right after switching, Spotify's player knows no account yet: someone
+        has to pick Mello once in the Spotify app. Until then nothing saved
+        can play, so the screen says what to do instead of showing covers.
+        (After that the login is kept; a Mello that is merely still logging
+        in after a restart is not "unpaired".)
+        """
+        if SPOTIFY_ENGINE != 'soloist' or self.mock_mode:
+            return False
+        if getattr(self.api, 'logged_in', False):
+            self._pairing_known = True
+            return False
+        now = time.time()
+        if now - self._pairing_checked_at > 2.0:
+            self._pairing_checked_at = now
+            users = SOLOIST_DATA_DIR / 'cache' / 'Users'
+            try:
+                self._pairing_known = any(users.iterdir())
+            except OSError:
+                self._pairing_known = False
+        return not self._pairing_known
 
     def _log_sleep_wait_if_due(self):
         """Log periodic sleeping heartbeat so black-screen reports have context."""
@@ -1827,9 +1875,14 @@ class Mello:
         """Return cached network status, refreshing every 10 seconds."""
         now = time.time()
         if now - self._network_check_time >= 10:
-            self._cached_has_network = self._has_network_connection()
             self._network_check_time = now
+            # Called from the draw loop: asking NetworkManager takes a
+            # process launch (a stutter every 10s), so do it off to the side.
+            run_async(self._refresh_network_status)
         return self._cached_has_network
+
+    def _refresh_network_status(self):
+        self._cached_has_network = self._has_network_connection()
 
     def _initial_connect(self):
         """Initial connection with fast retries then slower backoff.
@@ -2005,62 +2058,113 @@ class Mello:
         if not items:
             return
 
-        context_uri = self.now_playing.context_uri
+        now_playing = self.now_playing
+        context_uri = now_playing.context_uri
         if not context_uri:
-            self._pending_external_focus_uri = None
             return
 
         focused = items[self.selected_index].name if self.selected_index < len(items) else '?'
         focused_uri = items[self.selected_index].uri if self.selected_index < len(items) else None
-        logger.info(
-            f'SYNC check | spotify={context_uri[:40]} | focused="{focused}" '
-            f'| driving={self._user_driving} | epoch={self._focus_epoch}'
+
+        # This runs every frame. Log a line only when the situation changes:
+        # repeating it 20x per second kept the SD card busy from the draw loop.
+        situation = (
+            context_uri, focused_uri, self._user_driving, self._focus_epoch,
+            now_playing.playing, self._manual_pause_lock,
         )
+        situation_changed = situation != self._last_sync_situation
+        self._last_sync_situation = situation
+
+        def log_sync(outcome: str, message: str):
+            if situation_changed or outcome != self._last_sync_outcome:
+                logger.info(message)
+            self._last_sync_outcome = outcome
+
+        if situation_changed:
+            logger.info(
+                f'SYNC check | spotify={context_uri[:40]} | focused="{focused}" '
+                f'| driving={self._user_driving} | epoch={self._focus_epoch}'
+            )
 
         if focused_uri == context_uri:
-            self._pending_external_focus_uri = None
-            self.playback.last_context_uri = context_uri
             if (
-                self.now_playing.playing
+                now_playing.playing
                 and not self.playback.has_pending_play
                 and not self._manual_pause_lock
                 and not self.playback.pause_intent_active
             ):
                 self.volume.unmute()
-            elif self.now_playing.playing and (self._manual_pause_lock or self.playback.pause_intent_active):
-                logger.info(
+            elif now_playing.playing and (self._manual_pause_lock or self.playback.pause_intent_active):
+                log_sync(
+                    'ok_unmute_blocked',
                     'unmute_guard_blocked | reason=pause_intent_or_manual_lock '
                     f'| manual_pause_lock={self._manual_pause_lock} | '
                     f'pause_intent_active={self.playback.pause_intent_active}'
                 )
-            logger.info('SYNC ok | focused context already matches Spotify')
+            else:
+                log_sync('ok', 'SYNC ok | focused context already matches Spotify')
             return
 
-        if not self.now_playing.playing:
-            self._pending_external_focus_uri = None
-            logger.info('SYNC hold | spotify not playing, skip focus sync')
+        if not now_playing.playing:
+            log_sync('hold', 'SYNC hold | spotify not playing, skip focus sync')
             return
 
         if self._has_active_user_focus_intent():
-            self._pending_external_focus_uri = context_uri
-            logger.info(
+            log_sync(
+                'blocked',
                 'SYNC blocked | active user intent, deferring remote focus '
                 f'ctx={context_uri[:40]}'
             )
             return
 
         # Safe remote sync path: move UI focus only, never pause/mute/stop playback.
-        target_uri = self._pending_external_focus_uri or context_uri
-        if self._focus_on_uri_without_interrupt(target_uri, reason='remote_sync'):
+        if self._focus_on_uri_without_interrupt(context_uri, reason='remote_sync'):
             return
 
-        # If item not yet available (e.g. temp item not materialized), keep pending.
-        self._pending_external_focus_uri = target_uri
-        logger.info(
+        # The next frame can sync once the current context has a cover.
+        log_sync(
+            'pending',
             'SYNC pending | remote context not in display_items yet '
-            f'ctx={target_uri[:40]}'
+            f'ctx={context_uri[:40]}'
         )
     
+    def _update_focus_playback(self, item: Optional[CatalogItem]):
+        """Play a settled local selection once, then wait for status confirmation."""
+        if self._spotify_inactive.is_set() or item is None:
+            return
+
+        now = time.time()
+        status_ready = not self._status_unknown and now - self._last_status_ok_at < 4.0
+        if self._requested_focus_uri == item.uri:
+            if self.playback.play_in_progress:
+                return
+            if status_ready and self._is_item_playing(item):
+                self._clear_requested_focus()
+            elif now - self._requested_focus_since >= 12.0:
+                self._clear_requested_focus()
+                logger.warning(f'PLAY confirmation timed out | uri={item.uri[:40]}')
+                self._show_toast('Loading failed, try again')
+            return
+
+        if self._pending_focus_uri != item.uri:
+            return
+        if not (
+            self._startup_ready and self.connected and status_ready
+            and self.carousel.settled and not self.touch.dragging
+            and not self._manual_pause_lock
+            and not self.playback.play_in_progress and not self.playback.pause_intent_active
+        ):
+            self._pending_focus_since = 0.0
+            return
+
+        if self._is_item_playing(item) or self._is_paused_same_focus_context(item):
+            self._reset_pending_focus('already_on_focused_context')
+            self._user_driving = False
+        elif self._pending_focus_since == 0.0:
+            self._pending_focus_since = now
+        elif now - self._pending_focus_since >= 1.0:
+            self._play_item(item.uri)
+
     def _update(self, dt: float):
         """Update application state."""
         self._check_touch_health()
@@ -2084,147 +2188,7 @@ class Mello:
                 else:
                     self._clear_manual_pause_lock('active_context_changed')
 
-        # Focus-stable request policy:
-        # - mute immediately on swipe (_snap_to)
-        # - only request play when drag is finished, carousel is settled,
-        #   focus remained unchanged for 1s, and we're connected.
-        status_ready = (time.time() - self._last_status_ok_at) < 4.0 and not self._status_unknown
-        paused_focused_context = (
-            focused_item is not None
-            and self.now_playing.paused
-            and self.now_playing.context_uri == focused_item.uri
-        )
-        prioritize_remote_focus = self._should_prioritize_remote_focus(focused_item)
-        if prioritize_remote_focus:
-            # Prevent the focused auto-play loop from overriding active remote playback.
-            self._reset_pending_focus('prioritize_remote_focus')
-            if self._requested_focus_uri == (focused_item.uri if focused_item else None):
-                self._requested_focus_epoch = None
-                self._requested_focus_uri = None
-                self._requested_focus_since = 0.0
-        stable_ready = (
-            self._startup_ready
-            and self.connected
-            and (status_ready or paused_focused_context)
-            and not prioritize_remote_focus
-            and self._user_activated_playback
-            and not self._manual_pause_lock
-            and not self.playback.pause_intent_active
-            and self.carousel.settled
-            and not self.touch.dragging
-            and focused_item is not None
-            and not focused_item.is_temp
-        )
-
-        if stable_ready:
-            if self._is_item_playing(focused_item):
-                self._reset_pending_focus('focused_item_already_playing')
-                self._requested_focus_epoch = None
-                self._requested_focus_uri = None
-                self._requested_focus_since = 0.0
-                self.volume.unmute()
-            elif self._is_paused_same_focus_context(focused_item):
-                logger.info(
-                    'PLAY skip | paused on focused context, no auto resume '
-                    f'(ctx={(self.now_playing.context_uri or "none")[:40]})'
-                )
-                self._reset_pending_focus('paused_same_focus_context')
-                self._requested_focus_epoch = None
-                self._requested_focus_uri = None
-                self._requested_focus_since = 0.0
-                self.volume.unmute()
-            elif not self.playback.play_in_progress:
-                now = time.time()
-                focused_uri = focused_item.uri
-                hold_current_request = False
-                if (self._requested_focus_epoch == self._focus_epoch and
-                        self._requested_focus_uri == focused_uri):
-                    # Already requested this exact focus/epoch; wait for status confirmation.
-                    # If confirmation never arrives, allow a controlled retry.
-                    request_age = now - self._requested_focus_since
-                    if request_age < 12.0:
-                        hold_current_request = True
-                        if self._pending_focus_uri != focused_uri:
-                            self._pending_focus_uri = focused_uri
-                            self._pending_focus_since = now
-                        if now - self._last_requested_hold_log > 2.5:
-                            logger.warning(
-                                'PLAY hold | waiting status confirmation '
-                                f'age={request_age:.1f}s | focused_uri={focused_uri[:40]} '
-                                f'| epoch={self._focus_epoch} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} '
-                                f'| spotify_playing={self.now_playing.playing} | loading={self.playback.play_state.is_loading}'
-                            )
-                            self._last_requested_hold_log = now
-                    else:
-                        logger.warning(
-                            f'PLAY request stale for {request_age:.1f}s, retrying same focus '
-                            f'uri={focused_uri[:40]} epoch={self._focus_epoch}'
-                        )
-                        self._requested_focus_epoch = None
-                        self._requested_focus_uri = None
-                        self._requested_focus_since = 0.0
-                if not hold_current_request:
-                    if self._pending_focus_uri != focused_uri:
-                        self._pending_focus_uri = focused_uri
-                        self._pending_focus_since = now
-                        logger.info(f'Focus stable timer start: {focused_item.name} (1s)')
-                    elif now - self._pending_focus_since >= 1.0:
-                        logger.info(f'Focus stable 1s -> play request: {focused_item.name}')
-                        self._requested_focus_epoch = self._focus_epoch
-                        self._requested_focus_uri = focused_uri
-                        self._requested_focus_since = now
-                        self._play_item(focused_uri)
-                        self._reset_pending_focus('request_sent_after_1s_dwell')
-        else:
-            # Throttled diagnostics: why focus-gate is blocking play requests.
-            now = time.time()
-            if now - self._last_focus_gate_log > 3.0:
-                reason = (
-                    f'startup_ready={self._startup_ready}, connected={self.connected}, '
-                    f'status_ready={(time.time() - self._last_status_ok_at) < 4.0 and not self._status_unknown}, '
-                    f'status_unknown={self._status_unknown}, '
-                    f'user_activated={self._user_activated_playback}, '
-                    f'manual_pause_lock={self._manual_pause_lock}, '
-                    f'settled={self.carousel.settled}, dragging={self.touch.dragging}, '
-                    f'focused_item={focused_item.name if focused_item else None}, '
-                    f'is_temp={focused_item.is_temp if focused_item else None}'
-                )
-                logger.warning(f'PLAY gate blocked | {reason}')
-                self._last_focus_gate_log = now
-            elif self._startup_ready and self.connected and (
-                self._status_unknown or (now - self._last_status_ok_at) >= 4.0
-            ):
-                if now - self._last_status_not_ready_log > 3.0:
-                    logger.warning(
-                        'STATUS not ready for play | '
-                        f'last_ok_age={now - self._last_status_ok_at:.1f}s | '
-                        f'status_unknown={self._status_unknown} | '
-                        f'focused_uri={(focused_item.uri if focused_item else "none")[:40]}'
-                    )
-                    self._last_status_not_ready_log = now
-            keep_pending_feedback = (
-                focused_item is not None
-                and not focused_item.is_temp
-                and not self._is_item_playing(focused_item)
-                and not self._is_paused_same_focus_context(focused_item)
-                and self._requested_focus_epoch == self._focus_epoch
-                and self._requested_focus_uri == focused_item.uri
-            )
-            if keep_pending_feedback:
-                if self._pending_focus_uri != focused_item.uri:
-                    self._pending_focus_uri = focused_item.uri
-                    self._pending_focus_since = now
-                request_age = now - self._requested_focus_since
-                if request_age >= 12.0 and not self.playback.play_in_progress:
-                    logger.warning(
-                        f'Clearing stale requested focus while gated (age={request_age:.1f}s, '
-                        f'uri={focused_item.uri[:40]}, epoch={self._focus_epoch})'
-                    )
-                    self._requested_focus_epoch = None
-                    self._requested_focus_uri = None
-                    self._requested_focus_since = 0.0
-            else:
-                self._reset_pending_focus('stable_gate_blocked')
+        self._update_focus_playback(focused_item)
         
         # Check long press for delete mode
         if self.touch.check_long_press():
@@ -2237,6 +2201,9 @@ class Mello:
             self._pending_focus_uri is not None
         )
         
+        if self.wifi_keeper.take_restored():
+            self._cached_has_network = True
+            self.setup_menu.network_restored()
         self.setup_menu.update()
 
         # Volume hold detection: open menu after MENU_HOLD_TIME seconds
@@ -2289,56 +2256,10 @@ class Mello:
             self.tracker.on_sleep(idle)
         
         self.playback.update_loading_state(
-            self.now_playing, self.carousel.settled, self._pending_focus_uri is not None
+            self.now_playing, self.carousel.settled,
+            self._pending_focus_uri is not None or self._requested_focus_uri is not None,
         )
         self._check_context_switch_watchdog(focused_item)
-
-        # Root-cause detector: focus is stable and should auto-play, but no request path exists.
-        if focused_item is not None and not focused_item.is_temp:
-            focused_uri = focused_item.uri
-            auto_intent_ready = (
-                self._startup_ready
-                and self.connected
-                and self._user_activated_playback
-                and not self._manual_pause_lock
-                and not self.playback.pause_intent_active
-                and self.carousel.settled
-                and not self.touch.dragging
-            )
-            focus_is_playing = self._is_item_playing(focused_item)
-            requested_current_focus = (
-                self._requested_focus_epoch == self._focus_epoch
-                and self._requested_focus_uri == focused_uri
-            )
-            has_active_play_path = (
-                self.playback.play_in_progress
-                or self._pending_focus_uri == focused_uri
-                or requested_current_focus
-            )
-            if (
-                auto_intent_ready
-                and not focus_is_playing
-                and not has_active_play_path
-                and not self._is_paused_same_focus_context(focused_item)
-            ):
-                now = time.time()
-                if self._autoplay_stall_since <= 0.0:
-                    self._autoplay_stall_since = now
-                stall_age = now - self._autoplay_stall_since
-                if stall_age >= 1.5 and now - self._last_autoplay_stall_log > 2.0:
-                    logger.warning(
-                        'AUTOPLAY stall | focus stable but no active play path | '
-                        f'stall_age={stall_age:.1f}s | focused="{focused_item.name}" | '
-                        f'focused_uri={focused_uri[:40]} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} | '
-                        f'spotify_playing={self.now_playing.playing} | spotify_paused={self.now_playing.paused} | '
-                        f'loading={self.playback.play_state.is_loading} | play_in_progress={self.playback.play_in_progress} | '
-                        f'pending_focus={(self._pending_focus_uri or "none")[:40]} | '
-                        f'requested_uri={(self._requested_focus_uri or "none")[:40]} | '
-                        f'requested_epoch={self._requested_focus_epoch} | focus_epoch={self._focus_epoch}'
-                    )
-                    self._last_autoplay_stall_log = now
-            else:
-                self._autoplay_stall_since = 0.0
 
         # Detect "should be loading but loader disappeared" condition.
         if focused_item is not None and not focused_item.is_temp:
@@ -2353,34 +2274,17 @@ class Mello:
                     )
                 )
             )
-            if expected_loading and not self.playback.play_state.is_loading:
+            mismatch = expected_loading and not self.playback.play_state.should_show_loading
+            # Runs every frame: report the start of a mismatch, not each frame of it.
+            if mismatch and not self._loader_mismatch_logged:
                 logger.warning(
-                    'LOADER mismatch | expected_loading=True but is_loading=False | '
+                    'LOADER mismatch | play pending without loading state | '
                     f'focused_uri={focused_item.uri[:40]} | pending_uri={(self._pending_focus_uri or "none")[:40]} | '
                     f'requested_uri={(self._requested_focus_uri or "none")[:40]} | '
                     f'play_in_progress={self.playback.play_in_progress} | epoch={self._focus_epoch}'
                 )
+            self._loader_mismatch_logged = mismatch
 
-        # Diagnostics for "title above context is wrong while loading/resume"
-        # Keep throttled to avoid log spam.
-        now = time.time()
-        if now - self._last_title_diag_log > 2.0 and focused_item is not None:
-            title_source, title_text = self._display_title_for_item(focused_item)
-            logger.warning(
-                'TITLE diag | '
-                f'focused="{focused_item.name}" | title="{title_text}" | source={title_source} | '
-                f'focused_uri={(focused_item.uri or "none")[:40]} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} | '
-                f'spotify_track="{self.now_playing.track_name or "none"}" | loading={self.playback.play_state.is_loading} | '
-                f'play_in_progress={self.playback.play_in_progress} | pending_focus={(self._pending_focus_uri or "none")[:40]} | '
-                f'requested_uri={(self._requested_focus_uri or "none")[:40]} | requested_epoch={self._requested_focus_epoch}'
-            )
-            if not (self.now_playing.playing or self.now_playing.paused) and title_source != 'none':
-                logger.warning(
-                    'TITLE mismatch | expected_source=none while inactive | '
-                    f'actual_source={title_source} | focused="{focused_item.name}" | title="{title_text}"'
-                )
-            self._last_title_diag_log = now
-    
     # ============================================
     # SETUP MENU
     # ============================================
@@ -2422,6 +2326,10 @@ class Mello:
         # Snapshot BT state once to avoid race with monitor thread
         bt_dev = self.bluetooth.connected_device
 
+        # First: this starts the phone page the screen's code points at.
+        home_connect_spotify = self.setup_menu.home_connect_spotify(
+            self._get_cached_network_status(), not items)
+
         ctx = RenderContext(
             items=items,
             selected_index=self.selected_index,
@@ -2443,6 +2351,19 @@ class Mello:
             menu_state=self.setup_menu.state,
             menu_known_networks=self.setup_menu.known_networks,
             menu_current_network=self.setup_menu.current_network,
+            menu_wifi_join_failed=self.setup_menu.wifi_join_failed,
+            menu_spotify_items=self.setup_menu.spotify_items,
+            menu_spotify_prompt=self.setup_menu.spotify_prompt_active,
+            menu_prompt_hold_progress=self.setup_menu.prompt_hold_progress,
+            menu_prompt_title=self.setup_menu.prompt_title,
+            menu_prompt_benefits=PROMPT_BENEFITS,
+            menu_prompt_button=self.setup_menu.prompt_button,
+            menu_prompt_hint=PROMPT_SCAN_HINT,
+            menu_spotify_menu_items=self.setup_menu.spotify_menu_items,
+            home_lines=self.setup_menu.home_lines,
+            spotify_needs_pairing=self._spotify_needs_pairing(),
+            home_connect_spotify=home_connect_spotify,
+            menu_spotify_switching=self.setup_menu.spotify_switching,
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
             app_version_label=self.app_version_label,

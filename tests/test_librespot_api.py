@@ -4,6 +4,7 @@ Tests for LibrespotAPI transport/status behavior.
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 import requests
 
 import sys
@@ -35,6 +36,21 @@ def test_status_request_exception_returns_none():
     status = api.status()
 
     assert status is None
+
+
+@pytest.mark.parametrize('code, body', [
+    (503, b'{"error": "unavailable"}'),
+    (200, b'{"error": "unavailable"}'),
+    (200, b'[]'),
+])
+def test_status_rejects_error_responses_and_non_status_json(code, body):
+    api = LibrespotAPI('http://localhost:3678')
+    response = requests.Response()
+    response.status_code = code
+    response._content = body
+    api.session.get = MagicMock(return_value=response)
+
+    assert api.status() is None
 
 
 def test_set_repeat_context_posts_expected_body():

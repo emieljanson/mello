@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, 
-    LIBRESPOT_URL, MOCK_MODE, FULLSCREEN,
+    LIBRESPOT_URL, SOLOIST_WS, SPOTIFY_ENGINE, MOCK_MODE, FULLSCREEN,
     LOG_DIR, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
 )
 from .app import Mello
@@ -37,17 +37,11 @@ def setup_logging():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # Console handler
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(console_formatter)
-    console.setLevel(level)
-    
-    # Configure root logger
     root = logging.getLogger()
     root.setLevel(level)
-    root.addHandler(console)
-    
+
     # File handler with rotation (only on Pi / when LOG_DIR is writable)
+    file_handler = None
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
@@ -57,12 +51,23 @@ def setup_logging():
             encoding='utf-8'
         )
         file_handler.setFormatter(file_formatter)
-        file_handler.setLevel(logging.DEBUG)  # Always log DEBUG to file
         root.addHandler(file_handler)
-        root.info(f'Logging to: {LOG_FILE}')
     except (OSError, PermissionError) as e:
-        root.warning(f'Could not create log file: {e}')
-    
+        print(f'Could not create log file: {e}', file=sys.stderr)
+
+    # Console output only for a person at a terminal. As a service, stdout is
+    # appended to ~/mello/mello.log by systemd: logging there as well wrote
+    # every line to the SD card twice, into a file that is never trimmed
+    # while the app runs. Crashes still reach that file through stderr.
+    if file_handler is None or sys.stdout.isatty():
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(console_formatter)
+        console.setLevel(level)
+        root.addHandler(console)
+
+    if file_handler is not None:
+        root.info(f'Logging to: {LOG_FILE}')
+
     # Quiet down noisy libraries
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('requests').setLevel(logging.WARNING)
@@ -148,7 +153,8 @@ def main():
     if MOCK_MODE:
         logger.info('Mode: MOCK (UI testing)')
     else:
-        logger.info(f'Librespot: {LIBRESPOT_URL}')
+        engine_url = SOLOIST_WS if SPOTIFY_ENGINE == 'soloist' else LIBRESPOT_URL
+        logger.info(f'Spotify engine: {SPOTIFY_ENGINE} ({engine_url})')
     logger.info(f'Screen: {SCREEN_WIDTH}x{SCREEN_HEIGHT}')
     logger.info(f'Fullscreen: {FULLSCREEN}')
     

@@ -1,0 +1,19 @@
+[Unit]
+Description=Mello Spotify Soloist (Spotify Connect)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=__USER__
+SupplementaryGroups=audio
+EnvironmentFile=-__HOME__/mello/.env
+ExecStart=__HOME__/mello/pi/soloist/run-soloist.sh
+Restart=always
+RestartSec=5
+Environment=HOME=__HOME__
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/__UID__/bus
+
+[Install]
+WantedBy=multi-user.target

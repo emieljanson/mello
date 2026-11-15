@@ -93,6 +93,7 @@ Once open, you'll see a scrollable menu with these sections:
 - **WiFi** — View saved networks, connect to a new one, or switch. If WiFi drops, Mello creates a "Mello-Setup" hotspot you can connect to from your phone
 - **Bluetooth** — Pair and connect wireless headphones or speakers. Shows paired devices and nearby discoverable devices
 - **Volume levels** — Set separate volume levels (low/mid/high) for the built-in speaker and Bluetooth output
+- **Spotify** — Shows which Spotify engine the speaker uses and lets you switch to Spotify Soloist (see [Spotify Soloist](#spotify-soloist-optional))
 
 ### Playback settings
 - **Auto-pause** — How long Mello plays before automatically pausing (15, 30, 60, or 120 minutes). Tap to cycle through options. Default: 30 minutes
@@ -108,9 +109,34 @@ To close the menu, tap the **✕** in the top-right corner.
 
 During installation, Mello asks if you'd like to share anonymous usage data. This helps improve the project. Only session-level events are collected (play/pause, sleep/wake) — no personal data or music choices. The choice is made once during setup.
 
+## Spotify Soloist (optional)
+
+Mello plays Spotify through [go-librespot](https://github.com/devgianlu/go-librespot) by default. You can switch a speaker to **Spotify Soloist**, Spotify's own headless Connect client, which responds faster to play, pause and skip and does not hang on busy input. It needs a 64-bit Raspberry Pi OS and your own API key from Spotify; Mello downloads Soloist from Spotify itself.
+
+**Switching an installed speaker**
+
+1. Get a Soloist API key: with a Spotify Premium account, open [developer.spotify.com/dashboard/soloist](https://developer.spotify.com/dashboard/soloist), accept the terms if asked and generate a key. Every owner needs their own key
+2. On the speaker, open the settings menu (hold the volume button for 3 seconds) and tap **Spotify**
+3. Scan the QR code on the screen with your phone, or open the address shown under it (such as `192.168.1.50:8080`) on a phone or computer on the same WiFi
+4. Paste the key and save. Mello downloads Soloist, switches over and restarts (about a minute)
+5. Open Spotify, tap the speaker icon and select "Mello" once, like the first time
+
+The address only works while that settings screen is open. After an update that adds Soloist, a speaker still on go-librespot shows this screen by itself when it is woken up (not while music plays). It has no close button, so a child does not tap it away: it disappears when you enter a key, or when you hold **Hold to close** for three seconds. The same page has a button to switch back to go-librespot.
+
+**Right after WiFi setup**
+
+Once the speaker is connected it shows the same screen with the QR code, so a new speaker can be switched straight away. The WiFi page itself only asks for WiFi: it opens in a temporary browser without internet, where you could not fetch a key from Spotify.
+
+**Good to know**
+
+- Soloist builds stop working 90 days after Spotify made them. Mello renews its copy by itself during the nightly update; you do not need to do anything
+- Your library and the place you left off in each album are kept when you switch
+- Two speakers on the same Spotify account can only play one at a time; that is a Spotify limit
+- Soloist can only start an album at its first track, so Mello skips ahead silently to where you were. Deep into a long audiobook this takes a few seconds
+
 ## Known Issues
 
-**Spotify "audio key error" — tracks skip without playing.** This is an upstream issue in librespot (the library that handles Spotify Connect). It affects some Spotify accounts but not others, and there's no fix yet. Mello uses [go-librespot](https://github.com/devgianlu/go-librespot) which is affected by the same problem. Track the issue here: [librespot-org/librespot#1649](https://github.com/librespot-org/librespot/issues/1649)
+**Spotify connects but skips tracks without playing.** Spotify refuses the audio keys go-librespot needs for some accounts, including some Premium accounts. The device can still appear in Spotify Connect. [go-librespot #279](https://github.com/devgianlu/go-librespot/issues/279). Switching the speaker to [Spotify Soloist](#spotify-soloist-optional) avoids go-librespot altogether.
 
 ## Show Off Your Build
 

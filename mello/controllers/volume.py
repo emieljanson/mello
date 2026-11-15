@@ -50,6 +50,10 @@ class VolumeController:
         """Cycle through volume levels."""
         self.index = (self.index + 1) % len(self._levels())
         logger.info(f'Volume: speaker={self.speaker_level}%, bt={self.bt_level}%')
+        if self._muted:
+            # Muted on purpose (paused, or a resume still finding its track);
+            # the new level takes effect on unmute.
+            return
         run_async(set_system_volume, self.speaker_level)
 
     def mute(self):
@@ -70,9 +74,10 @@ class VolumeController:
 
     def ensure_spotify_at_100(self) -> bool:
         """Ensure Spotify volume is at 100% (call on first play). Returns True if set."""
-        if not self._spotify_initialized:
+        if not self._spotify_initialized and self.api.set_volume(100):
+            # Only remembered once it worked: an engine that is not the
+            # active Spotify device yet refuses, and gets asked again next play.
             self._spotify_initialized = True
-            if self.api.set_volume(100):
-                logger.info('Spotify volume set to 100%')
-                return True
+            logger.info('Spotify volume set to 100%')
+            return True
         return False

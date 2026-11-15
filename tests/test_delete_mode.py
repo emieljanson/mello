@@ -47,7 +47,6 @@ def _make_app(rect=(10, 10, 50, 50)) -> Mello:
     )
     app.touch = SimpleNamespace(on_down=MagicMock())
     app.user_interacting = False
-    app._user_activated_playback = False
     app._handle_button_tap = MagicMock()
     app._delete_current_item = MagicMock()
     return app

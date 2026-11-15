@@ -161,10 +161,15 @@ class Renderer:
             self._last_playing_state = ctx.now_playing.playing
             self._last_selected_index = ctx.selected_index
         
-        # Empty state
-        if not ctx.items:
+        # Empty state (also while Mello still has to be chosen in Spotify once)
+        if not ctx.items or ctx.spotify_needs_pairing:
             self._draw_background()
-            self._draw_empty_state(ctx)
+            if ctx.home_connect_spotify and not ctx.items:
+                # A new Mello asks to connect Spotify right here.
+                self.settings_button_rect = None
+                self._draw_home_connect_spotify(ctx)
+            else:
+                self._draw_empty_state(ctx)
             self._needs_full_redraw = True
             return None
         
@@ -282,11 +287,17 @@ class Renderer:
         else:
             # Normal empty state: Spotify instructions
             self.settings_button_rect = None
-            line1 = self._render_text_rotated('Play to Mello via Spotify', self.font_medium, COLORS['text_secondary'])
+            if ctx.spotify_needs_pairing and ctx.items:
+                # Just switched to the new player: it logs in the first time
+                # someone plays to it from the Spotify app.
+                first, second = 'Play to Mello via Spotify', 'to finish setting up'
+            else:
+                first, second = 'Play to Mello via Spotify', 'Tap + to save'
+            line1 = self._render_text_rotated(first, self.font_medium, COLORS['text_secondary'])
             line1_rect = line1.get_rect(center=(center_x - 30, center_y))
             self.screen.blit(line1, line1_rect)
 
-            line2 = self._render_text_rotated('Tap + to save', self.font_medium, COLORS['text_secondary'])
+            line2 = self._render_text_rotated(second, self.font_medium, COLORS['text_secondary'])
             line2_rect = line2.get_rect(center=(center_x - 60, center_y))
             self.screen.blit(line2, line2_rect)
     
@@ -404,14 +415,29 @@ class Renderer:
             elif delete_mode_id == center_item.id:
                 self._draw_delete_button(center_cover_rect)
     
+    @staticmethod
+    def _cover_progress(item: CatalogItem, now_playing: NowPlaying) -> float:
+        """How far along the focused album's track is, 0.0-1.0.
+
+        Live when Spotify is on this album and knows the position. Otherwise
+        the place saved for it: while an album is still loading (which takes
+        seconds deep into an audiobook) the bar already shows where the child
+        was, next to the saved track title.
+        """
+        if now_playing.context_uri == item.uri and now_playing.progress > 0:
+            return now_playing.progress
+        saved = item.current_track if isinstance(item.current_track, dict) else None
+        if saved:
+            duration = saved.get('duration') or 0
+            if duration > 0:
+                return max(0.0, min(1.0, (saved.get('position') or 0) / duration))
+        return 0.0
+
     def _draw_cover_progress(self, cover_rect: tuple, item: CatalogItem, now_playing: NowPlaying):
         """Draw progress bar at the edge of the cover (portrait mode - left edge = user's bottom)."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
-        
-        if now_playing.context_uri != item.uri:
-            return
-        
-        progress = now_playing.progress
+
+        progress = self._cover_progress(item, now_playing)
         if progress <= 0:
             return
         
@@ -649,6 +675,7 @@ class Renderer:
     _MENU_TITLE_X = 670         # title (fixed top)
     _MENU_CONTENT_TOP = 530     # first button x (below gradient fade)
     _MENU_CONTENT_BOT = 20      # content extends to near screen edge
+    _MENU_QR_SIZE = 210          # QR code edge, including its white margin
     _MENU_NAV_SIZE = 60          # close/back icon button diameter
     _MENU_NAV_CENTER = (670, 50)   # close/back icon button center (user's top-left)
 
@@ -682,6 +709,21 @@ class Renderer:
                 ('spacer',),
                 ('text', '3. Enter the password'),
             ]
+            if ctx.menu_wifi_join_failed:
+                # The phone just shows the password page again; say why.
+                items = [
+                    ('text', f'Could not join {ctx.menu_wifi_join_failed}'),
+                    ('text', 'This happens sometimes, please try again'),
+                    ('spacer',),
+                ] + items
+        elif ctx.menu_state == MenuState.SPOTIFY:
+            title = 'Spotify'
+            nav_icon = 'back'
+            if ctx.menu_spotify_prompt:
+                # Opened by itself: not a settings page but an offer.
+                self._draw_soloist_prompt(ctx)
+                return
+            items = list(ctx.menu_spotify_menu_items)
         elif ctx.menu_state == MenuState.BT_LIST:
             title = 'Bluetooth'
             nav_icon = 'back'
@@ -706,6 +748,11 @@ class Renderer:
         title_surf = self._render_text_rotated(title, self.font_large, COLORS['text_primary'])
         self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
 
+        self._draw_menu_nav(ctx, nav_icon)
+        self._needs_full_redraw = True
+
+    def _draw_menu_nav(self, ctx: 'RenderContext', nav_icon: str):
+        """The round close/back button in the corner of a menu screen."""
         nav_center = self._MENU_NAV_CENTER
         nav_r = self._MENU_NAV_SIZE // 2
         nav_color = COLORS['bg_elevated']
@@ -721,13 +768,160 @@ class Renderer:
             nav_center[0] - nav_r, nav_center[1] - nav_r,
             self._MENU_NAV_SIZE, self._MENU_NAV_SIZE)
 
+    def _blit_user(self, surface: pygame.Surface, left: int, top: int):
+        """Blit an already rotated surface by its top-left corner as the user sees it."""
+        rect = surface.get_rect()
+        rect.right, rect.top = SCREEN_WIDTH - top, left
+        self.screen.blit(surface, rect)
+        return rect
+
+    def _draw_switching(self, ctx: 'RenderContext'):
+        """Two centred lines while the speaker restarts on the other player."""
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        lines = [item[1] for item in ctx.menu_spotify_items if item[0] == 'text']
+        for index, text in enumerate(lines):
+            color = COLORS['text_primary'] if index == 0 else COLORS['text_secondary']
+            line = self._render_text_rotated(text, self.font_medium, color)
+            self.screen.blit(line, line.get_rect(center=(center_x + 15 - index * 34, center_y)))
+
+    def _draw_home_connect_spotify(self, ctx: 'RenderContext'):
+        """A new Mello's home screen while Spotify still has to be connected.
+
+        Looks like the other home messages (logo, two grey lines), with the
+        code to scan underneath. Nothing to tap: it changes by itself once a
+        code was entered on the phone.
+        """
+        if ctx.menu_spotify_switching:
+            self._draw_switching(ctx)
+            return
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        matrix = next((item[1] for item in ctx.menu_spotify_items if item[0] == 'qr'), None)
+        lines = ctx.home_lines if matrix else tuple(
+            item[1] for item in ctx.menu_spotify_items if item[0] == 'text')[-2:]
+
+        # The panel is sideways: "down" for the user is towards smaller x.
+        x = center_x + 162
+        logo = self.icons.get('logo')
+        if logo:
+            logo_width = 240
+            scale = logo_width / logo.get_width()
+            logo_scaled = pygame.transform.smoothscale(logo, (logo_width, int(logo.get_height() * scale)))
+            logo_rotated = pygame.transform.rotate(logo_scaled, -90)
+            self.screen.blit(logo_rotated, logo_rotated.get_rect(center=(x, center_y)))
+        x -= 80
+        for text in lines:
+            line = self._render_text_rotated(text, self.font_medium, COLORS['text_secondary'])
+            self.screen.blit(line, line.get_rect(center=(x, center_y)))
+            x -= 30
+        if matrix:
+            self._draw_qr(matrix, x - 22)
+
+    def _draw_soloist_prompt(self, ctx: 'RenderContext'):
+        """Full-screen "a faster Mello" offer (see SetupMenu.show_spotify_prompt).
+
+        There is no close button; its button has to be held, and fills up
+        while it is.
+        """
+        self._draw_background()
+        self.menu_button_rects = {}
         self._needs_full_redraw = True
+        if ctx.menu_spotify_switching:
+            self._draw_switching(ctx)
+            return
+        self._draw_step_screen(
+            title=ctx.menu_prompt_title, benefits=ctx.menu_prompt_benefits,
+            button=ctx.menu_prompt_button, button_key='prompt_close',
+            hold_progress=ctx.menu_prompt_hold_progress,
+            matrix=next((item[1] for item in ctx.menu_spotify_items if item[0] == 'qr'), None),
+            hint=ctx.menu_prompt_hint,
+            fallback=tuple(item[1] for item in ctx.menu_spotify_items if item[0] == 'text')[-2:],
+        )
+
+    def _draw_step_screen(self, title: str, button: str, button_key: str,
+                          lines: tuple = (), benefits: tuple = (), hold_progress: float = 0.0,
+                          matrix: Optional[list] = None, hint: str = '', fallback: tuple = ()):
+        """One title, a few short lines and a button on the left, a code to scan on the right.
+
+        Positions are in the user's
+        view (1280 wide, 720 high); the panel is mounted sideways, so the
+        user's x is the panel's y.
+        """
+        center_x = SCREEN_WIDTH // 2
+        left = 310
+        height = 62 + 34 * len(lines) + 42 * len(benefits) + (24 + 54 if button else 0)
+        y = center_x - height // 2 - 6
+
+        heading = self._render_text_rotated(title, self.font_large, COLORS['text_primary'])
+        self._blit_user(heading, left, y)
+        y += 62
+        for text in lines:
+            line = self._render_text_rotated(text, self.font_medium, COLORS['text_secondary'])
+            self._blit_user(line, left, y)
+            y += 34
+        for benefit in benefits:
+            tick = [(SCREEN_WIDTH - (y + dy), left + dx) for dx, dy in ((0, 10), (7, 17), (19, 3))]
+            pygame.draw.lines(self.screen, COLORS['accent'], False, tick, 4)
+            line = self._render_text_rotated(benefit, self.font_medium, (216, 216, 216))
+            self._blit_user(line, left + 34, y)
+            y += 42
+
+        if button:
+            # The one button, sized to its text. Held ones fill up while held.
+            label = self._render_text_rotated(button, self.font_medium, COLORS['text_primary'])
+            pad_side, pad_top = 30, 16
+            label_rect = self._blit_user(label, left + pad_side, y + 24 + pad_top)
+            pill = pygame.Rect(label_rect.x - pad_top, label_rect.y - pad_side,
+                               label_rect.width + pad_top * 2, label_rect.height + pad_side * 2)
+            pygame.draw.rect(self.screen, COLORS['bg_elevated'], pill, border_radius=12)
+            if hold_progress > 0:
+                filled = pygame.Rect(pill.x, pill.y, pill.width, max(24, int(pill.height * hold_progress)))
+                pygame.draw.rect(self.screen, COLORS['accent'], filled, border_radius=12)
+            self.screen.blit(label, label_rect)
+            self.menu_button_rects[button_key] = pill
+
+
+        # Right: the code to scan, or two lines of text when no code can be made.
+        column = 870
+        if matrix:
+            qr_top = center_x - (self._MENU_QR_SIZE + (45 if hint else 0)) // 2
+            self._draw_qr(matrix, SCREEN_WIDTH - qr_top - 16, center_y=column)
+            if hint:
+                text = self._render_text_rotated(hint, self.font_medium, COLORS['text_secondary'])
+                self.screen.blit(text, text.get_rect(center=(SCREEN_WIDTH - (qr_top + self._MENU_QR_SIZE + 30), column)))
+        else:
+            for index, text in enumerate(fallback):
+                line = self._render_text_rotated(text, self.font_medium, COLORS['text_secondary'])
+                self.screen.blit(line, line.get_rect(center=(center_x + 15 - index * 34, column)))
+
+    def _draw_qr(self, matrix: list, x: int, center_y: int = CAROUSEL_CENTER_Y):
+        """Draw a QR code whose top edge (as the user sees it) is at `x`.
+
+        A QR code reads the same in any orientation, so unlike text it needs
+        no rotation for the portrait panel.
+        """
+        size = self._MENU_QR_SIZE
+        margin = 16
+        module = max(1, (size - 2 * margin) // len(matrix))
+        code = module * len(matrix)
+        left = x + 16 - size                      # top edge lines up with a text row
+        top = center_y - size // 2
+        pygame.draw.rect(self.screen, (255, 255, 255), pygame.Rect(left, top, size, size), border_radius=12)
+        origin_x = left + (size - code) // 2
+        origin_y = top + (size - code) // 2
+        for row_index, row in enumerate(matrix):
+            for col_index, dark in enumerate(row):
+                if dark:
+                    pygame.draw.rect(self.screen, (0, 0, 0), pygame.Rect(
+                        origin_x + row_index * module, origin_y + col_index * module, module, module))
 
     def _build_main_content(self, ctx: 'RenderContext') -> list:
         items = [
             ('button', 'wifi', 'WiFi', COLORS['bg_elevated']),
             ('button', 'bluetooth', 'Bluetooth', COLORS['bg_elevated']),
             ('button', 'volume', 'Volume levels', COLORS['bg_elevated']),
+            ('button', 'spotify', 'Spotify', COLORS['bg_elevated']),
             ('separator',),
             ('button', 'auto_pause', f'Auto-pause: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
             ('button', 'progress_expiry', f'Remember: {ctx.progress_expiry_hours} hrs', COLORS['bg_elevated']),
@@ -814,6 +1008,8 @@ class Renderer:
                 total_height += 30
             elif kind == 'text':
                 total_height += 35
+            elif kind == 'qr':
+                total_height += self._MENU_QR_SIZE + 10
             elif kind == 'spacer':
                 total_height += 15
             elif kind == 'vol_row':
@@ -863,6 +1059,10 @@ class Renderer:
 
             elif kind == 'spacer':
                 x -= 15
+
+            elif kind == 'qr':
+                self._draw_qr(item[1], x)
+                x -= self._MENU_QR_SIZE + 10
 
             elif kind == 'vol_row':
                 _, i, output_type, name, val = item

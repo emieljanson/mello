@@ -795,6 +795,59 @@ _migrate_015() {
 }
 
 # ============================================
+# Migration 016: Let a speaker switch to Spotify Soloist
+# ============================================
+_migrate_016() {
+  # Soloist is an opt-in second Spotify engine (the owner enters an API key
+  # in the setup menu). Nothing is switched here; this only makes switching
+  # possible:
+  #  1. The app starts no longer pull in go-librespot by themselves
+  #     (mello-native lost its Wants=), so each engine runs only when enabled.
+  #     Make sure the engine this speaker uses is enabled.
+  #  2. The app may enable/disable/stop/start/restart either engine.
+  local CODE_DIR="$HOME/mello"
+  local ENGINE_SERVICE=mello-librespot
+  if grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' "$CODE_DIR/.env" 2>/dev/null; then
+    ENGINE_SERVICE=mello-soloist
+  fi
+  if ! sudo systemctl enable "$ENGINE_SERVICE"; then
+    # Without this the speaker would come back from a reboot with no engine.
+    log "ERROR: could not enable $ENGINE_SERVICE"
+    return 1
+  fi
+
+  local SUDOERS_DIR="${MELLO_SUDOERS_DIR:-/etc/sudoers.d}"
+  local SUDOERS_FILE="$SUDOERS_DIR/mello-wifi"
+  if [ ! -f "$SUDOERS_FILE" ]; then
+    log "Mello sudoers file not found, skipping engine switch permission"
+    return 0
+  fi
+  if sudo grep -q '/bin/systemctl enable mello-soloist' "$SUDOERS_FILE"; then
+    log "Engine switch permission already installed"
+    return 0
+  fi
+
+  local EXTRA="/bin/systemctl stop mello-soloist, /bin/systemctl start mello-soloist, /bin/systemctl restart mello-soloist, /bin/systemctl enable mello-soloist, /bin/systemctl disable mello-soloist, /bin/systemctl enable mello-librespot, /bin/systemctl disable mello-librespot"
+  local TMP_SUDOERS="/tmp/mello-sudoers.$$"
+  sudo sed "s|/bin/systemctl restart mello-native,|/bin/systemctl restart mello-native, $EXTRA,|" \
+    "$SUDOERS_FILE" > "$TMP_SUDOERS"
+  if ! grep -q '/bin/systemctl enable mello-soloist' "$TMP_SUDOERS"; then
+    log "ERROR: existing sudoers rule has an unexpected format"
+    rm -f "$TMP_SUDOERS"
+    return 1
+  fi
+  if sudo visudo -cf "$TMP_SUDOERS"; then
+    sudo install -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
+    log "Installed engine switch permission"
+  else
+    log "ERROR: engine switch sudoers validation failed"
+    rm -f "$TMP_SUDOERS"
+    return 1
+  fi
+  rm -f "$TMP_SUDOERS"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -812,3 +865,4 @@ run_migration "012" "Reboot after display boot config changes"
 run_migration "013" "Disable Spotify suggested autoplay"
 run_migration "014" "Keep librespot independent of UI sleep/restarts"
 run_migration "015" "Allow automatic librespot recovery"
+run_migration "016" "Let a speaker switch to Spotify Soloist"

@@ -23,6 +23,7 @@ class LibrespotAPIProtocol(Protocol):
     def seek(self, position: int) -> bool: ...
     def set_volume(self, level: int) -> bool: ...
     def set_repeat_context(self, enabled: bool) -> bool: ...
+    def abort_play(self) -> None: ...
     def is_connected(self) -> bool: ...
     def metrics_snapshot(self) -> dict: ...
 
@@ -92,7 +93,14 @@ class LibrespotAPI:
                     'context_uri': None,
                     'track': None,
                 }
-            return resp.json()
+            if resp.status_code != 200:
+                logger.debug(f'Status request failed: HTTP {resp.status_code}')
+                return None
+            data = resp.json()
+            if not isinstance(data, dict) or not isinstance(data.get('stopped'), bool):
+                logger.warning('Spotify status response is missing playback state')
+                return None
+            return data
         except requests.RequestException as e:
             logger.debug(f'Status request failed: {e}')
             return None
@@ -244,6 +252,9 @@ class LibrespotAPI:
             logger.warning(f'Repeat context error (enabled={enabled}): {e}')
             return False
     
+    def abort_play(self) -> None:
+        """go-librespot starts inside an album in one request; nothing to abort."""
+
     def is_connected(self) -> bool:
         """Check if librespot is reachable (may or may not have an active session)."""
         try:
@@ -294,6 +305,9 @@ class NullLibrespotAPI:
 
     def set_repeat_context(self, enabled: bool) -> bool:
         return True
+
+    def abort_play(self) -> None:
+        pass
     
     def is_connected(self) -> bool:
         return True

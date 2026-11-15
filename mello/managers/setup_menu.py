@@ -4,6 +4,7 @@ Setup Menu - WiFi management and library reset.
 Extracted from app.py to keep system-admin concerns separate from the player.
 """
 import json
+import re
 import time
 import logging
 import subprocess
@@ -14,13 +15,30 @@ import shutil
 
 from pathlib import Path
 
-from ..config import CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH
+from ..config import (
+    CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH,
+    SOLOIST_DATA_DIR, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
+)
 from ..models import MenuState
+from .engine_setup import (
+    PROMPT_BUTTON_LAST, PROMPT_BUTTON_LATER,
+    PROMPT_TITLE_NEW_OWNER, PROMPT_TITLE_UPDATE,
+    SETTINGS_CONNECTED_LINES, SETTINGS_OFFER_LINES, SETUP_LINES,
+    lan_address,
+)
 
 _REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # SSIDs to exclude when scanning or forgetting WiFi networks
 _WIFI_SKIP_SSIDS = {'Mello-Setup', 'mello-ap', 'mello-setup'}
+# wifi-connect's line when the chosen network could not be joined.
+_JOIN_FAILED = re.compile(r"Connection to access point not activated '(.*)'")
+
+# How long the self-opened Soloist prompt may stay up without being touched.
+_SPOTIFY_PROMPT_TIMEOUT = 180
+# How long "Hold to close" must be held: long enough that a child's tap or
+# swipe does not close it by accident.
+PROMPT_HOLD_SECONDS = 3.0
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +55,7 @@ class SetupMenu:
         on_library_cleared: Callable[[], None],
         bluetooth_manager=None,
         on_volume_preview: Optional[Callable[[int, str, int], None]] = None,
+        engine_setup=None,
     ):
         self.catalog_manager = catalog_manager
         self.settings = settings
@@ -45,6 +64,12 @@ class SetupMenu:
         self._on_library_cleared = on_library_cleared
         self.bluetooth = bluetooth_manager
         self._on_volume_preview = on_volume_preview
+        # Key entry page for switching to Spotify Soloist (served only while
+        # the Spotify screen is open).
+        self.engine_setup = engine_setup
+        self.spotify_prompt_active = False
+        self._spotify_prompt_since = 0.0
+        self._prompt_hold_start: Optional[float] = None
 
         self.state = MenuState.CLOSED
         self.scroll_offset: int = 0  # pixels scrolled in current menu screen
@@ -52,6 +77,18 @@ class SetupMenu:
         self.current_network: Optional[str] = None
         self._ssid_to_con_name: dict = {}
         self._wifi_process: Optional[subprocess.Popen] = None
+        self._wifi_ap_attempt = 0
+        # Network the owner picked on the phone that could not be joined.
+        self.wifi_join_failed: Optional[str] = None
+        # Known networks as they were before the hotspot started:
+        # {connection name: (ssid, password)}. Only kept in memory.
+        self._networks_before_hotspot: dict = {}
+        # The WiFi screen is up because Mello found itself offline, not
+        # because somebody opened it.
+        self._wifi_opened_itself = False
+        # The home screen itself is asking to connect Spotify (new Mello).
+        self._home_page = False
+        self._home_page_retry_at = 0.0
 
         # Reset confirmation state
         self._reset_confirm_pending: bool = False
@@ -81,6 +118,23 @@ class SetupMenu:
             logger.info('show_wifi() ignored — AP mode active')
             return
         self._show_wifi_screen()
+        self._wifi_opened_itself = True
+
+    @property
+    def wifi_setup_running(self) -> bool:
+        """True while Mello is its own hotspot for joining a new network."""
+        return self.state == MenuState.WIFI_AP or self._wifi_process is not None
+
+    def network_restored(self):
+        """The connection came back by itself.
+
+        A WiFi screen that opened by itself because there was no connection
+        goes away by itself too; one the owner opened stays.
+        """
+        if self._wifi_opened_itself and self.state == MenuState.WIFI_LIST:
+            logger.info('Setup menu: connection is back, closing the WiFi screen')
+            self._on_toast('WiFi connected!')
+            self.close()
 
     def close(self):
         """Close the setup menu, stopping wifi-connect and BT scan if running."""
@@ -88,20 +142,53 @@ class SetupMenu:
         if self._wifi_process:
             self._kill_wifi_processes()
             self._wifi_process = None
+        if self.state == MenuState.WIFI_AP:
+            self._restore_wifi_autoconnect()
         if self.bluetooth and self.state == MenuState.BT_LIST:
             self.bluetooth.stop_scan()
+        self._leave_spotify_screen()
+        self.spotify_prompt_active = False
+        self._prompt_hold_start = None
         self._reset_confirm_pending = False
         self.state = MenuState.CLOSED
         self.current_network = None
         self._on_invalidate()
 
+    # ------------------------------------------------------------------
+    # Soloist prompt: hold to close
+    # ------------------------------------------------------------------
+
+    def handle_press(self, pos, button_rects: dict):
+        """A finger went down while the menu is open."""
+        rect = button_rects.get('prompt_close')
+        if self.spotify_prompt_active and not self.spotify_switching and rect and rect.collidepoint(*pos):
+            self._prompt_hold_start = time.time()
+            self._spotify_prompt_since = self._prompt_hold_start   # touched: not unattended
+            self._on_invalidate()   # the button lights up at once
+
+    def handle_release(self):
+        """The finger came up again."""
+        if self._prompt_hold_start is not None:
+            self._prompt_hold_start = None
+            self._on_invalidate()
+
+    @property
+    def prompt_hold_progress(self) -> float:
+        """0.0-1.0: how far the "Hold to close" press has come."""
+        if self._prompt_hold_start is None:
+            return 0.0
+        return min(1.0, (time.time() - self._prompt_hold_start) / PROMPT_HOLD_SECONDS)
+
     def handle_tap(self, pos, button_rects: dict):
         """Handle a tap while the menu is open."""
+        if self.spotify_prompt_active:
+            return  # only the hold button does something here
         x, y = pos
 
         if 'close' in button_rects and button_rects['close'].collidepoint(x, y):
             if self.state == MenuState.MAIN:
                 self.close()
+
             elif self.state == MenuState.WIFI_AP:
                 self._restore_wifi_autoconnect()
                 if self._wifi_process:
@@ -115,6 +202,7 @@ class SetupMenu:
                 # All other submenus → back to main
                 if self.state == MenuState.BT_LIST and self.bluetooth:
                     self.bluetooth.stop_scan()
+                self._leave_spotify_screen()
                 self.state = MenuState.MAIN
                 self.scroll_offset = 0
                 self._on_invalidate()
@@ -161,6 +249,8 @@ class SetupMenu:
                 self.state = MenuState.VOLUME_LEVELS
                 self.scroll_offset = 0
                 self._on_invalidate()
+            elif 'spotify' in button_rects and button_rects['spotify'].collidepoint(x, y):
+                self._show_spotify_screen()
             elif 'check_update' in button_rects and button_rects['check_update'].collidepoint(x, y):
                 if self._update_running or self._update_checking:
                     return
@@ -169,6 +259,140 @@ class SetupMenu:
                 else:
                     self._check_for_update()
 
+    def _show_spotify_screen(self):
+        """Show how to reach the key entry page, and serve it meanwhile."""
+        if self.engine_setup:
+            self._tell_page_who_is_asking()
+            self.engine_setup.start()
+        self.state = MenuState.SPOTIFY
+        self.scroll_offset = 0
+        self._on_invalidate()
+
+    def _leave_spotify_screen(self):
+        if self.engine_setup and self.state == MenuState.SPOTIFY and not self._home_page:
+            self.engine_setup.stop()
+
+    def _tell_page_who_is_asking(self):
+        """The phone page words itself for a new Mello or for one that was updated."""
+        if self.settings:
+            self.engine_setup.new_owner = self.settings.soloist_new_owner
+            self.engine_setup.setup_step = self._spotify_is_setup_step
+
+    def home_connect_spotify(self, has_network: bool, library_empty: bool) -> bool:
+        """Whether the home screen itself should ask to connect Spotify.
+
+        A new Mello that is online and has nothing saved yet shows it right
+        where "Play to Mello via Spotify" would be: no menu, nothing to tap
+        away. The phone page exists for as long as the home screen asks.
+        Playing to Mello anyway (the old player still works) leaves it.
+        """
+        if not self.engine_setup or not self.settings:
+            return False
+        # Once a code is in, the screen stays ("One moment...") until the
+        # speaker restarts on the new player, whatever else changes.
+        switching = self._home_page and self.engine_setup.state == 'switching'
+        want = bool(switching or (
+            has_network and library_empty
+            and self.settings.soloist_setup_step_open and self.engine_setup.can_offer_soloist()
+        ))
+        if want and not self.engine_setup.running:
+            now = time.time()
+            if now >= self._home_page_retry_at:
+                self._tell_page_who_is_asking()
+                if not self.engine_setup.start():
+                    self._home_page_retry_at = now + 30      # port taken: not every frame
+        elif not want and self._home_page and self.state != MenuState.SPOTIFY:
+            self.engine_setup.stop(wait=False)               # called while drawing
+        self._home_page = want
+        return want
+
+    @property
+    def spotify_switching(self) -> bool:
+        return bool(self.engine_setup) and self.engine_setup.state == 'switching'
+
+    @property
+    def spotify_items(self) -> list:
+        if not self.engine_setup:
+            return []
+        if (self.spotify_prompt_active or self._home_page) and not self.spotify_switching and not self.engine_setup.url:
+            # Seconds after WiFi came up: Mello has no address to point at yet.
+            return [('text', 'One moment...')]
+        return self.engine_setup.screen_items()
+
+    @property
+    def _spotify_is_setup_step(self) -> bool:
+        return bool(self.settings) and self.settings.soloist_setup_step_open
+
+    def show_spotify_prompt(self) -> bool:
+        """Open the "a faster Mello" offer by itself.
+
+        For a Mello that got Spotify's own player through an update, or a new
+        one whose owner started using it without connecting Spotify. (A new
+        Mello is asked on its home screen instead, see home_connect_spotify.)
+
+        It has no close button: it goes away when a code is entered (the
+        speaker switches and restarts) or when someone holds its button for a
+        few seconds, so a child does not tap it away before a parent has seen
+        it. Held away, it is back a few days later; the last time the button
+        says so, and after that it only lives in Settings.
+
+        Returns False when there is nothing to offer now.
+        """
+        if self.is_open or not self.engine_setup or not self.settings:
+            return False
+        if not self.engine_setup.can_offer_soloist():
+            return False
+        if self._spotify_is_setup_step:
+            if self.catalog_manager and self.catalog_manager.items:
+                # Saved an album without connecting Spotify: setting up is
+                # over, the offer follows in a few days.
+                logger.info('Setup menu: new Mello is in use without Spotify connected, offer follows later')
+                self.settings.postpone_soloist_prompt()
+            return False
+        if not self.settings.soloist_prompt_due or not lan_address():
+            return False                 # (offline: the phone could not reach the page)
+        logger.info('Setup menu: showing the faster-Mello offer')
+        self.spotify_prompt_active = True
+        self._prompt_hold_start = None
+        self._spotify_prompt_since = time.time()
+        self._show_spotify_screen()
+        return True
+
+    # What the three connect-Spotify screens say.
+
+    @property
+    def home_lines(self) -> tuple:
+        """Under the logo on a new Mello's home screen, above the code."""
+        return SETUP_LINES
+
+    @property
+    def spotify_menu_items(self) -> list:
+        """Settings > Spotify: two grey lines and the code, like the WiFi screen."""
+        if not self.engine_setup or self.state != MenuState.SPOTIFY:
+            return []
+        items = self.spotify_items
+        if self.spotify_switching or not self.engine_setup.url:
+            return items
+        if self.engine_setup.engine == 'soloist':
+            lines = SETTINGS_CONNECTED_LINES
+        elif self._spotify_is_setup_step:
+            lines = SETUP_LINES
+        else:
+            lines = SETTINGS_OFFER_LINES
+        return [('text', line) for line in lines] + [('spacer',)] + items
+
+    # The self-opened "a faster Mello" offer.
+
+    @property
+    def prompt_title(self) -> str:
+        new_owner = bool(self.settings) and self.settings.soloist_new_owner
+        return PROMPT_TITLE_NEW_OWNER if new_owner else PROMPT_TITLE_UPDATE
+
+    @property
+    def prompt_button(self) -> str:
+        last = bool(self.settings) and self.settings.soloist_prompt_is_last
+        return PROMPT_BUTTON_LAST if last else PROMPT_BUTTON_LATER
+
     def handle_scroll(self, delta: int, max_overflow: int):
         """Adjust scroll offset by delta, clamped to valid range."""
         self.scroll_offset = max(0, min(max_overflow, self.scroll_offset + delta))
@@ -176,6 +400,24 @@ class SetupMenu:
 
     def update(self):
         """Called each frame to detect wifi-connect / update exit."""
+        if self.spotify_prompt_active:
+            if self._prompt_hold_start is not None:
+                if self.prompt_hold_progress >= 1.0:
+                    logger.info('Setup menu: faster-Mello offer held away')
+                    self.settings.postpone_soloist_prompt()
+                    self.close()
+                else:
+                    self._on_invalidate()   # keep the button filling up
+            elif (time.time() - max(self._spotify_prompt_since, self.engine_setup.last_request)
+                  > _SPOTIFY_PROMPT_TIMEOUT):
+                # An open menu keeps the screen awake, so it steps aside when
+                # nobody is there (a phone that has the page open counts as
+                # somebody). It is back the next time the speaker wakes.
+                logger.info('Setup menu: faster-Mello offer put away (unattended)')
+                self.close()
+            elif not self.engine_setup.url:
+                self._on_invalidate()       # waiting for an address: the code appears by itself
+
         # Auto-clear reset confirmation after 4 seconds
         if self._reset_confirm_pending and time.time() - self._reset_confirm_time > 4:
             self._reset_confirm_pending = False
@@ -272,11 +514,14 @@ class SetupMenu:
         self._on_invalidate()
         self._on_toast("Updating... don't unplug")
         try:
-            self._update_process = subprocess.Popen(
-                ['bash', f'{_REPO_DIR}/pi/auto-update.sh'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
+            # Into the same log the nightly run uses. A pipe nobody reads
+            # fills up (apt, pip) and then the update hangs with its lock held.
+            with open(Path.home() / 'mello-update.log', 'ab') as update_log:
+                self._update_process = subprocess.Popen(
+                    ['bash', f'{_REPO_DIR}/pi/auto-update.sh'],
+                    stdout=update_log,
+                    stderr=subprocess.STDOUT,
+                )
             logger.info('Manual update triggered')
         except Exception as e:
             logger.error(f'Failed to start update: {e}')
@@ -362,14 +607,17 @@ class SetupMenu:
     def _collect_known_networks(self):
         """Populate known_networks and current_network via nmcli."""
         try:
+            # "--active" also lists a network Mello is still trying to join.
+            # Only one that is really up counts as connected: otherwise the
+            # list shows it as connected while the speaker is offline.
             active_result = subprocess.run(
-                ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show', '--active'],
+                ['nmcli', '-t', '-f', 'NAME,TYPE,STATE', 'con', 'show', '--active'],
                 capture_output=True, text=True, timeout=3,
             )
             active_con_names = [
-                line.split(':')[0]
+                line.rsplit(':', 2)[0]
                 for line in active_result.stdout.strip().split('\n')
-                if line and '802-11-wireless' in line
+                if line.endswith(':802-11-wireless:activated')
             ]
             all_result = subprocess.run(
                 ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
@@ -408,6 +656,7 @@ class SetupMenu:
 
     def _show_wifi_screen(self):
         logger.info('Setup menu: WiFi screen')
+        self._wifi_opened_itself = False
         self._collect_known_networks()
         self.state = MenuState.WIFI_LIST
         self.scroll_offset = 0
@@ -418,9 +667,18 @@ class SetupMenu:
         # Clear _wifi_process BEFORE killing old processes, so update()
         # won't treat the old process's clean exit (code=0) as success.
         self._wifi_process = None
+        self.wifi_join_failed = None
         self.state = MenuState.WIFI_AP
         self.scroll_offset = 0
         self._on_invalidate()
+
+        self._wifi_ap_attempt += 1
+        attempt = self._wifi_ap_attempt
+
+        def still_wanted() -> bool:
+            # False once the user tapped back (or started over) while this
+            # was still preparing.
+            return self.state == MenuState.WIFI_AP and self._wifi_ap_attempt == attempt
 
         def _prepare_and_launch():
             try:
@@ -431,6 +689,8 @@ class SetupMenu:
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f'WiFi rescan failed: {e}')
+            if not still_wanted():
+                return  # nothing changed yet
             # Disable autoconnect BEFORE disconnect — disconnect fails when
             # wlan0 is already disconnected (exit code 6) and won't suppress
             # autoconnect, letting NM reclaim wlan0 from the AP.
@@ -450,7 +710,19 @@ class SetupMenu:
                 pass
             self._kill_wifi_processes()
             self._delete_stale_ap_profile()
-            self._launch_wifi_connect()
+            self._remember_networks()
+            if still_wanted():
+                self._launch_wifi_connect()
+            if not still_wanted():
+                # Backed out while WiFi was being taken down: nobody is
+                # watching a hotspot any more, so put the speaker back online
+                # instead of leaving it disconnected with autoconnect off.
+                logger.info('WiFi setup cancelled while starting; restoring the connection')
+                if self._wifi_process:
+                    self._wifi_process = None
+                self._kill_wifi_processes()
+                self._restore_wifi_autoconnect()
+                self._reconnect_to_known_network()
 
         threading.Thread(target=_prepare_and_launch, daemon=True).start()
 
@@ -459,19 +731,37 @@ class SetupMenu:
             self._wifi_process = subprocess.Popen(
                 ['sudo', 'wifi-connect',
                  '--portal-ssid', 'Mello-Setup',
-                 '--ui-directory', '/usr/local/share/wifi-connect/ui'],
+                 # Straight from the code folder, so the page updates with the app.
+                 '--ui-directory', str(Path(_REPO_DIR) / 'portal')],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
             logger.info('wifi-connect started')
 
+            process = self._wifi_process
+
             def _log_output():
-                for line in self._wifi_process.stdout:
-                    logger.info(f'wifi-connect: {line.decode().rstrip()}')
+                for line in process.stdout:
+                    text = line.decode(errors='replace').rstrip()
+                    logger.info(f'wifi-connect: {text}')
+                    self._note_wifi_connect_line(text)
 
             threading.Thread(target=_log_output, daemon=True).start()
         except Exception as e:
             logger.error(f'Failed to start wifi-connect: {e}')
+
+    def _note_wifi_connect_line(self, text: str):
+        """Follow what the hotspot is doing, so the screen can say so.
+
+        When joining the chosen network fails, wifi-connect quietly brings
+        the hotspot back and the phone shows the password page again: the
+        owner then thinks the password was wrong. The screen says what
+        happened instead.
+        """
+        match = _JOIN_FAILED.search(text)
+        if match:
+            self.wifi_join_failed = match.group(1)
+            self._on_invalidate()
 
     def _kill_wifi_processes(self):
         """Kill any lingering wifi-connect and dnsmasq processes.
@@ -520,6 +810,71 @@ class SetupMenu:
             )
         except Exception:
             pass
+        self._restore_forgotten_networks()
+
+    def _wifi_connection_names(self) -> list:
+        result = subprocess.run(
+            ['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'],
+            capture_output=True, text=True, timeout=5,
+        )
+        names = []
+        for line in result.stdout.splitlines():
+            name, _, kind = line.rpartition(':')
+            if kind == '802-11-wireless' and name and name not in _WIFI_SKIP_SSIDS:
+                names.append(name)
+        return names
+
+    def _remember_networks(self):
+        """Note the known networks before the hotspot starts.
+
+        Typing the password for a network Mello already knows makes
+        wifi-connect delete the old entry first. If joining then fails, the
+        speaker has forgotten its home network: it can no longer get back
+        to it by itself. With this note it can be put back.
+        """
+        remembered = {}
+        try:
+            for name in self._wifi_connection_names():
+                result = subprocess.run(
+                    ['sudo', 'nmcli', '-s', '-g',
+                     '802-11-wireless.ssid,802-11-wireless-security.psk', 'con', 'show', name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                lines = result.stdout.splitlines()
+                if result.returncode == 0 and lines and lines[0]:
+                    remembered[name] = (lines[0], lines[1] if len(lines) > 1 else '')
+        except Exception as e:
+            logger.warning(f'Could not note known WiFi networks: {e}')
+        self._networks_before_hotspot = remembered
+        logger.info(f'Known WiFi before setup: {sorted(remembered)}')
+
+    def _restore_forgotten_networks(self):
+        """Put back known networks that went missing while the hotspot ran."""
+        remembered, self._networks_before_hotspot = self._networks_before_hotspot, {}
+        if not remembered:
+            return
+        try:
+            present = set(self._wifi_connection_names())
+            present_ssids = {self._resolve_ssid(n) for n in present}
+        except Exception as e:
+            logger.warning(f'Could not check known WiFi networks: {e}')
+            return
+        for name, (ssid, psk) in remembered.items():
+            if name in present or ssid in present_ssids:
+                continue
+            cmd = ['sudo', 'nmcli', 'con', 'add', 'type', 'wifi', 'ifname', 'wlan0',
+                   'con-name', name, 'ssid', ssid]
+            if psk:
+                cmd += ['wifi-sec.key-mgmt', 'wpa-psk', 'wifi-sec.psk', psk]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    logger.info(f'Put back forgotten WiFi network: {name}')
+                else:
+                    logger.warning(f'Could not put back WiFi network {name}: '
+                                   f'{(result.stderr or result.stdout).strip()[-200:]}')
+            except Exception as e:
+                logger.warning(f'Could not put back WiFi network {name}: {e}')
 
     def _reconnect_to_known_network(self):
         if self.known_networks:
@@ -558,6 +913,27 @@ class SetupMenu:
 
         self.close()
 
+    def _clear_soloist_login(self):
+        """Log Soloist out of Spotify.
+
+        Soloist has no logout command and keeps the session inside its data
+        directory, so the daemon is stopped, the directory emptied, and the
+        daemon started again: it comes back waiting for a new owner.
+        """
+        subprocess.run(
+            ['sudo', 'systemctl', 'stop', SPOTIFY_ENGINE_SERVICE],
+            capture_output=True, timeout=15,
+        )
+        try:
+            if SOLOIST_DATA_DIR.exists():
+                shutil.rmtree(SOLOIST_DATA_DIR)
+            logger.info('Spotify credentials cleared')
+        finally:
+            subprocess.run(
+                ['sudo', 'systemctl', 'start', SPOTIFY_ENGINE_SERVICE],
+                capture_output=True, timeout=15,
+            )
+
     def _factory_reset(self):
         """Full factory reset: catalog, settings, Spotify, Bluetooth, WiFi."""
         logger.info('Setup menu: Factory reset')
@@ -574,7 +950,9 @@ class SetupMenu:
 
         # 2. Clear Spotify credentials
         try:
-            if LIBRESPOT_STATE_PATH.exists():
+            if SPOTIFY_ENGINE == 'soloist':
+                self._clear_soloist_login()
+            elif LIBRESPOT_STATE_PATH.exists():
                 state = json.loads(LIBRESPOT_STATE_PATH.read_text())
                 state['credentials'] = {'username': '', 'data': None}
                 LIBRESPOT_STATE_PATH.write_text(json.dumps(state))
@@ -585,7 +963,17 @@ class SetupMenu:
         # 3. Delete settings (auto-pause, volume, BT device memory)
         try:
             if SETTINGS_PATH.exists():
-                SETTINGS_PATH.unlink()
+                # The choice about sharing usage data was made at install and
+                # cannot be made again on the speaker: a reset must not
+                # silently turn an opt-out back into the default (sharing on).
+                try:
+                    opted_out = json.loads(SETTINGS_PATH.read_text()).get('share_usage_data') is False
+                except (ValueError, OSError):
+                    opted_out = False
+                if opted_out:
+                    SETTINGS_PATH.write_text(json.dumps({'share_usage_data': False}))
+                else:
+                    SETTINGS_PATH.unlink()
                 logger.info('Settings deleted')
         except Exception as e:
             logger.error(f'Failed to delete settings: {e}')
