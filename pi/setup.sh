@@ -370,6 +370,17 @@ if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
 fi
 
 # ============================================
+# 13. Faster boot: skip cloud-init after the first boot
+# ============================================
+# Raspberry Pi Imager's settings (user, WiFi, SSH) are applied by cloud-init
+# on the very first boot. After that it still runs on every boot, in front
+# of Mello (~8 s on a Pi 3), with nothing left to do.
+if [ -d /etc/cloud ] && cloud-init status 2>/dev/null | grep -qE 'status: (done|error)'; then
+  sudo touch /etc/cloud/cloud-init.disabled
+  echo "cloud-init disabled for later boots"
+fi
+
+# ============================================
 # Done!
 # ============================================
 echo ""

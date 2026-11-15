@@ -873,6 +873,28 @@ _migrate_017() {
 }
 
 # ============================================
+# Migration 018: Faster boot, skip cloud-init after the first boot
+# ============================================
+_migrate_018() {
+  # cloud-init applies Raspberry Pi Imager's settings on the first boot only,
+  # but keeps running on every boot in front of Mello (~8 s on a Pi 3).
+  # WiFi lives in NetworkManager's own files, so nothing depends on it.
+  local CLOUD_DIR="${MELLO_CLOUD_DIR:-/etc/cloud}"
+  if [ ! -d "$CLOUD_DIR" ]; then
+    log "No cloud-init on this speaker"
+    return 0
+  fi
+  if ! cloud-init status 2>/dev/null | grep -qE 'status: (done|error|disabled)'; then
+    # Never cut a first boot short. (A speaker runs updates only after
+    # install.sh, long after its first boot, so this is a safety net.)
+    log "cloud-init has not finished its first boot, leaving it on"
+    return 0
+  fi
+  sudo touch "$CLOUD_DIR/cloud-init.disabled"
+  log "cloud-init disabled for later boots"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -892,3 +914,4 @@ run_migration "014" "Keep librespot independent of UI sleep/restarts"
 run_migration "015" "Allow automatic librespot recovery"
 run_migration "016" "Let a speaker switch to Spotify Soloist"
 run_migration "017" "Keep the WiFi chip awake (no power save)"
+run_migration "018" "Faster boot: skip cloud-init after the first boot"

@@ -447,3 +447,34 @@ def test_wifi_power_save_is_switched_off_on_new_and_existing_speakers(tmp_path):
     result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert (conf_dir / '99-mello-wifi-powersave.conf').read_text() == conf
+
+
+def _run_migration_018(tmp_path, cloud_status):
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    body = migrate.split('_migrate_018() {', 1)[1].split('\n}', 1)[0]
+    cloud_dir = tmp_path / 'cloud'
+    cloud_dir.mkdir()
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        MELLO_CLOUD_DIR={str(cloud_dir)!r}
+        log() {{ :; }}
+        sudo() {{ "$@"; }}
+        cloud-init() {{ echo {cloud_status!r}; }}
+        _migrate_018() {{
+        {body}
+        }}
+        _migrate_018
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    return (cloud_dir / 'cloud-init.disabled').exists()
+
+
+def test_cloud_init_is_skipped_on_later_boots(tmp_path):
+    assert 'run_migration "018"' in (ROOT / 'pi/migrate.sh').read_text()
+    assert 'cloud-init.disabled' in (ROOT / 'pi/setup.sh').read_text()
+    assert _run_migration_018(tmp_path, 'status: done') is True
+
+
+def test_cloud_init_first_boot_is_never_cut_short(tmp_path):
+    assert _run_migration_018(tmp_path, 'status: running') is False
