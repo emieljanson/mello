@@ -115,6 +115,11 @@ class ImageCache:
         """Load pre-rotated image directly with pygame (fast, no rotation needed)."""
         try:
             surface = pygame.image.load(str(path)).convert_alpha()
+            # Covers are opaque except their rounded corners. Run-length
+            # encoding lets SDL copy the opaque runs instead of blending
+            # every pixel: ~1 ms instead of ~5 ms per cover on a Pi 3,
+            # same picture. Covers are only ever blitted, never edited.
+            surface.set_alpha(255, pygame.RLEACCEL)
             self.cache[cache_key] = surface
             self._access_times[cache_key] = time.time()
             return surface

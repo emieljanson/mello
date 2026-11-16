@@ -30,7 +30,7 @@ from .config import (
 from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
 from .api import LibrespotAPI, NullLibrespotAPI, SoloistAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
-from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
+from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AnimationTimer, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
 from .managers.engine_setup import EngineSetup, PROMPT_BENEFITS, PROMPT_SCAN_HINT
 from .managers.wifi_keeper import WifiKeeper
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
@@ -264,6 +264,7 @@ class Mello:
         self.carousel = SmoothCarousel()
         self.play_timer = PlayTimer()
         self.perf_monitor = PerformanceMonitor()
+        self.anim_timer = AnimationTimer()
         self.volume = VolumeController(self.api, self.settings)
         # Usage analytics (only enabled if user opted in during install)
         analytics_key = POSTHOG_API_KEY if self.settings.share_usage_data else ''
@@ -933,14 +934,19 @@ class Mello:
                 self._log_sleep_wait_if_due()
                 continue
             
+            self.anim_timer.begin_frame()
             self._handle_events()
+            self.anim_timer.mark('events')
             self._update(dt)
+            self.anim_timer.mark('update')
             dirty_rects = self._draw()
+            self.anim_timer.mark('draw')
             
             if dirty_rects:
                 pygame.display.update(dirty_rects)
             else:
                 pygame.display.flip()
+            self.anim_timer.mark('display')
             
             target_fps = self._target_fps()
             is_animating = not self.carousel.settled or self.touch.dragging
@@ -961,6 +967,9 @@ class Mello:
                 logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
             
             self.perf_monitor.update(dt)
+            anim_summary = self.anim_timer.end_frame(is_animating, dt)
+            if anim_summary:
+                logger.info(anim_summary)
             self._log_fps_if_due(target_fps)
         
         # Save progress before shutdown
