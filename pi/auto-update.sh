@@ -256,12 +256,12 @@ rollback() {
   log "ROLLBACK: $1 — returning to $LOCAL"
   echo "$TARGET" > "$BAD_UPDATE_FILE"
   git reset --hard "$LOCAL"
+  local restored=true
   if git diff --name-only "$LOCAL" "$TARGET" | grep -q "^requirements\.txt$"; then
     log "Rollback: restoring Python dependencies"
     "$CODE_DIR/venv/bin/pip" install -q --disable-pip-version-check -r requirements.txt \
-      || log "Rollback: pip install failed"
+      || { log "Rollback: pip install failed"; restored=false; }
   fi
-  local restored=true
   sync_systemd_units || { log "Rollback: restoring systemd units failed"; restored=false; }
   restart_services || { log "Rollback: restarting services failed"; restored=false; }
   if ! health_check; then
