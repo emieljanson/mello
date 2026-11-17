@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mello - Pygame UI for Raspberry Pi
+Mello - music player for Raspberry Pi
 
 This file is a backwards-compatible wrapper.
 The actual implementation is now in the mello/ package.

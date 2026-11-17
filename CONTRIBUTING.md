@@ -45,7 +45,7 @@ mello/
 ├── handlers/     # Touch & event input
 ├── managers/     # Feature controllers (sleep, carousel, analytics, etc.)
 ├── controllers/  # System-level (volume, playback)
-├── ui/           # Pygame renderer & helpers
+├── ui/           # What is on screen (renderer) and the Slint window (mello.slint)
 ├── config.py     # All constants
 └── app.py        # Main application class
 ```

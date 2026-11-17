@@ -43,6 +43,9 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') [migrate] $*"
 }
 
+# What Slint needs to draw the screen (keep in sync with pi/setup.sh)
+SLINT_LIBS="libinput10 libgbm1 libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri libxkbcommon0 libudev1 libfontconfig1 libfreetype6"
+
 run_migration() {
   local id="$1"
   local desc="$2"
@@ -902,10 +905,8 @@ _migrate_018() {
 # Migration 019: Libraries for the Slint screen (MELLO_UI=slint)
 # ============================================
 _migrate_019() {
-  # Slint's display backend loads libinput at start. Without it Mello logs
-  # "Slint cannot load" and keeps the Pygame screen, so this is harmless on
-  # speakers that do not use Slint. (The slint package itself comes from
-  # requirements.txt.)
+  # Slint's display backend loads libinput at start. (The slint package
+  # itself comes from requirements.txt.)
   if dpkg -s libinput10 >/dev/null 2>&1; then
     log "libinput10 already installed"
     return 0
@@ -964,6 +965,73 @@ _migrate_022() {
 }
 
 # ============================================
+# Migration 020: Everything Slint needs to draw the screen
+# ============================================
+_migrate_020() {
+  # Slint is now the only way Mello draws its screen. These libraries used to
+  # come in with Pygame's SDL packages; install them by name so the screen
+  # keeps working if those are ever removed.
+  local missing=()
+  for pkg in $SLINT_LIBS; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  if [ ${#missing[@]} -eq 0 ]; then
+    log "Screen libraries already installed"
+    return 0
+  fi
+  sudo apt-get update -q || true
+  sudo apt-get install -y -q "${missing[@]}"
+  log "Installed screen libraries: ${missing[*]}"
+}
+
+# ============================================
+# Every update: can this speaker run the Slint screen?
+# ============================================
+# Slint needs Raspberry Pi OS Trixie or newer (Python 3.12+, glibc 2.35+). A
+# speaker on an older system cannot show this version's screen, so it stays on
+# the last version that drew its screen with Pygame (the commit before Pygame
+# was removed) and keeps working, until it is reinstalled with Trixie. This
+# runs after every update, not once: the nightly update moves the code to the
+# newest version first.
+SLINT_HOLD_FILE="$HOME/.mello-slint-hold"
+
+slint_hold_check() {
+  local code_dir="$1"
+  local py="$code_dir/venv/bin/python"
+  [ -x "$py" ] || return 0
+  if "$py" -c 'import slint' >/dev/null 2>&1; then
+    rm -f "$SLINT_HOLD_FILE"
+    return 0
+  fi
+  # A Trixie speaker that never got the package (say a 32-bit one, from
+  # before 32-bit was supported): install it now.
+  if "$py" -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+    "$code_dir/venv/bin/pip" install -q --disable-pip-version-check -r "$code_dir/requirements.txt" || true
+    if "$py" -c 'import slint' >/dev/null 2>&1; then
+      rm -f "$SLINT_HOLD_FILE"
+      log "Installed Slint for the screen"
+      return 0
+    fi
+  fi
+  local pyver glibc why
+  pyver=$("$py" -c 'import platform; print(platform.python_version())' 2>/dev/null || echo unknown)
+  glibc=$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}' || true)
+  why="Slint cannot run here: Python $pyver, $(uname -m), glibc ${glibc:-unknown}; it needs Raspberry Pi OS Trixie or newer"
+  # The commit that removed Pygame's screen; the one before it still has it.
+  local removed
+  removed=$(git -C "$code_dir" rev-list -1 HEAD -- mello/ui/helpers.py 2>/dev/null || true)
+  if [ -z "$removed" ] || ! git -C "$code_dir" cat-file -e "$removed^:mello/ui/helpers.py" 2>/dev/null; then
+    log "WARNING: $why, and no earlier version to stay on was found"
+    return 0
+  fi
+  local keep
+  keep=$(git -C "$code_dir" rev-parse "$removed^")
+  log "HOLD: $why. Staying on $(git -C "$code_dir" log -1 --format='%h %s' "$keep") until this speaker is reinstalled with Trixie."
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $why; kept on $keep" > "$SLINT_HOLD_FILE"
+  git -C "$code_dir" checkout -q --detach "$keep"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -985,5 +1053,8 @@ run_migration "016" "Let a speaker switch to Spotify Soloist"
 run_migration "017" "Keep the WiFi chip awake (no power save)"
 run_migration "018" "Faster boot: skip cloud-init after the first boot"
 run_migration "019" "Libraries for the Slint screen"
+run_migration "020" "Everything Slint needs to draw the screen"
 run_migration "021" "Nightly update via a systemd timer instead of cron"
 run_migration "022" "Make the speaker PipeWire's default output"
+
+slint_hold_check "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
