@@ -1,0 +1,66 @@
+# Makes a release: tags the current main as vYYYY.MM.DD so speakers on the
+# stable channel pick it up at their next nightly update (03:00).
+# Start it from GitHub: Actions → Release → Run workflow.
+# Speakers on the beta channel (MELLO_UPDATE_CHANNEL=beta) already run main.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: release
+
+jobs:
+  # Never release something with failing tests. This job installs packages
+  # and runs code, so it gets no write access to the repository.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Run tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          pip install -r requirements.txt pytest pygame
+          python -m pytest tests -q
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Tag and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.test.outputs.sha }}
+        run: |
+          base="v$(date -u +%Y.%m.%d)"
+          tag="$base"
+          n=2
+          while gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; do
+            tag="$base.$n"
+            n=$((n + 1))
+          done
+          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes
+          echo "Released $tag (${SHA:0:7})" >> "$GITHUB_STEP_SUMMARY"

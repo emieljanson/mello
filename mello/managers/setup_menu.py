@@ -495,28 +495,21 @@ class SetupMenu:
                     self._run_update()
                     return
 
-                branch = subprocess.run(
-                    ['git', '-C', _REPO_DIR, 'rev-parse', '--abbrev-ref', 'HEAD'],
-                    capture_output=True, text=True, timeout=5,
-                ).stdout.strip() or 'main'
+                # Same decision as the nightly update (beta/stable channel,
+                # never backwards, skip a version that failed here before).
                 result = subprocess.run(
-                    ['git', '-C', _REPO_DIR, 'fetch', 'origin', branch],
-                    capture_output=True, timeout=15,
+                    ['bash', f'{_REPO_DIR}/pi/update-target.sh'],
+                    capture_output=True, text=True, timeout=30,
                 )
                 if result.returncode != 0:
-                    self._on_toast('No internet?')
+                    if result.returncode != 2:
+                        logger.error(f'Update check failed: {result.stderr.strip()}')
+                    self._on_toast('No internet?' if result.returncode == 2 else 'Check failed')
                     self._update_checking = False
                     self._on_invalidate()
                     return
-                local = subprocess.run(
-                    ['git', '-C', _REPO_DIR, 'rev-parse', 'HEAD'],
-                    capture_output=True, text=True, timeout=5,
-                ).stdout.strip()
-                remote = subprocess.run(
-                    ['git', '-C', _REPO_DIR, 'rev-parse', f'origin/{branch}'],
-                    capture_output=True, text=True, timeout=5,
-                ).stdout.strip()
-                self._update_available = local != remote
+                logger.info(f'Update check: {result.stdout.strip()}')
+                self._update_available = result.stdout.split()[:1] == ['update']
                 if self._update_available:
                     self._on_toast('Update available!')
                 else:
