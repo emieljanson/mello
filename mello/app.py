@@ -15,7 +15,7 @@ from . import crash_log
 from .config import (
     LOG_DIR,
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE,
+    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE, UI_ENGINE,
     SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR,
     MOCK_MODE,
@@ -56,6 +56,7 @@ class Mello:
         # Previous run may have been killed during sleep, leaving
         # backlight/DPMS off. Must happen before kmsdrm init.
         SleepManager.restore_display()
+        self._ui = self._choose_ui()
 
         # Fast path: init display and show boot splash BEFORE the heavy
         # pygame.init() so the user sees the logo instead of a black screen.
@@ -68,8 +69,28 @@ class Mello:
         pygame.mixer.quit()  # Release audio device for go-librespot
         pygame.display.set_caption('Mello')
 
+        if self._ui == 'slint':
+            # Slint shows the boot splash as soon as its event loop runs;
+            # everything else is set up from inside that loop (start()).
+            from .ui.slint_display import SlintDisplay
+            self.slint_display = SlintDisplay()
+            self.slint_display.show_surface(self.screen)
+            return
         self._init_components()
     
+    @staticmethod
+    def _choose_ui() -> str:
+        """Slint when asked for (MELLO_UI=slint) and it can load, else Pygame."""
+        if UI_ENGINE != 'slint':
+            return 'pygame'
+        try:
+            import slint  # noqa: F401  (also loads libinput etc.)
+        except Exception as e:
+            logger.error(f'MELLO_UI=slint but Slint cannot load ({e}); using Pygame')
+            return 'pygame'
+        logger.info('Screen: Slint')
+        return 'slint'
+
     def _check_kms_available(self) -> bool:
         """Check if KMS/DRM is likely configured on the system."""
         # Check for DRI devices (KMS/DRM creates these)
@@ -114,6 +135,10 @@ class Mello:
     
     def _setup_video_driver(self):
         """Select optimal video driver (env var only, no init)."""
+        if self._ui == 'slint':
+            # Slint owns the display; Pygame only draws into off-screen surfaces.
+            os.environ['SDL_VIDEODRIVER'] = 'dummy'
+            return
         if os.environ.get('SDL_VIDEODRIVER'):
             return
         if not os.path.exists('/proc/device-tree/model'):
@@ -141,7 +166,9 @@ class Mello:
             pygame.display.init()
 
         flags = pygame.DOUBLEBUF
-        if fullscreen:
+        if fullscreen and self._ui != 'slint':
+            # (With Slint the surface is off-screen: "full screen" would make
+            # the dummy driver pick its own 1024x768 size.)
             flags |= pygame.FULLSCREEN
 
         _t1 = time.monotonic()
@@ -239,6 +266,7 @@ class Mello:
         self.image_cache = ImageCache(IMAGES_DIR)
         self.icons = self._load_icons()
         self.renderer = Renderer(self.screen, self.image_cache, self.icons)
+        self.renderer.compositor = self._ui == 'slint'
         
         # Handlers
         self.touch = TouchHandler()
@@ -883,6 +911,17 @@ class Mello:
     
     def start(self):
         """Start the application."""
+        if self._ui == 'slint':
+            self._run_slint_loop()
+            if hasattr(self, 'tracker'):   # set up (not stopped during the splash)
+                self._shutdown()
+            return
+        self._start_services()
+        self._run_pygame_loop()
+        self._shutdown()
+
+    def _start_services(self):
+        """Everything that runs once before the first frame."""
         logger.info('Starting Mello...')
         self.tracker.on_app_started(catalog_size=len(self.catalog_manager.items))
         
@@ -913,8 +952,11 @@ class Mello:
             self._startup_ready = True
         
         logger.info('Entering main loop...')
+
+    def _run_pygame_loop(self):
+        """The main loop when Pygame shows the screen."""
         dt = 1.0 / 60  # Initial delta time
-        
+
         # Main loop
         while self.running:
             crash_log.heartbeat()
@@ -983,7 +1025,9 @@ class Mello:
             if anim_summary:
                 logger.info(anim_summary)
             self._log_fps_if_due(target_fps)
-        
+
+    def _shutdown(self):
+        """Save progress and let go of everything (after the main loop ended)."""
         # Save progress before shutdown
         logger.info('Shutting down...')
         self._save_progress_on_shutdown()
@@ -1001,6 +1045,86 @@ class Mello:
         crash_log.mark_clean_exit(LOG_DIR)
         logger.info('Mello stopped')
     
+    def _run_slint_loop(self):
+        """The main loop when Slint shows the screen (MELLO_UI=slint).
+
+        Same work per frame as the Pygame loop below, but Slint's event loop
+        calls it (every ~8 ms) instead of a while loop that sleeps: frames are
+        paced by the target fps here, and Slint draws when a property changed.
+        """
+        display = self.slint_display
+        state = {'last': time.monotonic(), 'sleep_check': 0.0, 'ready': False, 'shown': 0}
+
+        def tick() -> bool:
+            if not state['ready']:
+                # Let Slint put the splash on screen first (a couple of ticks),
+                # then set up the app; that takes a few seconds.
+                state['shown'] += 1
+                if state['shown'] < 3:
+                    return True
+                self._init_components()
+                display.attach(self.renderer, self.image_cache)
+                self._start_services()
+                state['ready'] = True
+                state['last'] = time.monotonic()
+                return self.running
+            if not self.running:
+                return False
+            now = time.monotonic()
+            crash_log.heartbeat()
+            self._apply_spotify_inactive()
+            self._check_touch_health()
+            if self.sleep_manager.is_sleeping:
+                state['last'] = now  # time asleep is not a frame
+                if now - state['sleep_check'] < 0.2:
+                    return True
+                state['sleep_check'] = now
+                if self.evdev_touch.wake_event.is_set():
+                    self.evdev_touch.wake_event.clear()
+                    self._wake_from_sleep('evdev_touch')
+                    pygame.event.clear()
+                    return True
+                for event in pygame.event.get():
+                    if event.type == pygame.KEYDOWN:
+                        self._wake_from_sleep(f'key:{event.key}')
+                        pygame.event.clear()
+                        break
+                    elif event.type == pygame.QUIT:
+                        self.running = False
+                        return False
+                self._log_sleep_wait_if_due()
+                return True
+
+            target_fps = self._target_fps()
+            is_animating = not self.carousel.settled or self.touch.dragging
+            interval = 0.2 if (target_fps <= 5 and not is_animating) else 1.0 / target_fps
+            if now - state['last'] < interval - 0.004:
+                return True
+            dt = now - state['last']
+            state['last'] = now
+
+            self.anim_timer.begin_frame()
+            self._handle_events()
+            self.anim_timer.mark('events')
+            self._update(dt)
+            self.anim_timer.mark('update')
+            self._draw()
+            self.anim_timer.mark('draw')
+            display.present(self.screen)
+            self.anim_timer.mark('display')
+
+            spike_threshold = max(0.1, 1.0 / target_fps * 1.2)
+            if dt > spike_threshold and target_fps > 5:
+                logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
+            self.perf_monitor.update(dt)
+            anim_summary = self.anim_timer.end_frame(is_animating, dt)
+            if anim_summary:
+                logger.info(anim_summary)
+            self._log_fps_if_due(target_fps)
+            return self.running
+
+        display.run(tick)
+
     def _target_fps(self) -> int:
         """Calculate target FPS based on current activity.
         

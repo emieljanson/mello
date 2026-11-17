@@ -1,0 +1,96 @@
+// Mello's screen, shown and animated by Slint (MELLO_UI=slint).
+//
+// Text, buttons and menus are still drawn by Mello's Pygame renderer into
+// images (`backdrop`, `cover-overlay`, `toast`), so they look exactly the
+// same. Slint puts them on screen and draws and moves the album covers,
+// which is what made swiping slow: the graphics chip now does the work.
+//
+// Cover placement copies mello/ui/renderer.py _draw_carousel exactly.
+
+export struct CoverImages {
+    full: image,    // 410 px, focused
+    dim: image,     // 410 px dimmed, focused while loading
+    small: image,   // 307 px dimmed, the neighbours
+}
+
+export struct TitleLayer {
+    source: image,
+    x: length,
+    y: length,
+}
+
+export component MelloWindow inherits Window {
+    width: 720px;
+    height: 1280px;
+    background: black;
+
+    in property <image> backdrop;
+    in property <bool> show-carousel;
+    in property <[CoverImages]> covers;
+    // Cover positions come from Python (renderer._describe_carousel): Slint
+    // computes in 32-bit floats, Python in 64-bit, and a cover half off the
+    // screen could otherwise land one pixel apart.
+    in property <[int]> tops;            // top edge per cover (only first..last-1 are current)
+    in property <int> center-index: -1;  // the focused (big) cover, -1 for none
+    in property <int> first;
+    in property <int> last;
+    in property <bool> loading;
+    in property <image> cover-overlay;   // the focused cover with its progress bar / + / - button
+    in property <bool> show-cover-overlay;
+    in property <[image]> spinner-frames;
+    in property <int> spinner-index;
+    in property <image> toast;
+    in property <bool> show-toast;
+    in property <length> toast-x;
+    in property <length> toast-y;
+    // Title and artist (main screen): small images over the backdrop
+    in property <[TitleLayer]> titles;
+
+    Image {
+        x: 0; y: 0;
+        width: 720px; height: 1280px;
+        source: backdrop;
+        image-rendering: pixelated;
+    }
+
+    for title in titles: Image {
+        visible: show-carousel;
+        x: title.x;
+        y: title.y;
+        source: title.source;
+        image-rendering: pixelated;
+    }
+
+    for cover[i] in covers: Image {
+        property <bool> center: i == center-index;
+        property <int> size: center ? 410 : 307;
+        property <int> top: i < tops.length ? tops[i] : 0;
+        visible: show-carousel && i >= first && i < last && top + size >= 0 && top <= 1280;
+        x: (center ? 185 : 236) * 1px;
+        y: top * 1px;
+        width: size * 1px;
+        height: size * 1px;
+        source: center ? (loading ? cover.dim : cover.full) : cover.small;
+        image-rendering: pixelated;
+
+        if center && show-cover-overlay: Image {
+            x: 0; y: 0;
+            width: 410px; height: 410px;
+            source: cover-overlay;
+            image-rendering: pixelated;
+        }
+        if center && loading && spinner-frames.length > 0: Image {
+            x: 0; y: 0;
+            width: 410px; height: 410px;
+            source: spinner-frames[mod(spinner-index, spinner-frames.length)];
+            image-rendering: pixelated;
+        }
+    }
+
+    if show-carousel && show-toast: Image {
+        x: toast-x;
+        y: toast-y;
+        source: toast;
+        image-rendering: pixelated;
+    }
+}

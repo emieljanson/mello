@@ -899,6 +899,24 @@ _migrate_018() {
 }
 
 # ============================================
+# Migration 019: Libraries for the Slint screen (MELLO_UI=slint)
+# ============================================
+_migrate_019() {
+  # Slint's display backend loads libinput at start. Without it Mello logs
+  # "Slint cannot load" and keeps the Pygame screen, so this is harmless on
+  # speakers that do not use Slint. (The slint package itself comes from
+  # requirements.txt.)
+  if dpkg -s libinput10 >/dev/null 2>&1; then
+    log "libinput10 already installed"
+    return 0
+  fi
+  # The package index can be outdated (a 404 was seen on the test speaker).
+  sudo apt-get update -q || true
+  sudo apt-get install -y -q libinput10
+  log "Installed libinput10 for the Slint screen"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -919,3 +937,4 @@ run_migration "015" "Allow automatic librespot recovery"
 run_migration "016" "Let a speaker switch to Spotify Soloist"
 run_migration "017" "Keep the WiFi chip awake (no power save)"
 run_migration "018" "Faster boot: skip cloud-init after the first boot"
+run_migration "019" "Libraries for the Slint screen"

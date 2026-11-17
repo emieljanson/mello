@@ -37,6 +37,9 @@ LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
 # Which Spotify Connect engine the app talks to: 'librespot' (go-librespot)
 # or 'soloist' (Spotify's official headless client).
 SPOTIFY_ENGINE = os.environ.get('MELLO_SPOTIFY_ENGINE', 'librespot')
+# 'slint': the screen is shown and animated by Slint on the graphics chip
+# (smooth 60 fps swiping); 'pygame': the original renderer. Opt-in for now.
+UI_ENGINE = os.environ.get('MELLO_UI', 'pygame')
 SOLOIST_WS = os.environ.get('SOLOIST_WS', 'ws://127.0.0.1:9090')
 SPOTIFY_ENGINE_SERVICE = 'mello-soloist' if SPOTIFY_ENGINE == 'soloist' else 'mello-librespot'
 

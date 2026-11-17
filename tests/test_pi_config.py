@@ -483,3 +483,40 @@ def test_cloud_init_first_boot_is_never_cut_short(tmp_path):
 def test_cloud_init_done_with_warnings_counts_as_done(tmp_path):
     # Real Pi: "status: done" with exit code 2 (degraded done)
     assert _run_migration_018(tmp_path, 'status: done', exit_code=2) is True
+
+
+def _run_migration_019(tmp_path, installed):
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    assert 'run_migration "019"' in migrate
+    body = migrate.split('_migrate_019() {', 1)[1].split('\n}', 1)[0]
+    calls = tmp_path / 'calls'
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        log() {{ :; }}
+        dpkg() {{ return {0 if installed else 1}; }}
+        sudo() {{ echo "$*" >> {str(calls)!r}; }}
+        _migrate_019() {{
+        {body}
+        }}
+        _migrate_019
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    return calls.read_text() if calls.exists() else ''
+
+
+def test_slint_libraries_are_installed(tmp_path):
+    calls = _run_migration_019(tmp_path, installed=False)
+    assert 'apt-get update' in calls
+    assert 'apt-get install -y -q libinput10' in calls
+    assert 'libinput10' in (ROOT / 'pi/setup.sh').read_text()
+
+
+def test_slint_libraries_already_there(tmp_path):
+    assert _run_migration_019(tmp_path, installed=True) == ''
+
+
+def test_slint_package_only_where_it_has_wheels():
+    req = (ROOT / 'requirements.txt').read_text()
+    line = next(l for l in req.splitlines() if l.startswith('slint'))
+    assert "platform_machine == 'aarch64'" in line and '==' in line
