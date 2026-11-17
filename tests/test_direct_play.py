@@ -52,8 +52,46 @@ def sent(api):
 # --- orders ------------------------------------------------------------------
 
 def test_one_round_of_a_looping_queue():
-    assert one_round('b', ['c', 'd', 'a', 'b', 'c']) == ['b', 'c', 'd', 'a']
-    assert one_round('b', ['c', 'd']) is None      # not looping: start of the album unknown
+    assert one_round('b', ['c', 'd', 'a', 'b', 'c']) == (['b', 'c', 'd', 'a'], True)
+    # A long audiobook: the queue (80 at most) only shows the next part.
+    assert one_round('b', ['c', 'd']) == (['b', 'c', 'd'], False)
+
+
+def test_parts_of_a_long_album_are_joined():
+    store = PlayOrders(None)
+    store.put(ALBUM, ['t1', 't2', 't3', 't4'], complete=False)
+    store.put(ALBUM, ['t3', 't4', 't5', 't6'], complete=False)
+    assert store.get(ALBUM) == ['t1', 't2', 't3', 't4', 't5', 't6']
+    store.put(ALBUM, ['t2', 't3'], complete=False)          # a shorter look keeps the rest
+    assert store.get(ALBUM) == ['t1', 't2', 't3', 't4', 't5', 't6']
+
+
+def test_last_known_track_of_a_partial_order_is_not_played_directly():
+    box = []
+    store = PlayOrders(None)
+    store.put(ALBUM, TRACKS[:3], complete=False)
+    api = connected_api(reply=fake_daemon(box), play_orders=store)
+    box.append(api)
+    assert api.play(ALBUM, skip_to_uri=TRACKS[2], paused=True) is True
+    assert api.sent[0]['uri'] == ALBUM                    # the album, not the track
+
+
+def test_end_of_a_partial_order_continues_the_normal_way():
+    box = []
+    store = PlayOrders(None)
+    store.put(ALBUM, TRACKS[:3], complete=False)
+    api = connected_api(reply=direct_daemon(box), play_orders=store)
+    box.append(api)
+    assert api.play(ALBUM, skip_to_uri=TRACKS[1]) is True      # t3 is still known after it
+    api.sent.clear()
+    api._handle_event(track_snapshot(TRACKS[1], status='buffering', position_ms=DURATION))
+    assert sent(api)[0] == ('play', TRACKS[2])
+    api.sent.clear()
+    api._handle_event(track_snapshot(TRACKS[2], status='buffering', position_ms=DURATION))
+    deadline = time.time() + 2
+    while not api.sent and time.time() < deadline:
+        time.sleep(0.02)
+    assert api.sent[0] == {'type': 'command', 'command': 'play', 'uri': ALBUM}
 
 
 def test_orders_survive_a_restart_and_get_old(tmp_path):

@@ -549,7 +549,8 @@ class SoloistAPI:
         self._failure_count[command] = self._failure_count.get(command, 0) + 1
         return False
 
-    def play(self, uri: str, skip_to_uri: str = None, paused: bool = False) -> Optional[bool]:
+    def play(self, uri: str, skip_to_uri: str = None, paused: bool = False,
+             native: bool = False) -> Optional[bool]:
         """Play a Spotify URI (album/playlist), optionally landing on a track.
 
         Soloist can only start a context at its first track, and starting a
@@ -585,9 +586,10 @@ class SoloistAPI:
         with self._state_lock:
             self._direct = None
             self._learn_epoch += 1
-        order = self.play_orders.get(uri) if (self.play_orders and skip_to_uri) else None
-        if order and skip_to_uri in order:
-            result = self._play_direct(uri, order, order.index(skip_to_uri), paused, epoch)
+        known = self.play_orders.entry(uri) if (self.play_orders and skip_to_uri and not native) else None
+        order, complete = known or (None, False)
+        if order and skip_to_uri in order and (complete or order.index(skip_to_uri) < len(order) - 1):
+            result = self._play_direct(uri, order, order.index(skip_to_uri), paused, epoch, complete)
             if result is not False:
                 return result
             # Next attempt starts the album the normal way (and learns again).
@@ -653,7 +655,8 @@ class SoloistAPI:
     # Direct play (see play_orders.py)
     # ------------------------------------------------------------------
 
-    def _play_direct(self, uri: str, order: list, index: int, paused: bool, epoch: int) -> Optional[bool]:
+    def _play_direct(self, uri: str, order: list, index: int, paused: bool, epoch: int,
+                     complete: bool = True) -> Optional[bool]:
         """Start order[index] on its own, in place of skipping through `uri`."""
         track = order[index]
         result = self._activate()
@@ -664,7 +667,7 @@ class SoloistAPI:
             self._positioning_uri = uri
             self._positioning_since = time.time()
             self._direct = {'context': uri, 'order': order, 'index': index, 'ended': None, 'last_pos': None,
-                            'started': False}
+                            'started': False, 'complete': complete}
         started = time.time()
         result = self._command('play', uri=track)
         if result is not True:
@@ -745,11 +748,16 @@ class SoloistAPI:
         wrapped = last is not None and last >= duration - 5000 and position < 3000
         if (at_end or wrapped) and direct['ended'] != index:
             direct['ended'] = index
+            if index + 1 >= len(order) and not direct['complete']:
+                return direct['context'], None   # beyond what is known
             return direct['context'], (index + 1) % len(order)
         return None
 
-    def _play_next_direct(self, context: str, index: int):
+    def _play_next_direct(self, context: str, index: Optional[int]):
         """Start the next track of a direct play (called from the socket thread)."""
+        if index is None:
+            self._continue_beyond_known(context)
+            return
         with self._state_lock:
             direct = self._direct
             if not direct or direct['context'] != context:
@@ -762,6 +770,27 @@ class SoloistAPI:
         # Not _command(): it waits for its answer, which arrives on this thread.
         self._send('play', uri=track)
         self._send('set_repeat_track', enabled=True)
+
+    def _continue_beyond_known(self, context: str):
+        """The last known track of a long album ended: go on the normal way.
+
+        Starts the album, skips to the track after the one that ended, and
+        learns the next part of the order on the way. Slow, but once per
+        80 tracks of a long audiobook.
+        """
+        with self._state_lock:
+            direct = self._direct
+            if not direct or direct['context'] != context:
+                return
+            last = direct['order'][direct['index']]
+            self._direct = None
+        logger.info(f'Soloist: end of the known order of {context[:50]}, continuing the normal way')
+
+        def go_on():
+            if self.play(context, skip_to_uri=last, paused=False, native=True) is True:
+                self._transport('skip_next')
+
+        threading.Thread(target=go_on, daemon=True, name='beyond-known').start()
 
     def _direct_step(self, step: int) -> bool:
         """Next/previous during direct play."""
@@ -810,11 +839,11 @@ class SoloistAPI:
             with self._state_lock:
                 if self._learn_epoch != epoch or not self._is_playing_context(uri):
                     return
-            order = one_round(current, upcoming or [])
-            if order:
-                self.play_orders.put(uri, order)
-            else:
-                logger.info(f'Play order not learned: queue of {uri[:50]} does not come round')
+            if not current or not upcoming:
+                logger.info(f'Play order not learned: no queue for {uri[:50]}')
+                return
+            order, complete = one_round(current, upcoming)
+            self.play_orders.put(uri, order, complete)
 
         threading.Thread(target=learn, daemon=True, name='learn-order').start()
 
