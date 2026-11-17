@@ -520,3 +520,6 @@ def test_slint_package_only_where_it_has_wheels():
     req = (ROOT / 'requirements.txt').read_text()
     line = next(l for l in req.splitlines() if l.startswith('slint'))
     assert "platform_machine == 'aarch64'" in line and '==' in line
+    # Bookworm (Python 3.11) has no Slint package: pip would fail and stop
+    # the nightly update halfway.
+    assert "python_version >= '3.12'" in line
