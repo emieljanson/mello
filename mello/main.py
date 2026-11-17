@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mello - Pygame UI for Raspberry Pi
+Mello - music player for Raspberry Pi (screen drawn with Slint)
 
 Usage:
     python -m mello              # Windowed (development)
@@ -18,7 +18,7 @@ from .config import (
     LIBRESPOT_URL, SOLOIST_WS, SPOTIFY_ENGINE, MOCK_MODE, FULLSCREEN,
     LOG_DIR, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
 )
-from .app import Mello
+from .app import Mello, ScreenUnavailable
 from . import crash_log
 
 
@@ -170,8 +170,66 @@ def main():
     print('   Esc     Quit')
     print()
     
-    app = Mello(fullscreen=FULLSCREEN)
+    try:
+        app = Mello(fullscreen=FULLSCREEN)
+    except ScreenUnavailable as e:
+        _wait_with_screen_error(logger, e)
+        return
     app.start()
+
+
+def _report_screen_error(logger: logging.Logger, error: Exception):
+    """Count speakers whose screen cannot start (when usage data is shared)."""
+    try:
+        from .config import (POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
+                             ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID)
+        from .managers import Settings, UsageTracker
+        from .utils import get_runtime_version_label
+        tracker = UsageTracker(
+            api_key=POSTHOG_API_KEY if Settings().share_usage_data else '',
+            host=POSTHOG_HOST,
+            distinct_id=ANALYTICS_DISTINCT_ID,
+            include_content=ANALYTICS_INCLUDE_CONTENT,
+            use_machine_id=ANALYTICS_USE_MACHINE_ID,
+            app_version=get_runtime_version_label(),
+            engine=SPOTIFY_ENGINE,
+            ui='none',
+        )
+        tracker.on_slint_fallback(f'{type(error.__cause__ or error).__name__}: {error}'[:200])
+        tracker.flush()
+    except Exception as e:
+        logger.warning(f'Could not report the screen error: {e}')
+
+
+def _wait_with_screen_error(logger: logging.Logger, error: Exception):
+    """Slint cannot run here: say so on the screen and in the log, then wait.
+
+    Exiting would only have systemd start Mello again every few seconds and
+    fill the log with the same error.
+    """
+    import platform
+    import signal
+    import time
+    from .ui import screen_error
+    logger.error(
+        f'SCREEN UNAVAILABLE | Slint cannot start: {error} | '
+        f'Python {platform.python_version()}, {platform.machine()}, glibc {platform.libc_ver()[1]} | '
+        'Slint needs Raspberry Pi OS Trixie or newer (Python 3.12+, glibc 2.35+). '
+        'Reinstall the speaker with the current Raspberry Pi OS.'
+    )
+    shown = screen_error.show([
+        'This speaker needs a newer Raspberry Pi OS',
+        'Reinstall it with the current Raspberry Pi OS Lite',
+        'and set up Mello again',
+    ])
+    logger.info(f'Screen error message shown: {shown}')
+    _report_screen_error(logger, error)
+    stop = {'now': False}
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda *_: stop.update(now=True))
+    while not stop['now']:
+        time.sleep(1)
+    crash_log.stop_requested()
 
 
 if __name__ == '__main__':

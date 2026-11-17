@@ -11,13 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-pygame_stub = types.ModuleType('pygame')
-pygame_stub.Surface = object
-pygame_stub.Rect = object
-pygame_stub.font = SimpleNamespace(Font=object)
-sys.modules.setdefault('pygame', pygame_stub)
-sys.modules.setdefault('pygame.gfxdraw', types.ModuleType('pygame.gfxdraw'))
-
 from mello.app import Mello
 from mello.api.catalog import CatalogManager
 from mello.api.librespot import LibrespotAPI

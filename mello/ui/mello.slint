@@ -1,11 +1,50 @@
-// Mello's screen, shown and animated by Slint (MELLO_UI=slint).
+// Mello's screen. Slint draws all of it, on the graphics chip.
 //
-// Text, buttons and menus are still drawn by Mello's Pygame renderer into
-// images (`backdrop`, `cover-overlay`, `toast`), so they look exactly the
-// same. Slint puts them on screen and draws and moves the album covers,
-// which is what made swiping slow: the graphics chip now does the work.
+// The panel is a portrait 720x1280 screen that is mounted sideways: what the
+// child sees as "up" is the panel's right edge. Everything here is in panel
+// pixels, and text is turned a quarter to the right so it reads upright.
 //
-// Cover placement copies mello/ui/renderer.py _draw_carousel exactly.
+// Python (mello/ui/renderer.py) decides what is on screen and where, and
+// hands it over as lists of boxes, pictures and labels; the same numbers are
+// used to work out what a touch hits, so a button and its touch area can
+// never drift apart. Slint draws them, and draws and moves the album covers.
+
+import "fonts/FreeSansBold.ttf";
+
+// A filled (rounded) rectangle; a circle is a square with radius = half.
+export struct Box {
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    color: color,
+    radius: length,
+}
+
+// An icon, logo or QR code, at its own size.
+export struct Picture {
+    source: image,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+}
+
+// One line of text centred on (x, y), turned to read upright.
+export struct Label {
+    text: string,
+    x: length,
+    y: length,
+    size: length,
+    color: color,
+}
+
+// A line drawn through points (the tick marks before the "faster Mello" benefits).
+export struct Stroke {
+    commands: string,
+    color: color,
+    width: length,
+}
 
 export struct CoverImages {
     full: image,    // 410 px, focused
@@ -13,18 +52,96 @@ export struct CoverImages {
     small: image,   // 307 px dimmed, the neighbours
 }
 
-export struct TitleLayer {
-    source: image,
-    x: length,
-    y: length,
+component Layer {
+    in property <[Box]> boxes;
+    in property <[Stroke]> strokes;
+    in property <[Picture]> pictures;
+    in property <[Label]> labels;
+    width: 720px;
+    height: 1280px;
+
+    for b in boxes: Rectangle {
+        x: b.x;
+        y: b.y;
+        width: b.w;
+        height: b.h;
+        background: b.color;
+        border-radius: b.radius;
+    }
+    for s in strokes: Path {
+        x: 0;
+        y: 0;
+        width: 720px;
+        height: 1280px;
+        viewbox-width: 720;
+        viewbox-height: 1280;
+        commands: s.commands;
+        stroke: s.color;
+        stroke-width: s.width;
+    }
+    for p in pictures: Image {
+        x: p.x;
+        y: p.y;
+        width: p.w;
+        height: p.h;
+        source: p.source;
+    }
+    for l in labels: Text {
+        text: l.text;
+        font-size: l.size;
+        color: l.color;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        x: l.x - self.width / 2;
+        y: l.y - self.height / 2;
+        transform-rotation: 90deg;
+    }
+}
+
+// The four turning dots on an album that is loading: two half turns a second,
+// each speeding up and slowing down.
+component Spinner {
+    width: 410px;
+    height: 410px;
+    property <float> turn: mod(animation-tick() / 1ms, 500) / 250;   // 0..2
+    property <float> half: turn < 1 ? turn : turn - 1;
+    property <float> eased: half < 0.5 ? 4 * half * half * half : 1 - pow(-2 * half + 2, 3) / 2;
+    property <angle> angle: (turn < 1 ? 0deg : 180deg) + eased * 180deg;
+    for i in 4: Rectangle {
+        property <angle> a: root.angle + i * 90deg;
+        x: (205 + floor(cos(a) * 43.24) - 12) * 1px;
+        y: (205 + floor(sin(a) * 43.24) - 12) * 1px;
+        width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: white;
+    }
 }
 
 export component MelloWindow inherits Window {
     width: 720px;
     height: 1280px;
     background: black;
+    default-font-family: "FreeSans";
+    default-font-weight: 700;
 
-    in property <image> backdrop;
+    // 'gradient': Mello's background with the purple glow at the top; 'black'.
+    in property <string> background-kind: "black";
+    // Menu screens: the list scrolls under the title and is cut off at clip-left.
+    in property <bool> clip-content;
+    in property <length> clip-left;
+    in property <bool> header-fade;
+
+    in property <[Box]> boxes;
+    in property <[Stroke]> strokes;
+    in property <[Picture]> pictures;
+    in property <[Label]> labels;
+    // Drawn above the fade: a menu's title and back/close button.
+    in property <[Box]> top-boxes;
+    in property <[Picture]> top-pictures;
+    in property <[Label]> top-labels;
+
+    // The album covers
     in property <bool> show-carousel;
     in property <[CoverImages]> covers;
     // Cover positions come from Python (renderer._describe_carousel): Slint
@@ -35,30 +152,49 @@ export component MelloWindow inherits Window {
     in property <int> first;
     in property <int> last;
     in property <bool> loading;
-    in property <image> cover-overlay;   // the focused cover with its progress bar / + / - button
-    in property <bool> show-cover-overlay;
-    in property <[image]> spinner-frames;
-    in property <int> spinner-index;
-    in property <image> toast;
-    in property <bool> show-toast;
-    in property <length> toast-x;
-    in property <length> toast-y;
-    // Title and artist (main screen): small images over the backdrop
-    in property <[TitleLayer]> titles;
+    in property <int> progress-fill;     // px of the progress bar on the focused cover
+    in property <color> accent;
+    in property <bool> show-cover-button;
+    in property <image> cover-button;    // the tinted + or - icon
+    in property <string> toast;
 
-    Image {
-        x: 0; y: 0;
-        width: 720px; height: 1280px;
-        source: backdrop;
-        image-rendering: pixelated;
+    // Without a touchscreen (a computer), mouse and keys come from Slint.
+    in property <bool> forward-pointer;
+    callback pointer(/* kind */ string, /* x */ length, /* y */ length);
+    callback key(string);
+
+    if background-kind == "gradient": Rectangle {
+        background: #0d0d0d;
+        Rectangle {
+            x: 570px;
+            width: 150px;
+            background: @linear-gradient(90deg, #0d0d0d 0%, #23192b 100%);
+        }
     }
 
-    for title in titles: Image {
-        visible: show-carousel;
-        x: title.x;
-        y: title.y;
-        source: title.source;
-        image-rendering: pixelated;
+    Rectangle {
+        x: clip-content ? clip-left : 0;
+        width: root.width - self.x;
+        clip: clip-content;
+        Layer {
+            x: -parent.x;
+            boxes: boxes;
+            strokes: strokes;
+            pictures: pictures;
+            labels: labels;
+        }
+    }
+
+    if header-fade: Rectangle {
+        x: 615px;
+        width: 105px;
+        background: @linear-gradient(90deg, #00000000 0%, #000000 100%);
+    }
+
+    Layer {
+        boxes: top-boxes;
+        pictures: top-pictures;
+        labels: top-labels;
     }
 
     for cover[i] in covers: Image {
@@ -73,24 +209,89 @@ export component MelloWindow inherits Window {
         source: center ? (loading ? cover.dim : cover.full) : cover.small;
         image-rendering: pixelated;
 
-        if center && show-cover-overlay: Image {
-            x: 0; y: 0;
-            width: 410px; height: 410px;
-            source: cover-overlay;
-            image-rendering: pixelated;
+        // Progress along the child's bottom edge, cut by the cover's rounded corners.
+        if center && progress-fill > 0: Rectangle {
+            width: 410px;
+            height: 410px;
+            border-radius: 16px;
+            clip: true;
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: 8px;
+                height: progress-fill * 1px;
+                background: accent;
+            }
         }
-        if center && loading && spinner-frames.length > 0: Image {
-            x: 0; y: 0;
-            width: 410px; height: 410px;
-            source: spinner-frames[mod(spinner-index, spinner-frames.length)];
-            image-rendering: pixelated;
+        if center && show-cover-button: Rectangle {
+            x: 39px;
+            y: 317px;
+            width: 55px;
+            height: 55px;
+            border-radius: 27.5px;
+            background: white;
+        }
+        if center && show-cover-button: Image {
+            x: 30px;
+            y: 308px;
+            width: 72px;
+            height: 72px;
+            source: cover-button;
+        }
+        if center && loading: Spinner { }
+    }
+
+    // A short message over the covers (e.g. "Added to Mello")
+    if show-carousel && toast != "": Rectangle {
+        property <length> text-w: toast-text.preferred-width;
+        property <length> text-h: toast-text.preferred-height;
+        width: text-h + 28px;
+        height: text-w + 48px;
+        x: 390px - self.width / 2;
+        y: 640px - self.height / 2;
+        background: #1e1e1edc;
+        border-radius: self.width / 2;
+        toast-text := Text {
+            text: toast;
+            font-size: 22px;
+            color: white;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            transform-rotation: 90deg;
         }
     }
 
-    if show-carousel && show-toast: Image {
-        x: toast-x;
-        y: toast-y;
-        source: toast;
-        image-rendering: pixelated;
+    if forward-pointer: TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.pointer("down", self.mouse-x, self.mouse-y);
+            } else if event.kind == PointerEventKind.up {
+                root.pointer("up", self.mouse-x, self.mouse-y);
+            }
+        }
+        moved => {
+            root.pointer("move", self.mouse-x, self.mouse-y);
+        }
+    }
+    if forward-pointer: FocusScope {
+        init => {
+            self.focus();
+        }
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.key("left");
+            } else if event.text == Key.RightArrow {
+                root.key("right");
+            } else if event.text == Key.Escape {
+                root.key("escape");
+            } else if event.text == Key.Return {
+                root.key("return");
+            } else {
+                root.key(event.text);
+            }
+            accept
+        }
     }
 }

@@ -233,21 +233,19 @@ def test_every_event_says_the_cpu_architecture(tracker, monkeypatch):
 
 
 def test_slint_that_cannot_load_is_reported(tracker, monkeypatch):
-    import builtins
-    import mello.app as app_module
-    monkeypatch.setattr(app_module, "UI_ENGINE", "slint")
-    real_import = builtins.__import__
+    """Without Slint there is no Mello screen: main shows a message and reports why."""
+    import mello.main as main_module
+    from mello.app import ScreenUnavailable
+    import mello.managers as managers
 
-    def no_slint(name, *args, **kwargs):
-        if name == "slint":
-            raise ImportError("no wheel for armv7l")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", no_slint)
-    app = Mello.__new__(Mello)
-    assert app._choose_ui() == "pygame"
-    monkeypatch.setattr(builtins, "__import__", real_import)
-    assert "no wheel for armv7l" in app._slint_error
-
-    tracker.on_slint_fallback(app._slint_error)
-    assert "armv7l" in last(tracker, "slint_fallback")["error"]
+    sent = []
+    monkeypatch.setattr(managers, "Settings", lambda: SimpleNamespace(share_usage_data=True))
+    monkeypatch.setattr(managers, "UsageTracker", lambda **kw: tracker)
+    monkeypatch.setattr(tracker, "flush", lambda: sent.append("flushed"))
+    error = ScreenUnavailable("no wheel for armv7l")
+    error.__cause__ = ImportError("no wheel for armv7l")
+    main_module._report_screen_error(main_module.logging.getLogger("t"), error)
+    props = last(tracker, "slint_fallback")
+    assert "armv7l" in props["error"] and props["error"].startswith("ImportError")
+    assert props["fallback"] == "screen_message"
+    assert sent == ["flushed"]

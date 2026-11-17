@@ -4,13 +4,6 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-pygame_stub = types.ModuleType('pygame')
-pygame_stub.Surface = object
-pygame_stub.Rect = object
-pygame_stub.font = SimpleNamespace(Font=object)
-sys.modules.setdefault('pygame', pygame_stub)
-sys.modules.setdefault('pygame.gfxdraw', types.ModuleType('pygame.gfxdraw'))
-
 from mello.app import Mello
 from mello.models import NowPlaying
 

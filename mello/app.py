@@ -9,13 +9,11 @@ import subprocess
 import threading
 from typing import Optional, List
 
-import pygame
-
 from . import crash_log
 from .config import (
     LOG_DIR,
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE, UI_ENGINE, DIRECT_PLAY,
+    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE, DIRECT_PLAY,
     SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR, DATA_DIR,
     MOCK_MODE,
@@ -30,13 +28,14 @@ from .config import (
 from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
 from .api import LibrespotAPI, NullLibrespotAPI, SoloistAPI, CatalogManager
 from .api.play_orders import PlayOrders
-from .handlers import TouchHandler, EventListener, EvdevTouchHandler
+from .handlers import TouchHandler, EventListener, EvdevTouchHandler, InputEvent
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AnimationTimer, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
 from .managers.engine_setup import EngineSetup, PROMPT_BENEFITS, PROMPT_SCAN_HINT
 from .managers.wifi_keeper import WifiKeeper
 from .managers.analytics import device_health
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
-from .ui import ImageCache, Renderer, RenderContext
+from .ui import Bitmaps, ImageCache, Renderer, RenderContext
+from .ui.slint_display import SlintDisplay
 from .utils import run_async, get_runtime_version_label, set_system_volume
 
 logger = logging.getLogger(__name__)
@@ -44,6 +43,10 @@ logger = logging.getLogger(__name__)
 LIBRESPOT_RESTART_AFTER = 60.0
 LIBRESPOT_RESTART_COOLDOWN = 300.0
 HEALTH_REPORT_EVERY = 6 * 3600   # seconds between device_health events
+
+
+class ScreenUnavailable(Exception):
+    """Slint could not start (for example an older Raspberry Pi OS)."""
 
 
 class Mello:
@@ -57,190 +60,20 @@ class Mello:
     _bt_seen: Optional[str] = None
     _bt_seen_since = 0.0
     _next_health_report = float('inf')   # set when analytics starts
-    _slint_error: Optional[str] = None   # why Slint was asked for but could not load
     
     def __init__(self, fullscreen: bool = False):
-        # Restore display BEFORE pygame takes over DRM device.
-        # Previous run may have been killed during sleep, leaving
-        # backlight/DPMS off. Must happen before kmsdrm init.
+        # Restore display before Slint takes over the screen. A previous run
+        # may have been killed during sleep, leaving backlight/DPMS off.
         SleepManager.restore_display()
-        self._ui = self._choose_ui()
-
-        # Fast path: init display and show boot splash BEFORE the heavy
-        # pygame.init() so the user sees the logo instead of a black screen.
-        self._setup_video_driver()
-        self._init_display_early(fullscreen)
-
-        # Now init remaining subsystems (splash is already visible).
-        # pygame.init() is idempotent for already-inited subsystems.
-        pygame.init()
-        pygame.mixer.quit()  # Release audio device for go-librespot
-        pygame.display.set_caption('Mello')
-
-        if self._ui == 'slint':
-            # Slint shows the boot splash as soon as its event loop runs;
-            # everything else is set up from inside that loop (start()).
-            from .ui.slint_display import SlintDisplay
-            self.slint_display = SlintDisplay()
-            self.slint_display.show_surface(self.screen)
-            return
-        self._init_components()
-    
-    def _choose_ui(self) -> str:
-        """Slint when asked for (MELLO_UI=slint) and it can load, else Pygame."""
-        if UI_ENGINE != 'slint':
-            return 'pygame'
+        self.fullscreen = fullscreen
+        # Slint shows the boot splash as soon as its event loop runs;
+        # everything else is set up from inside that loop (start()).
+        self.bitmaps = Bitmaps(ICONS_DIR)
         try:
-            import slint  # noqa: F401  (also loads libinput etc.)
+            self.slint_display = SlintDisplay(self.bitmaps)
         except Exception as e:
-            logger.error(f'MELLO_UI=slint but Slint cannot load ({e}); using Pygame')
-            self._slint_error = f'{type(e).__name__}: {e}'[:200]
-            return 'pygame'
+            raise ScreenUnavailable(str(e)) from e
         logger.info('Screen: Slint')
-        return 'slint'
-
-    def _check_kms_available(self) -> bool:
-        """Check if KMS/DRM is likely configured on the system."""
-        # Check for DRI devices (KMS/DRM creates these)
-        if os.path.exists('/dev/dri'):
-            try:
-                dri_devices = os.listdir('/dev/dri')
-                # Should have at least card0 or renderD128
-                if any(dev.startswith(('card', 'renderD')) for dev in dri_devices):
-                    return True
-            except OSError:
-                pass
-        
-        # Check if GL driver is configured (check for vc4-kms-v3d overlay)
-        try:
-            if os.path.exists('/boot/config.txt'):
-                with open('/boot/config.txt', 'r') as f:
-                    config = f.read()
-                    # Check for KMS-related overlays
-                    if (
-                        'dtoverlay=vc4-kms-v3d' in config
-                        or 'dtoverlay=vc4-kms-dsi-7inch' in config
-                        or 'dtoverlay=vc4-kms-dsi-ili9881-5inch' in config
-                    ):
-                        return True
-        except (OSError, IOError):
-            pass
-
-        try:
-            if os.path.exists('/boot/firmware/config.txt'):
-                with open('/boot/firmware/config.txt', 'r') as f:
-                    config = f.read()
-                    if (
-                        'dtoverlay=vc4-kms-v3d' in config
-                        or 'dtoverlay=vc4-kms-dsi-7inch' in config
-                        or 'dtoverlay=vc4-kms-dsi-ili9881-5inch' in config
-                    ):
-                        return True
-        except (OSError, IOError):
-            pass
-        
-        return False
-    
-    def _setup_video_driver(self):
-        """Select optimal video driver (env var only, no init)."""
-        if self._ui == 'slint':
-            # Slint owns the display; Pygame only draws into off-screen surfaces.
-            os.environ['SDL_VIDEODRIVER'] = 'dummy'
-            return
-        if os.environ.get('SDL_VIDEODRIVER'):
-            return
-        if not os.path.exists('/proc/device-tree/model'):
-            return
-        if self._check_kms_available():
-            os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
-
-    def _init_display_early(self, fullscreen: bool):
-        """Init display and show boot splash as fast as possible.
-
-        Called BEFORE pygame.init() so the logo appears immediately
-        instead of a black screen while subsystems initialize.
-        """
-        _t0 = time.monotonic()
-        # Init display subsystem only (not all of pygame)
-        try:
-            pygame.display.init()
-            logger.info(f'Display driver: {os.environ.get("SDL_VIDEODRIVER", "default")} '
-                        f'(display.init took {time.monotonic()-_t0:.2f}s)')
-        except pygame.error as e:
-            # kmsdrm failed — fall back to default driver
-            driver = os.environ.pop('SDL_VIDEODRIVER', None)
-            if driver:
-                logger.warning(f'{driver} driver failed ({e}), using default')
-            pygame.display.init()
-
-        flags = pygame.DOUBLEBUF
-        if fullscreen and self._ui != 'slint':
-            # (With Slint the surface is off-screen: "full screen" would make
-            # the dummy driver pick its own 1024x768 size.)
-            flags |= pygame.FULLSCREEN
-
-        _t1 = time.monotonic()
-        try:
-            self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT),
-                flags | pygame.HWSURFACE
-            )
-        except pygame.error:
-            self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT),
-                flags
-            )
-        logger.info(f'set_mode took {time.monotonic()-_t1:.2f}s')
-
-        # Show boot splash immediately — bridges Plymouth → app transition
-        self._show_boot_splash()
-
-        self.clock = pygame.time.Clock()
-        pygame.mouse.set_visible(not fullscreen)
-
-        self._log_video_info()
-
-    def _show_boot_splash(self):
-        """Show Mello logo on dark background with gradient.
-
-        Plymouth shows plain black during early boot.  Once pygame takes
-        over the DRM device we paint the logo + top gradient so the user
-        sees something familiar while the rest of the app initialises.
-        """
-        try:
-            logo_path = os.path.join(ICONS_DIR, 'mello-logo.png')
-            if not os.path.exists(logo_path):
-                return
-            logo = pygame.image.load(logo_path).convert_alpha()
-            # Scale to 320px wide (same as idle screen)
-            logo_width = 320
-            scale = logo_width / logo.get_width()
-            logo = pygame.transform.smoothscale(
-                logo, (logo_width, int(logo.get_height() * scale))
-            )
-            # Rotate for portrait display
-            logo = pygame.transform.rotate(logo, -90)
-
-            # Background with top gradient (matches carousel background)
-            bg = (13, 13, 13)
-            self.screen.fill(bg)
-            for offset in range(150):
-                x = SCREEN_WIDTH - 1 - offset
-                alpha = int(30 * (1 - offset / 150))
-                color = (
-                    min(255, bg[0] + int(alpha * 0.75)),
-                    min(255, bg[1] + int(alpha * 0.4)),
-                    min(255, bg[2] + alpha),
-                )
-                pygame.draw.line(self.screen, color, (x, 0), (x, SCREEN_HEIGHT))
-
-            x = (self.screen.get_width() - logo.get_width()) // 2
-            y = (self.screen.get_height() - logo.get_height()) // 2
-            self.screen.blit(logo, (x, y))
-            pygame.display.flip()
-            logger.info('Boot splash displayed')
-        except Exception as e:
-            logger.warning(f'Could not show boot splash: {e}')
 
     def _init_components(self):
         """Initialize all application components."""
@@ -273,9 +106,7 @@ class Mello:
         
         # UI Components
         self.image_cache = ImageCache(IMAGES_DIR)
-        self.icons = self._load_icons()
-        self.renderer = Renderer(self.screen, self.image_cache, self.icons)
-        self.renderer.compositor = self._ui == 'slint'
+        self.renderer = Renderer(self.bitmaps)
         
         # Handlers
         self.touch = TouchHandler()
@@ -290,6 +121,12 @@ class Mello:
         # Evdev touch handler for KMSDRM mode (reads /dev/input directly)
         self.evdev_touch = EvdevTouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT)
         touch_available = self.evdev_touch.start()  # Starts background thread if touchscreen found
+        if not touch_available:
+            # A computer: mouse and keys from the window stand in for touch.
+            self.slint_display.forward_input(
+                lambda kind, pos: self.evdev_touch.post(InputEvent(kind, pos, time.time())),
+                lambda key: self.evdev_touch.post(InputEvent('key', key=key)),
+            )
         
         # Managers
         self.sleep_manager = SleepManager()
@@ -313,7 +150,7 @@ class Mello:
             use_machine_id=ANALYTICS_USE_MACHINE_ID,
             app_version=self.app_version_label,
             engine=SPOTIFY_ENGINE,
-            ui=self._ui,
+            ui='slint',
         )
         crash_log.on_thread_error = self.tracker.on_thread_crashed
         self._next_health_report = time.monotonic() + HEALTH_REPORT_EVERY
@@ -496,31 +333,6 @@ class Mello:
             f'Start on the last played album: "{items[best].name}" '
             f'({best + 1}/{len(items)}, played {best_at[:16]})'
         )
-    
-    def _load_icons(self) -> dict:
-        """Load icon images."""
-        icons = {}
-        icon_files = {
-            'play': 'play-fill.png',
-            'pause': 'pause-fill.png',
-            'prev': 'skip-back-fill.png',
-            'next': 'skip-forward-fill.png',
-            'volume_none': 'speaker-none-fill.png',
-            'volume_low': 'speaker-low-fill.png',
-            'volume_high': 'speaker-high-fill.png',
-            'plus': 'plus-circle-fill.png',
-            'minus': 'minus-circle-fill.png',
-            'headphone': 'headphone.png',
-            'close': 'close.png',
-            'back': 'back.png',
-            'logo': 'mello-logo.png',
-        }
-        for name, filename in icon_files.items():
-            try:
-                icons[name] = pygame.image.load(ICONS_DIR / filename).convert_alpha()
-            except Exception as e:
-                logger.warning(f'Failed to load icon {filename}: {e}', exc_info=True)
-        return icons
     
     def _show_toast(self, message: str):
         """Show a brief toast message on screen."""
@@ -738,8 +550,6 @@ class Mello:
         self.carousel.scroll_x = 0.0
         self.carousel.set_target(0)
         self._update_carousel_max_index()
-        self.image_cache.cache.clear()
-        self.image_cache._access_times.clear()
     
     @property
     def _active_toast(self) -> Optional[str]:
@@ -749,31 +559,11 @@ class Mello:
         self._toast_message = None
         return None
     
-    def _log_video_info(self):
-        """Log video driver and display info."""
-        video_driver = os.environ.get('SDL_VIDEODRIVER', 'default')
-        actual_driver = pygame.display.get_driver()
-        info = pygame.display.Info()
-        
-        logger.info(f'Display: {actual_driver} (requested: {video_driver})')
-        logger.info(f'Resolution: {info.current_w}x{info.current_h}')
-        
-        # Check for Raspberry Pi
-        if os.path.exists('/proc/device-tree/model'):
-            try:
-                with open('/proc/device-tree/model', 'r') as f:
-                    pi_model = f.read().strip().replace('\x00', '')
-                logger.info(f'Device: {pi_model}')
-                
-                # Only show warning if not using GPU acceleration
-                if actual_driver not in ('kmsdrm', 'KMSDRM'):
-                    kms_available = self._check_kms_available()
-                    if not kms_available:
-                        logger.debug('KMS/DRM not detected - GPU acceleration unavailable')
-                    else:
-                        logger.debug('KMS/DRM detected but not using kmsdrm driver')
-            except Exception:
-                pass
+    def _log_device_info(self):
+        """Log which Raspberry Pi this is."""
+        model = self._read_text_file('/proc/device-tree/model')
+        if model:
+            logger.info(f'Device: {model.replace(chr(0), "")}')
 
     def _read_text_file(self, path: str) -> Optional[str]:
         """Read a text file for diagnostics."""
@@ -810,6 +600,7 @@ class Mello:
 
     def _log_startup_health(self):
         """Log display/touch health so black-screen diagnosis is evidence-based."""
+        self._log_device_info()
         backlight_value = (
             self._read_text_file(self.sleep_manager.backlight_path)
             if self.sleep_manager.backlight_path else None
@@ -974,14 +765,9 @@ class Mello:
     
     def start(self):
         """Start the application."""
-        if self._ui == 'slint':
-            self._run_slint_loop()
-            if hasattr(self, 'tracker'):   # set up (not stopped during the splash)
-                self._shutdown()
-            return
-        self._start_services()
-        self._run_pygame_loop()
-        self._shutdown()
+        self._run_loop()
+        if hasattr(self, 'tracker'):   # set up (not stopped during the splash)
+            self._shutdown()
 
     def _start_services(self):
         """Everything that runs once before the first frame."""
@@ -990,11 +776,6 @@ class Mello:
             catalog_size=len(self.catalog_manager.items),
             previous_run=crash_log.previous_run,
         )
-        if self._slint_error:
-            self.tracker.on_slint_fallback(self._slint_error)
-        
-        # Pre-load images
-        self.image_cache.preload_catalog(self.catalog_manager.items)
         
         if not self.mock_mode:
             self.events.start()
@@ -1021,79 +802,6 @@ class Mello:
         
         logger.info('Entering main loop...')
 
-    def _run_pygame_loop(self):
-        """The main loop when Pygame shows the screen."""
-        dt = 1.0 / 60  # Initial delta time
-
-        # Main loop
-        while self.running:
-            crash_log.heartbeat()
-            self._apply_spotify_inactive()
-            self._check_touch_health()
-            # Sleep mode: wait for touch/key to wake up
-            if self.sleep_manager.is_sleeping:
-                # Time asleep is not a frame: without this the first frame
-                # after waking is handed hours of dt and logged as a freeze.
-                self.clock.tick()
-                dt = 1.0 / 60
-                # Primary wake: evdev threading.Event (reliable across threads)
-                # Fallback: pygame.event.wait with timeout (catches KEYDOWN/QUIT)
-                self.evdev_touch.wake_event.wait(0.2)
-                if self.evdev_touch.wake_event.is_set():
-                    self.evdev_touch.wake_event.clear()
-                    self._wake_from_sleep('evdev_touch')
-                    pygame.event.clear()  # Discard stale events from sleep
-                    continue
-                # Check for keyboard/quit events that bypass evdev
-                for event in pygame.event.get():
-                    if event.type == pygame.KEYDOWN:
-                        self._wake_from_sleep(f'key:{event.key}')
-                        pygame.event.clear()
-                        break
-                    elif event.type == pygame.QUIT:
-                        self.running = False
-                        break
-                self._log_sleep_wait_if_due()
-                continue
-            
-            self.anim_timer.begin_frame()
-            self._handle_events()
-            self.anim_timer.mark('events')
-            self._update(dt)
-            self.anim_timer.mark('update')
-            dirty_rects = self._draw()
-            self.anim_timer.mark('draw')
-            
-            if dirty_rects:
-                pygame.display.update(dirty_rects)
-            else:
-                pygame.display.flip()
-            self.anim_timer.mark('display')
-            
-            target_fps = self._target_fps()
-            is_animating = not self.carousel.settled or self.touch.dragging
-            
-            if target_fps <= 5 and not is_animating:
-                # Idle: true sleep instead of busy-wait, CPU can idle
-                # Keep the frame clock running while idling: otherwise the
-                # first frame after idle is handed the whole idle time as dt
-                # and logged as a multi-second freeze.
-                pygame.time.wait(200)
-                dt = self.clock.tick() / 1000.0
-            else:
-                dt = self.clock.tick(target_fps) / 1000.0
-            
-            target_frame_time = 1.0 / target_fps
-            spike_threshold = max(0.1, target_frame_time * 1.2)
-            if dt > spike_threshold and target_fps > 5:
-                logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
-            
-            self.perf_monitor.update(dt)
-            anim_summary = self.anim_timer.end_frame(is_animating, dt)
-            if anim_summary:
-                logger.info(anim_summary)
-            self._log_fps_if_due(target_fps)
-
     def _shutdown(self):
         """Save progress and let go of everything (after the main loop ended)."""
         # Save progress before shutdown
@@ -1109,16 +817,13 @@ class Mello:
         
         self.events.stop()
         self.evdev_touch.stop()
-        pygame.quit()
         crash_log.mark_clean_exit(LOG_DIR)
         logger.info('Mello stopped')
     
-    def _run_slint_loop(self):
-        """The main loop when Slint shows the screen (MELLO_UI=slint).
-
-        Same work per frame as the Pygame loop below, but Slint's event loop
-        calls it (every ~8 ms) instead of a while loop that sleeps: frames are
-        paced by the target fps here, and Slint draws when a property changed.
+    def _run_loop(self):
+        """The main loop. Slint's event loop calls tick() every ~8 ms; frames
+        are paced by the target fps here, and Slint draws when something on
+        screen changed.
         """
         display = self.slint_display
         state = {'last': time.monotonic(), 'sleep_check': 0.0, 'ready': False, 'shown': 0}
@@ -1149,24 +854,21 @@ class Mello:
                 state['sleep_check'] = now
                 if self.evdev_touch.wake_event.is_set():
                     self.evdev_touch.wake_event.clear()
-                    self._wake_from_sleep('evdev_touch')
-                    pygame.event.clear()
+                    keys = [e.key for e in self.evdev_touch.take_events() if e.kind == 'key']
+                    self._wake_from_sleep(f'key:{keys[0]}' if keys else 'evdev_touch')
+                    # The touch that woke the screen is not a tap
+                    self.evdev_touch.clear_events()
                     return True
-                for event in pygame.event.get():
-                    if event.type == pygame.KEYDOWN:
-                        self._wake_from_sleep(f'key:{event.key}')
-                        pygame.event.clear()
-                        break
-                    elif event.type == pygame.QUIT:
-                        self.running = False
-                        return False
                 self._log_sleep_wait_if_due()
                 return True
 
             target_fps = self._target_fps()
             is_animating = not self.carousel.settled or self.touch.dragging
             interval = 0.2 if (target_fps <= 5 and not is_animating) else 1.0 / target_fps
-            if now - state['last'] < interval - 0.004:
+            # A touch is handled at once, not at the next idle frame (up to
+            # 0.2 s later): a press shows straight away.
+            touched = not self.evdev_touch.events.empty()
+            if now - state['last'] < interval - 0.004 and not touched:
                 return True
             dt = now - state['last']
             state['last'] = now
@@ -1178,11 +880,11 @@ class Mello:
             self.anim_timer.mark('update')
             self._draw()
             self.anim_timer.mark('draw')
-            display.present(self.screen)
+            display.present()
             self.anim_timer.mark('display')
 
             spike_threshold = max(0.1, 1.0 / target_fps * 1.2)
-            if dt > spike_threshold and target_fps > 5:
+            if dt > spike_threshold and target_fps > 5 and not touched:
                 logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
             self.perf_monitor.update(dt)
             anim_summary = self.anim_timer.end_frame(is_animating, dt)
@@ -1584,27 +1286,24 @@ class Mello:
             logger.debug(f'Temp cover download failed: {e}')
     
     def _handle_events(self):
-        """Handle pygame events."""
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-            
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                logger.debug(f'Event: MOUSEBUTTONDOWN at {event.pos}')
+        """Handle the touches (and mouse/keys) since the last frame."""
+        for event in self.evdev_touch.take_events():
+            if event.kind == 'down':
+                logger.debug(f'Event: touch down at {event.pos}')
                 if self.sleep_manager.is_sleeping:
-                    self._wake_from_sleep(f'pygame_touch:{event.pos}')
+                    self._wake_from_sleep(f'touch:{event.pos}')
                     continue
                 self.sleep_manager.reset_timer()
-                self._handle_touch_down(event.pos, getattr(event, 'touched_at', None))
-            
-            elif event.type == pygame.KEYDOWN:
+                self._handle_touch_down(event.pos, event.touched_at)
+
+            elif event.kind == 'key':
                 if self.sleep_manager.is_sleeping:
-                    self._wake_from_sleep(f'pygame_key:{event.key}')
+                    self._wake_from_sleep(f'key:{event.key}')
                     continue
                 self.sleep_manager.reset_timer()
                 self._handle_key(event.key)
-            
-            elif event.type == pygame.MOUSEMOTION:
+
+            elif event.kind == 'move':
                 if self.setup_menu.is_open and self._menu_touch_start is not None:
                     # Menu scroll: track vertical drag (physical x-axis)
                     dx = event.pos[0] - self._menu_touch_start[0]
@@ -1622,8 +1321,8 @@ class Mello:
                         self.delete_mode_id = None
                         self.renderer.invalidate()
 
-            elif event.type == pygame.MOUSEBUTTONUP:
-                logger.debug(f'Event: MOUSEBUTTONUP at {event.pos}')
+            elif event.kind == 'up':
+                logger.debug(f'Event: touch up at {event.pos}')
                 if not self.sleep_manager.is_sleeping:
                     if self.setup_menu.is_open and self._menu_touch_start is not None:
                         self.setup_menu.handle_release()
@@ -1637,22 +1336,22 @@ class Mello:
                         self._menu_touch_start = None
                         self._menu_touch_scrolled = False
                     else:
-                        self._handle_touch_up(event.pos, getattr(event, 'touched_at', None))
+                        self._handle_touch_up(event.pos, event.touched_at)
                     self._handle_button_up()
-    
-    def _handle_key(self, key):
-        """Handle keyboard input."""
-        if key == pygame.K_ESCAPE:
+
+    def _handle_key(self, key: str):
+        """Keyboard (on a computer)."""
+        if key == 'escape':
             self.running = False
-        elif key == pygame.K_LEFT:
+        elif key == 'left':
             self._navigate(-1)
-        elif key == pygame.K_RIGHT:
+        elif key == 'right':
             self._navigate(1)
-        elif key == pygame.K_SPACE or key == pygame.K_RETURN:
+        elif key in (' ', 'return'):
             self._toggle_play()
-        elif key == pygame.K_n:
+        elif key == 'n':
             self._skip_track(self.api.next)
-        elif key == pygame.K_p:
+        elif key == 'p':
             self._skip_track(self.api.prev)
     
     def _handle_touch_down(self, pos, touched_at: Optional[float] = None):
@@ -1717,7 +1416,7 @@ class Mello:
 
     @staticmethod
     def _point_in_rect(pos, rect: Optional[tuple]) -> bool:
-        """Return True if pos is inside a tuple/pygame-style rect."""
+        """Return True if pos is inside an (x, y, w, h) rect."""
         if not rect:
             return False
         x, y = pos
@@ -2180,7 +1879,6 @@ class Mello:
             if success:
                 self.catalog_manager.load()
                 self._update_carousel_max_index()
-                self.image_cache.preload_catalog(self.catalog_manager.items)
                 with self._temp_item_lock:
                     if self.temp_item and self.temp_item.uri == temp.uri:
                         self.temp_item = None
@@ -2611,9 +2309,8 @@ class Mello:
             reset_confirm_pending=self.setup_menu._reset_confirm_pending,
             has_network=self._get_cached_network_status(),
         )
-        dirty_rects = self.renderer.draw(ctx)
+        self.renderer.draw(ctx)
         if self.delete_mode_id and self.renderer.delete_button_rect:
             self._delete_button_rect = self.renderer.delete_button_rect
         elif not self.delete_mode_id:
             self._delete_button_rect = None
-        return dirty_rects

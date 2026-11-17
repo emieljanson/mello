@@ -1,14 +1,15 @@
 """
-Evdev Touch Handler - Direct touch input for KMSDRM mode.
+Evdev Touch Handler - reads the touchscreen directly (/dev/input).
 
-When running with KMSDRM driver (without Wayland), SDL2 doesn't automatically
-pick up touch input from evdev devices. This module reads touch events directly
-and converts them to pygame mouse events.
+Touches become InputEvents in a queue that the main loop empties every frame.
+On a computer without a touchscreen, the Slint window posts mouse and key
+presses into the same queue (see SlintDisplay.forward_input).
 """
+import queue
 import threading
 import time
 import logging
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,15 @@ except ImportError:
     logger.debug('evdev not available - touch input via SDL only')
 
 
+class InputEvent(NamedTuple):
+    kind: str                         # 'down', 'move', 'up' or 'key'
+    pos: Tuple[int, int] = (0, 0)     # panel pixels
+    touched_at: Optional[float] = None
+    key: str = ''                     # for 'key': 'left', 'right', 'escape', 'return', ' ', 'n', ...
+
+
 class EvdevTouchHandler:
-    """Reads touch input directly from evdev and posts pygame events."""
+    """Reads touch input directly from evdev into a queue of InputEvents."""
     
     def __init__(self, screen_width: int, screen_height: int):
         self.screen_width = screen_width
@@ -36,8 +44,10 @@ class EvdevTouchHandler:
         self._failure_reason: Optional[str] = None
         self._failure_lock = threading.Lock()
 
-        # Wake signal for sleep mode (pygame.event.post from thread
-        # doesn't reliably wake pygame.event.wait in KMSDRM mode)
+        # Touches (and mouse/keys on a computer) for the main loop
+        self.events: 'queue.SimpleQueue[InputEvent]' = queue.SimpleQueue()
+
+        # Wake signal for sleep mode: set by every touch down
         self.wake_event = threading.Event()
 
         # Touch state (written from reader thread, read from main thread)
@@ -50,6 +60,25 @@ class EvdevTouchHandler:
         self._touch_max_x = 1279
         self._touch_max_y = 719
     
+    def post(self, event: InputEvent):
+        """Add an input event (also used for mouse and keys on a computer)."""
+        self.events.put(event)
+        if event.kind in ('down', 'key'):
+            self.wake_event.set()
+
+    def take_events(self) -> list:
+        """All input events since the last call, oldest first."""
+        events = []
+        while True:
+            try:
+                events.append(self.events.get_nowait())
+            except queue.Empty:
+                return events
+
+    def clear_events(self):
+        """Forget pending input (touches that woke the screen are not taps)."""
+        self.take_events()
+
     def start(self) -> bool:
         """Start reading touch events. Returns True if successful."""
         if not EVDEV_AVAILABLE:
@@ -156,8 +185,6 @@ class EvdevTouchHandler:
     
     def _read_loop(self):
         """Read touch events in background thread."""
-        import pygame
-        
         try:
             for event in self._device.read_loop():
                 if not self._running:
@@ -182,20 +209,13 @@ class EvdevTouchHandler:
                     if event.value == 1:  # Touch down
                         with self._touch_lock:
                             self._touching = True
-                        self.wake_event.set()
-                        pygame.event.post(pygame.event.Event(
-                            pygame.MOUSEBUTTONDOWN,
-                            {'pos': pos, 'button': 1, 'touched_at': time.time()}
-                        ))
+                        self.post(InputEvent('down', pos, time.time()))
                         logger.debug(f'Touch DOWN at {pos}')
 
                     elif event.value == 0:  # Touch up
                         with self._touch_lock:
                             self._touching = False
-                        pygame.event.post(pygame.event.Event(
-                            pygame.MOUSEBUTTONUP,
-                            {'pos': pos, 'button': 1, 'touched_at': time.time()}
-                        ))
+                        self.post(InputEvent('up', pos, time.time()))
                         logger.debug(f'Touch UP at {pos}')
 
                 # Handle touch move (SYN_REPORT indicates end of event batch)
@@ -205,10 +225,7 @@ class EvdevTouchHandler:
                         if touching:
                             pos = self._scale_coordinates(self._touch_x, self._touch_y)
                     if touching:
-                        pygame.event.post(pygame.event.Event(
-                            pygame.MOUSEMOTION,
-                            {'pos': pos, 'rel': (0, 0), 'buttons': (1, 0, 0)}
-                        ))
+                        self.post(InputEvent('move', pos))
         
         except Exception as e:
             if self._running:

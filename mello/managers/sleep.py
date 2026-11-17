@@ -47,14 +47,14 @@ class SleepManager:
             logger.info('No display control found (not on Pi?)')
         
         # Restore CPU/LED (safe to do anytime). Display restore happens
-        # in ensure_display_on() which must be called BEFORE pygame init
+        # in ensure_display_on() which must be called before Slint takes the screen
         # to avoid conflicting with kmsdrm's DRM master.
         self._set_low_power_cpu(False)
         self._set_led(True)
     
     @staticmethod
     def restore_display():
-        """Restore display power at startup. Call BEFORE pygame init.
+        """Restore display power at startup. Call before Slint takes the screen.
         
         Uses a temporary instance to detect and restore display,
         avoiding conflicts with kmsdrm's DRM master.
