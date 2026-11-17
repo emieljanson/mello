@@ -28,6 +28,8 @@ _HEADPHONE_BTN_Y = CAROUSEL_CENTER_Y - (COVER_SIZE + COVER_SPACING) - COVER_SIZE
 
 logger = logging.getLogger(__name__)
 
+_NEVER_DRAWN = object()
+
 
 class Renderer:
     """Handles all drawing/rendering for Mello UI."""
@@ -46,7 +48,11 @@ class Renderer:
         self._bg_cache: Optional[pygame.Surface] = None
         self._progress_cache: Dict[str, pygame.Surface] = {}
         self._text_cache: Dict[str, pygame.Surface] = {}
-        self._last_track_key: Optional[Tuple[str, str]] = None
+        self._last_track_key: Optional[Tuple[str, str]] = None   # text cache of _draw_track_info
+        # Title shown by the last full redraw. A separate marker for "never":
+        # with None for both, an album without a title redrew the whole
+        # screen every frame (~20 ms on a Pi 3) while swiping past it.
+        self._drawn_track_key: object = _NEVER_DRAWN
         self._spinner_cache: Dict[int, List[pygame.Surface]] = {}  # size -> list of frames
         self._spinner_overlay_cache: Dict[int, pygame.Surface] = {}  # size -> overlay
         self._spinner_frame_idx: int = 0  # Simple frame counter for consistent rotation
@@ -149,8 +155,7 @@ class Renderer:
         state_changed = (
             self._last_playing_state != ctx.now_playing.playing or
             self._last_selected_index != ctx.selected_index or
-            self._last_track_key is None or
-            self._last_track_key != current_track_key
+            self._drawn_track_key != current_track_key
         )
         
         # Toast changes need redraw too
@@ -160,6 +165,7 @@ class Renderer:
             self._needs_full_redraw = True
             self._last_playing_state = ctx.now_playing.playing
             self._last_selected_index = ctx.selected_index
+            self._drawn_track_key = current_track_key
         
         # Empty state (also while Mello still has to be chosen in Spotify once)
         if not ctx.items or ctx.spotify_needs_pairing:
