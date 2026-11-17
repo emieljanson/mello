@@ -518,7 +518,7 @@ def test_slint_libraries_already_there(tmp_path):
 
 def test_slint_package_only_where_it_has_wheels():
     req = (ROOT / 'requirements.txt').read_text()
-    line = next(l for l in req.splitlines() if l.startswith('slint') and 'linux' in l)
+    line = next(l for l in req.splitlines() if l.startswith('slint') and 'armv7l' in l)
     assert '==' in line
     # 64-bit and 32-bit Pi OS (a 32-bit system on a 64-bit kernel says aarch64 or armv8l)
     assert "platform_machine in 'aarch64 armv7l armv8l'" in line

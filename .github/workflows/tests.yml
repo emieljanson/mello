@@ -20,15 +20,10 @@ jobs:
           python-version: '3.13'
           cache: pip
 
-      # On the Pi pygame comes from apt (see requirements.txt); here pip
-      # provides it, so the screen tests run too.
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pygame
+        run: pip install -r requirements.txt pytest
 
       - name: Run tests
-        env:
-          SDL_VIDEODRIVER: dummy
-          SDL_AUDIODRIVER: dummy
         run: python -m pytest tests -q
 
       # The update scripts run on every speaker at night; a syntax error there

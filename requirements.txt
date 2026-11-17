@@ -13,4 +13,5 @@ qrcode>=7.4
 # aarch64 or armv8l). Older systems skip it; pi/migrate.sh then keeps them on
 # the last version that drew the screen without Slint.
 slint==1.19.0b1; sys_platform == 'linux' and python_version >= '3.12' and platform_machine in 'aarch64 armv7l armv8l'
+# On a Mac (development):
 slint==1.19.0b1; sys_platform == 'darwin' and python_version >= '3.12'

@@ -195,7 +195,10 @@ def test_screen_error_message_fits_the_framebuffer():
 
 
 def test_slint_file_compiles():
-    slint = pytest.importorskip('slint')
+    try:
+        import slint
+    except Exception as e:   # not installed, or no screen to open (a server)
+        pytest.skip(f'Slint not available: {e}')
     from mello.ui.slint_display import SLINT_FILE
     window = slint.load_file(str(SLINT_FILE)).MelloWindow
     assert window is not None
