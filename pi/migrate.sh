@@ -947,6 +947,23 @@ _migrate_021() {
 }
 
 # ============================================
+# Migration 022: Make the speaker PipeWire's default output
+# ============================================
+# Soloist plays to PipeWire's default output. PipeWire ranked the Pi's
+# headphone jack equal to the speaker and picked the jack on speakers that
+# never used Bluetooth: "playing", but silent. The rule ranks the speaker first.
+_migrate_022() {
+  local code_dir="$MELLO_HOME/mello"
+  local conf_dir="$MELLO_HOME/.config/wireplumber/wireplumber.conf.d"
+  mkdir -p "$conf_dir" || return 1
+  ln -sf "$code_dir/pi/wireplumber/50-mello-speaker.conf" "$conf_dir/50-mello-speaker.conf" || return 1
+  # Picks up the rule now; a playing stream moves to the speaker by itself.
+  XDG_RUNTIME_DIR="/run/user/$MELLO_UID" systemctl --user restart wireplumber \
+    || log "wireplumber restart failed, the rule applies after the next reboot"
+  log "Speaker is PipeWire's preferred output"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -969,3 +986,4 @@ run_migration "017" "Keep the WiFi chip awake (no power save)"
 run_migration "018" "Faster boot: skip cloud-init after the first boot"
 run_migration "019" "Libraries for the Slint screen"
 run_migration "021" "Nightly update via a systemd timer instead of cron"
+run_migration "022" "Make the speaker PipeWire's default output"

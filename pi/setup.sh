@@ -298,6 +298,9 @@ sudo systemctl enable mello-librespot mello-native mello-touch-fix
 
 # Enable PipeWire user services (Bluetooth audio routing)
 sudo -u "$MELLO_USER" XDG_RUNTIME_DIR=/run/user/$MELLO_UID systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null || true
+# The speaker, not the Pi's headphone jack, is the default output (see the file)
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d
+ln -sf ~/mello/pi/wireplumber/50-mello-speaker.conf ~/.config/wireplumber/wireplumber.conf.d/50-mello-speaker.conf
 
 # ============================================
 # 10. Setup permissions (display, audio, touch, backlight)
