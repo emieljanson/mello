@@ -172,6 +172,8 @@ class EngineSetup:
 
         self._server: Optional[ThreadingHTTPServer] = None
         self._lock = threading.Lock()
+        # One code submission at a time, from check to the switch starting.
+        self._submit_lock = threading.Lock()
         # 'waiting' | 'switching' | 'failed'
         self.state = 'waiting'
         self.error: Optional[str] = None
@@ -305,6 +307,10 @@ class EngineSetup:
 
     def submit_key(self, key: str) -> bool:
         """Store the owner's key and switch the speaker to Soloist."""
+        with self._submit_lock:
+            return self._submit_key(key)
+
+    def _submit_key(self, key: str) -> bool:
         key = (key or '').strip()
         with self._lock:
             if self.state == 'switching':
