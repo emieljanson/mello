@@ -193,13 +193,122 @@ def test_network_still_being_joined_is_not_shown_as_connected(monkeypatch):
 def test_hotspot_screen_says_when_the_chosen_network_could_not_be_joined():
     menu = make_menu([])
     menu.state = MenuState.WIFI_AP
+    menu._read_join_credentials = lambda ssid: None     # entry could not be read
     menu._note_wifi_connect_line('Connecting to access point \'Home\'...')
     assert menu.wifi_join_failed is None
+    assert menu.wifi_joining == 'Home'
     menu._note_wifi_connect_line(
         "[wifi_connect::network:WARN] Connection to access point not activated 'Home': Activating")
     assert menu.wifi_join_failed == 'Home'
+    assert menu.wifi_joining is None
     menu._note_wifi_connect_line('User connected to the captive portal')
     assert menu.wifi_join_failed == 'Home'       # stays up while they try again
+
+
+class JoiningNetworkManager:
+    """nmcli for a join that wifi-connect gave up on too soon."""
+
+    def __init__(self, ups_until_joined):
+        self.ups_until_joined = ups_until_joined    # None: never joins
+        self.ups = 0
+        self.calls = []
+
+    def run(self, cmd, **_kw):
+        from types import SimpleNamespace
+        args = [a for a in cmd if a != 'sudo']
+        self.calls.append(args)
+        if args[:2] == ['nmcli', '-s']:
+            return SimpleNamespace(stdout='secret\n', stderr='', returncode=0)
+        if 'up' in args and args[args.index('up') - 1] == 'con':
+            self.ups += 1
+            if self.ups_until_joined is not None and self.ups >= self.ups_until_joined:
+                return SimpleNamespace(stdout='successfully activated', stderr='', returncode=0)
+            return SimpleNamespace(stdout='', stderr='Error: Timeout 45 sec expired.', returncode=4)
+        return SimpleNamespace(stdout='', stderr='', returncode=0)
+
+
+def _join_world(monkeypatch, ups_until_joined):
+    import threading
+    import mello.managers.setup_menu as sm
+
+    class Now:
+        def __init__(self, target, **_kw):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    nm = JoiningNetworkManager(ups_until_joined)
+    monkeypatch.setattr(sm.subprocess, 'run', nm.run)
+    monkeypatch.setattr(threading, 'Thread', Now)
+    monkeypatch.setattr(sm.time, 'sleep', lambda _s: None)
+    toasts = []
+    menu = make_menu(toasts)
+    menu.state = MenuState.WIFI_AP
+    menu._kill_wifi_processes = lambda: None
+    menu._launch_wifi_connect = lambda: nm.calls.append(['wifi-connect'])
+    menu._note_wifi_connect_line("Connecting to access point 'Home'...")
+    menu._note_wifi_connect_line(
+        "[wifi_connect::network:WARN] Connection to access point not activated 'Home': Activating")
+    return menu, nm, toasts
+
+
+def test_a_join_wifi_connect_gave_up_on_too_soon_is_finished_by_mello(monkeypatch):
+    menu, nm, toasts = _join_world(monkeypatch, ups_until_joined=2)
+    added = [c for c in nm.calls if c[:3] == ['nmcli', 'con', 'add']]
+    assert added and added[0][-1] == 'secret'            # same password the phone sent
+    assert nm.ups == 2
+    assert ['wifi-connect'] not in nm.calls              # no hotspot again
+    assert menu.wifi_join_failed is None
+    menu.update()
+    assert toasts == ['WiFi connected!']
+    assert menu.state == MenuState.CLOSED
+
+
+def test_a_join_that_keeps_failing_brings_the_hotspot_back_and_says_so(monkeypatch):
+    from mello.managers.setup_menu import _JOIN_TRIES
+    menu, nm, toasts = _join_world(monkeypatch, ups_until_joined=None)
+    assert nm.ups == _JOIN_TRIES
+    assert ['nmcli', 'con', 'delete', 'Home'] in nm.calls   # the failed entry is not kept
+    assert nm.calls[-1] == ['wifi-connect']               # hotspot is back for another try
+    assert menu.wifi_join_failed == 'Home'
+    assert menu.wifi_joining is None
+    menu.update()
+    assert menu.state == MenuState.WIFI_AP
+    assert toasts == []
+
+
+def test_leaving_setup_stops_the_extra_tries(monkeypatch):
+    import mello.managers.setup_menu as sm
+    nm = JoiningNetworkManager(ups_until_joined=None)
+    toasts = []
+    menu = make_menu(toasts)
+
+    def run(cmd, **kw):
+        result = nm.run(cmd, **kw)
+        if nm.ups == 1:
+            menu.state = MenuState.WIFI_LIST                # owner tapped back meanwhile
+        return result
+
+    import threading
+
+    class Now:
+        def __init__(self, target, **_kw):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(sm.subprocess, 'run', run)
+    monkeypatch.setattr(threading, 'Thread', Now)
+    monkeypatch.setattr(sm.time, 'sleep', lambda _s: None)
+    menu.state = MenuState.WIFI_AP
+    menu._kill_wifi_processes = lambda: None
+    menu._launch_wifi_connect = lambda: nm.calls.append(['wifi-connect'])
+    menu._note_wifi_connect_line("Connecting to access point 'Home'...")
+    menu._note_wifi_connect_line("Connection to access point not activated 'Home': Activating")
+    assert nm.ups == 1
+    assert ['wifi-connect'] not in nm.calls
 
 
 def test_a_fresh_hotspot_starts_without_the_old_failure(monkeypatch):

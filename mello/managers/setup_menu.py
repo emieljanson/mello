@@ -32,8 +32,15 @@ _REPO_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # SSIDs to exclude when scanning or forgetting WiFi networks
 _WIFI_SKIP_SSIDS = {'Mello-Setup', 'mello-ap', 'mello-setup'}
-# wifi-connect's line when the chosen network could not be joined.
+# wifi-connect's lines when it starts joining the chosen network, and when
+# that did not work out.
+_JOINING = re.compile(r"Connecting to access point '(.*)'\.\.\.")
 _JOIN_FAILED = re.compile(r"Connection to access point not activated '(.*)'")
+# wifi-connect gives a join only ~15 seconds. One missed WiFi handshake
+# already takes 10 (some speakers miss most of them), so Mello then keeps
+# trying itself, this many times, each with NetworkManager's own retries.
+_JOIN_TRIES = 3
+_JOIN_WAIT = 45     # seconds per try
 
 # How long the self-opened Soloist prompt may stay up without being touched.
 _SPOTIFY_PROMPT_TIMEOUT = 180
@@ -107,6 +114,12 @@ class SetupMenu:
         self._wifi_ap_attempt = 0
         # Network the owner picked on the phone that could not be joined.
         self.wifi_join_failed: Optional[str] = None
+        # Network picked on the phone that Mello is still busy joining.
+        self.wifi_joining: Optional[str] = None
+        # (ssid, password) of that network, read while wifi-connect joins it.
+        self._join_credentials: Optional[tuple] = None
+        # Set by the join thread: True joined, False gave up.
+        self._join_result: Optional[bool] = None
         # Known networks as they were before the hotspot started:
         # {connection name: (ssid, password)}. Only kept in memory.
         self._networks_before_hotspot: dict = {}
@@ -492,6 +505,14 @@ class SetupMenu:
             self._update_result = None
             self._on_invalidate()
 
+        if self.state == MenuState.WIFI_AP and self._join_result is not None:
+            joined, self._join_result = self._join_result, None
+            if joined:
+                self._on_toast('WiFi connected!')
+                self.close()
+            else:
+                self._on_invalidate()
+
         if self.state == MenuState.WIFI_AP and self._wifi_process:
             ret = self._wifi_process.poll()
             if ret is not None:
@@ -726,6 +747,9 @@ class SetupMenu:
         # won't treat the old process's clean exit (code=0) as success.
         self._wifi_process = None
         self.wifi_join_failed = None
+        self.wifi_joining = None
+        self._join_credentials = None
+        self._join_result = None
         self.state = MenuState.WIFI_AP
         self.scroll_offset = 0
         self._on_invalidate()
@@ -811,15 +835,145 @@ class SetupMenu:
     def _note_wifi_connect_line(self, text: str):
         """Follow what the hotspot is doing, so the screen can say so.
 
-        When joining the chosen network fails, wifi-connect quietly brings
-        the hotspot back and the phone shows the password page again: the
-        owner then thinks the password was wrong. The screen says what
-        happened instead.
+        wifi-connect gives joining the chosen network about 15 seconds, then
+        quietly brings the hotspot back and the phone shows the password
+        page again: the owner then thinks the password was wrong. But one
+        missed WiFi handshake already takes 10 seconds, and on some speakers
+        most of them are missed (2026-11-17: 3 in 4 on the test speaker).
+        So while wifi-connect joins, Mello notes the password it was given,
+        and when wifi-connect gives up, Mello keeps trying itself.
         """
+        match = _JOINING.search(text)
+        if match:
+            ssid = match.group(1)
+            self.wifi_joining = ssid
+            self.wifi_join_failed = None
+            self._join_credentials = self._read_join_credentials(ssid)
+            self._on_invalidate()
+            return
         match = _JOIN_FAILED.search(text)
         if match:
-            self.wifi_join_failed = match.group(1)
+            ssid = match.group(1)
+            creds = self._join_credentials
+            self._join_credentials = None
+            if creds and creds[0] == ssid and self.state == MenuState.WIFI_AP:
+                logger.info(f'wifi-connect gave up on {ssid} after its short wait; Mello keeps trying')
+                self._keep_joining(creds, self._wifi_ap_attempt)
+            else:
+                self.wifi_joining = None
+                self.wifi_join_failed = ssid
             self._on_invalidate()
+
+    def _read_join_credentials(self, ssid: str) -> Optional[tuple]:
+        """The password wifi-connect is storing for the chosen network.
+
+        wifi-connect logs "Connecting" just before it stores the entry, and
+        deletes the entry again when its join fails, so it is read now, with
+        a few seconds' patience. It stays in memory only.
+        """
+        problem = ''
+        for _ in range(16):
+            try:
+                result = subprocess.run(
+                    ['sudo', 'nmcli', '-s', '-g', '802-11-wireless-security.psk', 'con', 'show', ssid],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    return (ssid, result.stdout.strip())
+                problem = (result.stderr or result.stdout).strip()[-200:]
+            except Exception as e:
+                problem = str(e)
+            time.sleep(0.5)
+        logger.warning(f'Could not read the new WiFi entry for {ssid}: {problem}')
+        return None
+
+    def _keep_joining(self, creds: tuple, attempt: int):
+        """Join the chosen network with patience, after wifi-connect gave up.
+
+        The screen keeps saying "Connecting". Only when this fails too does
+        the hotspot come back with "Could not join".
+        """
+        ssid, psk = creds
+        # Not a crash of wifi-connect: update() must not take its exit as
+        # "setup failed" and go back to the WiFi list.
+        self._wifi_process = None
+
+        def still_wanted() -> bool:
+            return self.state == MenuState.WIFI_AP and self._wifi_ap_attempt == attempt
+
+        def _join():
+            self._kill_wifi_processes()     # it was bringing the hotspot back
+            self._delete_stale_ap_profile()
+            add = ['sudo', 'nmcli', 'con', 'add', 'type', 'wifi', 'ifname', 'wlan0',
+                   'con-name', ssid, 'ssid', ssid]
+            if psk:
+                add += ['wifi-sec.key-mgmt', 'wpa-psk', 'wifi-sec.psk', psk]
+            try:
+                subprocess.run(['sudo', 'nmcli', 'con', 'delete', ssid],
+                               capture_output=True, timeout=10)
+                result = subprocess.run(add, capture_output=True, text=True, timeout=15)
+                added = result.returncode == 0
+                if not added:
+                    logger.warning(f'Could not store WiFi network {ssid}: '
+                                   f'{(result.stderr or result.stdout).strip()[-200:]}')
+            except Exception as e:
+                logger.warning(f'Could not store WiFi network {ssid}: {e}')
+                added = False
+            joined = False
+            for n in range(1, _JOIN_TRIES + 1):
+                if not added or not still_wanted():
+                    break
+                started = time.time()
+                try:
+                    result = subprocess.run(
+                        ['sudo', 'nmcli', '--wait', str(_JOIN_WAIT), 'con', 'up', ssid],
+                        capture_output=True, text=True, timeout=_JOIN_WAIT + 15,
+                    )
+                    problem = '' if result.returncode == 0 else \
+                        ((result.stderr or result.stdout).strip().splitlines() or ['?'])[-1]
+                except Exception as e:
+                    problem = str(e)
+                if not problem:
+                    logger.info(f'Joined {ssid} on try {n} ({time.time() - started:.0f}s)')
+                    joined = True
+                    break
+                logger.info(f'Try {n} to join {ssid} did not work: {problem}')
+            if joined:
+                self.wifi_joining = None
+                self._restore_wifi_autoconnect()
+                self._join_result = True
+                return
+            if added:
+                # Probably a wrong password: do not keep it.
+                subprocess.run(['sudo', 'nmcli', 'con', 'delete', ssid],
+                               capture_output=True, timeout=10)
+            if not still_wanted():
+                logger.info(f'Stopped joining {ssid}: WiFi setup was left')
+                return
+            logger.info(f'Could not join {ssid}; the hotspot comes back')
+            self.wifi_joining = None
+            self.wifi_join_failed = ssid
+            self._relaunch_hotspot()
+            self._join_result = False
+
+        threading.Thread(target=_join, daemon=True, name='wifi-join').start()
+
+    def _relaunch_hotspot(self):
+        """Bring the Mello-Setup hotspot back after a join that failed.
+
+        Unlike _start_wifi_ap this keeps the note of the networks known
+        before setup began (the old entry may be gone by now).
+        """
+        try:
+            subprocess.run(['sudo', 'nmcli', 'device', 'set', 'wlan0', 'autoconnect', 'no'],
+                           capture_output=True, timeout=5)
+            subprocess.run(['sudo', 'nmcli', 'device', 'disconnect', 'wlan0'],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+        self._kill_wifi_processes()
+        self._delete_stale_ap_profile()
+        self._launch_wifi_connect()
 
     def _kill_wifi_processes(self):
         """Kill any lingering wifi-connect and dnsmasq processes.
