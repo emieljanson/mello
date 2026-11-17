@@ -123,6 +123,8 @@ Mello plays Spotify through [go-librespot](https://github.com/devgianlu/go-libre
 
 The page only works while the speaker shows the QR code. The same page has a button to switch back.
 
+**Another Spotify account** (for example your child's, so Mello stops taking over your own phone): open Settings → Spotify, scan the code and tap **Use another Spotify account**. The page shows which account Mello plays with now. Mello forgets that account (your code from Spotify stays) and shows **Play to Mello via Spotify**; then pick "Mello" once in the Spotify app of the other account, on the same WiFi. Saved albums stay.
+
 **After an update**
 
 A speaker that gets Soloist through an update keeps working as before. When it is woken up (not while music plays) it offers **New: a faster Mello** with the QR code next to it. The offer has no close button, so a child does not tap it away: it goes away when you enter a code, or when you hold **Hold to do it later** for three seconds. It then comes back after three days; the third time the button says **Hold to skip this**, and after that it no longer appears by itself (it stays under Settings → Spotify). It also steps aside after three minutes when nobody uses it.
