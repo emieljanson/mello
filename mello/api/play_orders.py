@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 MAX_AGE = None
 
 
+def playable(uri) -> bool:
+    """A track or episode. Spotify's queue also holds placeholders
+    (spotify:meta:node_rules_placeholder) that cannot be played."""
+    return isinstance(uri, str) and uri.startswith(('spotify:track:', 'spotify:episode:'))
+
+
 class PlayOrders:
     """Track orders per context URI, saved to a JSON file."""
 
@@ -46,6 +52,9 @@ class PlayOrders:
             if isinstance(data, dict):
                 self._orders = {k: v for k, v in data.items()
                                 if isinstance(v, dict) and isinstance(v.get('items'), list)}
+                for entry in self._orders.values():
+                    # Orders saved before placeholders were filtered out.
+                    entry['items'] = [u for u in entry['items'] if playable(u)]
         except (OSError, ValueError) as e:
             logger.warning(f'Play orders unreadable, starting empty: {e}')
 
@@ -81,6 +90,7 @@ class PlayOrders:
     def put(self, context_uri: str, items: List[str], complete: bool = True,
             names: Optional[dict] = None):
         """Remember an order; a partial one is joined to what is known."""
+        items = [u for u in items if playable(u)]
         if not items:
             return
         with self._lock:
