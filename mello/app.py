@@ -457,6 +457,31 @@ class Mello:
         
         # Initialize carousel
         self._update_carousel_max_index()
+        self._focus_last_played()
+
+    def _focus_last_played(self):
+        """Open on the album that played last instead of the first one.
+
+        After the nightly update or a power cut a child would otherwise land
+        on album 1 and have to find their story again. It only moves the
+        carousel: nothing starts playing until the child taps or swipes.
+        """
+        items = self.catalog_manager.items
+        best, best_at = None, ''
+        for index, item in enumerate(items):
+            played_at = (item.current_track or {}).get('updatedAt') or ''
+            if played_at > best_at:
+                best, best_at = index, played_at
+        if best is None:
+            return
+        self.selected_index = best
+        self.carousel.target_index = best
+        self.carousel.scroll_x = float(best)
+        self.carousel.settled = True
+        logger.info(
+            f'Start on the last played album: "{items[best].name}" '
+            f'({best + 1}/{len(items)}, played {best_at[:16]})'
+        )
     
     def _load_icons(self) -> dict:
         """Load icon images."""
