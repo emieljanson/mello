@@ -37,13 +37,15 @@ LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
 # Which Spotify Connect engine the app talks to: 'librespot' (go-librespot)
 # or 'soloist' (Spotify's official headless client).
 SPOTIFY_ENGINE = os.environ.get('MELLO_SPOTIFY_ENGINE', 'librespot')
-# 'slint': the screen is shown and animated by Slint on the graphics chip
-# (smooth 60 fps swiping); 'pygame': the original renderer. Opt-in for now.
-UI_ENGINE = os.environ.get('MELLO_UI', 'pygame')
+# 'slint' (default): the screen is shown and animated by Slint on the
+# graphics chip (smooth ~60 fps swiping, same pixels). 'pygame': the original
+# renderer; also used by itself when Slint cannot load (32-bit Pi OS, missing
+# libraries). Set MELLO_UI=pygame in .env to switch a speaker back.
+UI_ENGINE = os.environ.get('MELLO_UI', 'slint')
 # Soloist: start a saved track/episode directly (~0.5 s) instead of skipping
 # to it through its album (up to 40 s for a podcast). See api/play_orders.py.
-# Opt-in per speaker while it proves itself.
-DIRECT_PLAY = os.environ.get('MELLO_DIRECT_PLAY', '') == '1'
+# On by default; MELLO_DIRECT_PLAY=0 in .env switches it off for a speaker.
+DIRECT_PLAY = os.environ.get('MELLO_DIRECT_PLAY', '1') != '0'
 SOLOIST_WS = os.environ.get('SOLOIST_WS', 'ws://127.0.0.1:9090')
 SPOTIFY_ENGINE_SERVICE = 'mello-soloist' if SPOTIFY_ENGINE == 'soloist' else 'mello-librespot'
 
@@ -180,6 +182,9 @@ CAROUSEL_TOUCH_MARGIN = 50  # Extra pixels beyond cover for touch zone
 MAX_SWIPE_JUMP = 5          # Max items to skip in one swipe
 VELOCITY_THRESHOLDS = (1.0, 2.0, 3.5)  # Velocity breakpoints for swipe bonus
 ACTION_DEBOUNCE = 0.3     # Seconds between button actions
+# Next/previous: every quick tap of a child counts (the engine adds them up
+# and plays where they end); this only stops one tap counting twice.
+SKIP_DEBOUNCE = 0.12
 BUTTON_PRESS_DURATION = 0.15  # Seconds to show pressed state
 MENU_HOLD_TIME = 3.0      # Seconds to hold volume button to open setup menu
 

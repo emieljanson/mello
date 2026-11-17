@@ -22,7 +22,7 @@ from .config import (
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     CAROUSEL_TOUCH_MARGIN, MAX_SWIPE_JUMP, VELOCITY_THRESHOLDS,
-    ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
+    ACTION_DEBOUNCE, SKIP_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
     CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
@@ -1776,13 +1776,15 @@ class Mello:
         Portrait mode: buttons stacked vertically at X=CONTROLS_X, along Y axis.
         """
         now = time.time()
-        if now - self._last_action_time < ACTION_DEBOUNCE:
-            logger.debug(f'Button tap debounced at ({pos[0]}, {pos[1]})')
-            return
-        
         x, y = pos
         center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING  # 155
+        on_skip = (CONTROLS_X - PLAY_BTN_SIZE <= x <= CONTROLS_X + PLAY_BTN_SIZE and
+                   any(abs(y - (center_y + s * btn_spacing)) <= BTN_SIZE for s in (-1, 1)))
+        limit = SKIP_DEBOUNCE if on_skip else ACTION_DEBOUNCE
+        if now - self._last_action_time < limit:
+            logger.debug(f'Button tap debounced at ({pos[0]}, {pos[1]})')
+            return
 
         # Volume button Y position (matches renderer)
         vol_y = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2 - BTN_SIZE // 2
