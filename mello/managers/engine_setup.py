@@ -96,6 +96,16 @@ _FORM = """{eyebrow}<h1>{title}</h1>
 <p class="small center">You need Spotify Premium.<br>The code is only saved on your Mello.</p>
 {back}"""
 
+# Which Spotify account plays on this Mello, and a way to hand it to another
+# one (a child's own account, so the speaker stops taking over a parent's
+# phone). The developer code stays: it is not tied to who listens.
+_ACCOUNT = """<hr><p class="eyebrow">Spotify account</p>
+<p class="lead">{who}</p>
+<form method="post" action="/account">
+ <button type="submit" class="plain">Use another Spotify account</button>
+</form>
+<p class="small">Mello forgets this account. Then choose Mello in the Spotify app of the account it should play with, on a phone on the same WiFi. Your code from Spotify stays.</p>"""
+
 _BACK = """<hr><form method="post" action="/librespot">
  <button type="submit" class="plain">Turn off faster playback</button>
 </form>"""
@@ -223,6 +233,8 @@ class EngineSetup:
                     setup.submit_key((fields.get('key') or [''])[0])
                 elif self.path == '/librespot':
                     setup.switch_back()
+                elif self.path == '/account':
+                    setup.forget_account()
                 else:
                     self.send_error(404)
                     return
@@ -302,8 +314,16 @@ class EngineSetup:
             lead=lead,
             button='Save' if on_soloist else 'Connect',
             message=message,
-            back=_BACK if on_soloist else '',
+            back=(self._account_section() + _BACK) if on_soloist else '',
         )
+
+    def _account_section(self) -> str:
+        account = self.current_account()
+        if account:
+            who = f'Mello plays with <b>{html.escape(account)}</b>.'
+        else:
+            who = 'No account yet: choose Mello in the Spotify app to connect one.'
+        return _ACCOUNT.format(who=who)
 
     # ------------------------------------------------------------------
     # Actions
@@ -326,6 +346,23 @@ class EngineSetup:
 
     def switch_back(self) -> bool:
         return self._run_script('deactivate')
+
+    def forget_account(self) -> bool:
+        """Log the Spotify account out, so another one can pick Mello."""
+        logger.info('Spotify account change requested')
+        return self._run_script('forget-account')
+
+    def current_account(self) -> Optional[str]:
+        """The Spotify user Soloist is logged in as (its folder in the login cache)."""
+        try:
+            names = sorted(p.name for p in (self.soloist_home / 'data' / 'cache' / 'Users').iterdir()
+                           if p.is_dir())
+        except OSError:
+            return None
+        if not names:
+            return None
+        name = names[0]
+        return name[:-len('-user')] if name.endswith('-user') else name
 
     def _store_key(self, key: str):
         self.soloist_home.mkdir(mode=0o700, parents=True, exist_ok=True)

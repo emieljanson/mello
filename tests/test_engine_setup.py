@@ -571,3 +571,59 @@ def test_factory_reset_on_soloist_removes_the_owners_key(tmp_path, monkeypatch):
     # The script restarts the app itself; no second restart on top of it.
     assert ['sudo', 'systemctl', 'restart', 'mello-native'] not in calls
     assert ['sudo', 'systemctl', 'start', 'mello-soloist'] not in calls
+
+
+def test_owner_sees_the_spotify_account_and_can_hand_mello_to_another(tmp_path):
+    setup = setup_for(tmp_path, engine='soloist')
+    (setup.soloist_home / 'data' / 'cache' / 'Users' / 'dad<b>-user').mkdir(parents=True)
+    assert setup.current_account() == 'dad<b>'
+    assert setup.start() is True
+    url = f'http://127.0.0.1:{setup._server.server_address[1]}'
+    try:
+        page = urllib.request.urlopen(url, timeout=3).read().decode()
+        assert 'dad&lt;b&gt;' in page and 'dad<b>' not in page
+        assert 'Use another Spotify account' in page
+
+        answer = urllib.request.urlopen(
+            urllib.request.Request(f'{url}/account', data=b''), timeout=3,
+        ).read().decode()
+        assert 'Mello restarts by itself' in answer
+        assert wait_for(lambda: (tmp_path / 'calls').exists())
+        assert (tmp_path / 'calls').read_text().split() == ['forget-account']
+    finally:
+        setup.stop()
+
+
+def test_account_choice_is_only_offered_on_soloist(tmp_path):
+    setup = setup_for(tmp_path, engine='librespot')
+    assert 'Use another Spotify account' not in setup._render('/code')
+    soloist = setup_for(tmp_path, engine='soloist')
+    assert soloist.current_account() is None
+    assert 'No account yet' in soloist._render('/code')
+
+
+def test_forget_account_keeps_the_key_and_the_speaker_identity(tmp_path):
+    import subprocess
+    home = tmp_path / 'soloist'
+    cache = home / 'data' / 'cache' / 'Users' / 'dad-user'
+    cache.mkdir(parents=True)
+    (home / 'data' / 'cache' / 'client_token').write_text('x')
+    (home / 'data' / '.device_id').write_text('id')
+    (home / 'key').write_text(KEY + '\n')
+    code_dir = tmp_path / 'code'
+    (code_dir / 'pi' / 'soloist').mkdir(parents=True)
+    script = code_dir / 'pi' / 'soloist' / 'soloist-setup.sh'
+    script.write_text((Path(__file__).parent.parent / 'pi' / 'soloist' / 'soloist-setup.sh').read_text())
+    (code_dir / '.env').write_text('MELLO_SPOTIFY_ENGINE=soloist\n')
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    (bin_dir / 'sudo').write_text(f'#!/bin/sh\necho "$@" >> "{tmp_path}/sudo"\n')
+    (bin_dir / 'sudo').chmod(0o755)
+    import os
+    env = dict(os.environ, MELLO_SOLOIST_HOME=str(home), PATH=f'{bin_dir}:{os.environ["PATH"]}')
+    result = subprocess.run(['bash', str(script), 'forget-account'], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(p.name for p in (home / 'data').iterdir()) == ['.device_id']
+    assert (home / 'key').exists()
+    assert (tmp_path / 'sudo').read_text().split('\n')[:3] == [
+        'systemctl stop mello-soloist', 'systemctl start mello-soloist', 'systemctl restart mello-native']
