@@ -186,3 +186,24 @@ class TestEdgeCases:
 
         # Should still be in clean state
         assert handler.dragging is False
+
+
+class TestSwipeTiming:
+    """Swipe speed comes from when the finger moved, not when the loop looked."""
+
+    def test_late_handling_does_not_make_a_swipe_faster(self):
+        handler = TouchHandler()
+        # Finger down at t=100.0, up 300 ms later; the main loop (idle: one
+        # look per 0.2 s) only handles the down event 150 ms after it happened.
+        handler.on_down((400, 900), at=100.0)
+        action, velocity = handler.on_up((400, 400), at=100.3)
+        assert action == 'left'
+        assert velocity == pytest.approx(-500 / 300)
+
+    def test_without_a_time_it_uses_now(self):
+        handler = TouchHandler()
+        handler.on_down((400, 900))
+        time.sleep(0.06)
+        action, velocity = handler.on_up((400, 400))
+        assert action == 'left'
+        assert -500 / 60 < velocity < 0

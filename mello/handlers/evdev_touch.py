@@ -6,6 +6,7 @@ pick up touch input from evdev devices. This module reads touch events directly
 and converts them to pygame mouse events.
 """
 import threading
+import time
 import logging
 from typing import Optional, Tuple
 
@@ -175,13 +176,16 @@ class EvdevTouchHandler:
                     with self._touch_lock:
                         pos = self._scale_coordinates(self._touch_x, self._touch_y)
 
+                    # 'touched_at': when it happened. The main loop handles
+                    # events once per frame, up to 0.2 s later when idle, and
+                    # swipe speed is measured from touch down to touch up.
                     if event.value == 1:  # Touch down
                         with self._touch_lock:
                             self._touching = True
                         self.wake_event.set()
                         pygame.event.post(pygame.event.Event(
                             pygame.MOUSEBUTTONDOWN,
-                            {'pos': pos, 'button': 1}
+                            {'pos': pos, 'button': 1, 'touched_at': time.time()}
                         ))
                         logger.debug(f'Touch DOWN at {pos}')
 
@@ -190,7 +194,7 @@ class EvdevTouchHandler:
                             self._touching = False
                         pygame.event.post(pygame.event.Event(
                             pygame.MOUSEBUTTONUP,
-                            {'pos': pos, 'button': 1}
+                            {'pos': pos, 'button': 1, 'touched_at': time.time()}
                         ))
                         logger.debug(f'Touch UP at {pos}')
 

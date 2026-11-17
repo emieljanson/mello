@@ -26,11 +26,11 @@ class TouchHandler:
         self.is_swiping = False  # Track if user started swiping (moved beyond threshold)
         self.long_press_time = long_press_time if long_press_time is not None else LONG_PRESS_TIME
     
-    def on_down(self, pos: Tuple[int, int]):
-        """Called on touch/mouse down."""
+    def on_down(self, pos: Tuple[int, int], at: Optional[float] = None):
+        """Called on touch/mouse down; `at` is when it happened (time.time())."""
         self.start_x = pos[0]
         self.start_y = pos[1]
-        self.start_time = time.time()
+        self.start_time = at if at is not None else time.time()
         self.dragging = True
         self.drag_offset = 0
         self.long_press_fired = False
@@ -70,7 +70,7 @@ class TouchHandler:
         
         return False
     
-    def on_up(self, pos: Tuple[int, int]) -> Tuple[Optional[str], float]:
+    def on_up(self, pos: Tuple[int, int], at: Optional[float] = None) -> Tuple[Optional[str], float]:
         """
         Called on touch/mouse up.
         
@@ -86,7 +86,10 @@ class TouchHandler:
         self.dragging = False
         dx = pos[0] - self.start_x
         dy = pos[1] - self.start_y
-        dt = (time.time() - self.start_time) * 1000  # ms
+        # Measured between the moments the finger touched and let go, not
+        # when the main loop got to them: when idle it looks only every 0.2 s,
+        # which made the first swipe after a pause look faster than it was.
+        dt = ((at if at is not None else time.time()) - self.start_time) * 1000  # ms
 
         # If long-press already fired, suppress tap/swipe action on release.
         if self.long_press_fired:
