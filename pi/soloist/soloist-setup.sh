@@ -6,8 +6,6 @@
 #   soloist-setup.sh activate     owner entered an API key: fetch the binary
 #                                 and make Soloist this speaker's Spotify engine
 #   soloist-setup.sh deactivate   go back to go-librespot
-#   soloist-setup.sh forget-account  log the Spotify account out (key stays),
-#                                 so someone else can pick Mello in Spotify
 #   soloist-setup.sh status       one line for humans and for the app
 #
 # Spotify does not allow redistributing the binary, and every owner needs
@@ -152,22 +150,6 @@ cmd_deactivate() {
   sudo systemctl restart mello-native
 }
 
-# Soloist has no logout command: its login lives in the data folder. Empty
-# it while Soloist is stopped, keeping only the speaker's identity, so the
-# next account that picks Mello in Spotify becomes its account.
-cmd_forget_account() {
-  local data="$SOLOIST_HOME/data"
-  sudo systemctl stop mello-soloist
-  if [ -d "$data" ]; then
-    find "$data" -mindepth 1 -maxdepth 1 ! -name .device_id -exec rm -rf {} +
-  fi
-  log "Spotify account forgotten; waiting for someone to pick Mello in Spotify"
-  if [ "$(engine)" = "soloist" ]; then
-    sudo systemctl start mello-soloist
-  fi
-  sudo systemctl restart mello-native
-}
-
 cmd_status() {
   local age="?"
   [ -x "$SOLOIST_HOME/soloist" ] && age=$(build_age_days "$SOLOIST_HOME/soloist" || echo "?")
@@ -178,7 +160,6 @@ case "${1:-}" in
   refresh)    shift; cmd_refresh "$@" ;;
   activate)   cmd_activate ;;
   deactivate) cmd_deactivate ;;
-  forget-account) cmd_forget_account ;;
   status)     cmd_status ;;
-  *) echo "usage: $0 refresh [--force|--no-restart] | activate | deactivate | forget-account | status" >&2; exit 64 ;;
+  *) echo "usage: $0 refresh [--force|--no-restart] | activate | deactivate | status" >&2; exit 64 ;;
 esac
