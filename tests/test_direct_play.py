@@ -388,6 +388,19 @@ def test_previous_well_into_a_track_goes_back_to_its_start():
     assert wait_until(lambda: daemon.plays == [TRACKS[1]])
 
 
+def test_two_quick_taps_on_previous_go_to_the_track_before():
+    api, daemon, _ = playing(track=TRACKS[2])
+    daemon.position = 60000
+    api._handle_event(daemon.snapshot())
+    api.ws.send_real = api.ws.send
+    # The seek's answer has not arrived yet when the second tap comes.
+    api.prev()
+    daemon.position = 60000
+    api._handle_event(daemon.snapshot())
+    api.prev()
+    assert wait_until(lambda: daemon.plays == [TRACKS[1]])
+
+
 def test_previous_on_the_first_episode_of_a_show_restarts_it():
     api, daemon, _ = playing(track=EPISODES[0], context=SHOW, store_kwargs={'complete': False})
     api.prev()

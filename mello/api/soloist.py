@@ -1037,9 +1037,13 @@ class SoloistAPI:
             order = direct['order']
             pending = self._pending_step
             base = pending['index'] if pending else direct['index']
-            if step < 0 and not pending and (self._current_position_ms() > 3000 or
-                                             (base == 0 and not direct['complete'])):
-                restart = True   # like Spotify: "previous" first goes back to the start
+            just_restarted = time.time() - direct.get('restarted_at', 0) < 2.5
+            if step < 0 and not pending and not just_restarted and (
+                    self._current_position_ms() > 3000 or (base == 0 and not direct['complete'])):
+                # Like Spotify: "previous" first goes back to the start of the
+                # track; a second tap soon after goes to the one before.
+                restart = True
+                direct['restarted_at'] = time.time()
             else:
                 target = base + step
                 beyond = False
