@@ -687,10 +687,16 @@ class SoloistAPI:
             return self._play_epoch != epoch
 
     def _play_context(self, uri: str, skip_to_uri: Optional[str], paused: bool, epoch: int,
-                      learn: bool) -> Optional[bool]:
-        """Start the album itself (at its first track) and get to `skip_to_uri`."""
+                      learn: bool, hand_over: bool = False) -> Optional[bool]:
+        """Start the album itself (at its first track) and get to `skip_to_uri`.
+
+        hand_over: direct play of this album just ended; keep reporting the
+        album (loading) until Spotify plays it, not the track that was on.
+        """
         result = self._activate()
         if result is not True:
+            if hand_over:
+                self._end_positioning()
             return result
         with self._state_lock:
             track_repeat = self._repeat == 'track'
@@ -704,6 +710,9 @@ class SoloistAPI:
             self._command('set_repeat_track', enabled=False)
         result = self._command('play', uri=uri)
         if result is not True or not (skip_to_uri or paused):
+            if result is True and hand_over:
+                self._wait_for(lambda: self._play_epoch != epoch or self._is_playing_context(uri),
+                               _SWITCH_TIMEOUT)
             self._end_positioning()
             if result is True and learn:
                 self._learn_order_later(uri)
@@ -1010,13 +1019,18 @@ class SoloistAPI:
         """
         with self._state_lock:
             self._end_direct_unlocked()
+            # Until Spotify reports the album itself, only the bare track that
+            # played directly is known: report the album as loading, else the
+            # app shows that track as a new item and jumps to it.
+            self._positioning_uri = context
+            self._positioning_since = time.time()
         logger.info(f'Soloist: end of the known order of {context[:50]}, reading it again')
 
         def go_on():
             with self._state_lock:
                 epoch = self._play_epoch
             if not _never_changes(context) and not _is_show(context):
-                self._play_context(context, None, False, epoch, learn=True)
+                self._play_context(context, None, False, epoch, learn=True, hand_over=True)
                 return
             # Start it paused-ish: it begins wherever Spotify starts it.
             if self._play_context(context, None, True, epoch, learn=False) is not True:
