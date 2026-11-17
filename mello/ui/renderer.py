@@ -28,6 +28,8 @@ _HEADPHONE_BTN_Y = CAROUSEL_CENTER_Y - (COVER_SIZE + COVER_SPACING) - COVER_SIZE
 
 logger = logging.getLogger(__name__)
 
+_NEVER_DRAWN = object()
+
 
 class Renderer:
     """Handles all drawing/rendering for Mello UI."""
@@ -46,13 +48,35 @@ class Renderer:
         self._bg_cache: Optional[pygame.Surface] = None
         self._progress_cache: Dict[str, pygame.Surface] = {}
         self._text_cache: Dict[str, pygame.Surface] = {}
-        self._last_track_key: Optional[Tuple[str, str]] = None
+        self._last_track_key: Optional[Tuple[str, str]] = None   # text cache of _draw_track_info
+        # Title shown by the last full redraw. A separate marker for "never":
+        # with None for both, an album without a title redrew the whole
+        # screen every frame (~20 ms on a Pi 3) while swiping past it.
+        self._drawn_track_key: object = _NEVER_DRAWN
         self._spinner_cache: Dict[int, List[pygame.Surface]] = {}  # size -> list of frames
         self._spinner_overlay_cache: Dict[int, pygame.Surface] = {}  # size -> overlay
         self._spinner_frame_idx: int = 0  # Simple frame counter for consistent rotation
         
         # Partial update state
         self._needs_full_redraw = True
+
+        # Slint (MELLO_UI=slint) shows the screen: covers, spinner and toast
+        # are then not blitted but described in carousel_frame, and Slint
+        # draws them on the graphics chip. See ui/slint_display.py.
+        self.compositor = False
+        self.frame_kind = 'full'          # 'main' (carousel screen) or 'full'
+        self.carousel_frame: Optional[dict] = None
+        self.backdrop_changed = False     # self.screen changed (besides the covers)
+        # What the main screen's backdrop shows (background + buttons): Slint
+        # skips the upload when it is the same. None for other screens.
+        self.backdrop_key: Optional[tuple] = None
+        # Title and artist, shown by Slint as their own small images so that a
+        # new album does not mean uploading the whole screen again.
+        self.title_layers: list = []
+        self.title_key: Optional[tuple] = None
+        self._screen_key: Optional[tuple] = None   # backdrop_key of what is on self.screen
+        self._overlay_cache: Optional[tuple] = None
+        self._overlay_hits: Tuple[Optional[tuple], Optional[tuple]] = (None, None)
         self._static_layer: Optional[pygame.Surface] = None
         # Portrait mode: carousel spans Y axis (user's horizontal), X for vertical positioning
         self._carousel_rect = pygame.Rect(CAROUSEL_X - 50, 0, COVER_SIZE + 100, SCREEN_HEIGHT)
@@ -120,6 +144,10 @@ class Renderer:
         if ctx.is_sleeping:
             self.screen.fill((0, 0, 0))
             self._needs_full_redraw = True
+            self.frame_kind = 'full'
+            self.backdrop_changed = True
+            self.backdrop_key = None
+            self._screen_key = None
             return None
         
         # Menu overlay — draw full scene then overlay on top
@@ -128,6 +156,10 @@ class Renderer:
             self.delete_button_rect = None
             self.settings_button_rect = None
             self._draw_menu_frame(ctx)
+            self.frame_kind = 'full'
+            self.backdrop_changed = True
+            self.backdrop_key = None
+            self._screen_key = None
             return None
 
         # Clear button hit rects
@@ -149,8 +181,7 @@ class Renderer:
         state_changed = (
             self._last_playing_state != ctx.now_playing.playing or
             self._last_selected_index != ctx.selected_index or
-            self._last_track_key is None or
-            self._last_track_key != current_track_key
+            self._drawn_track_key != current_track_key
         )
         
         # Toast changes need redraw too
@@ -160,6 +191,7 @@ class Renderer:
             self._needs_full_redraw = True
             self._last_playing_state = ctx.now_playing.playing
             self._last_selected_index = ctx.selected_index
+            self._drawn_track_key = current_track_key
         
         # Empty state (also while Mello still has to be chosen in Spotify once)
         if not ctx.items or ctx.spotify_needs_pairing:
@@ -171,8 +203,13 @@ class Renderer:
             else:
                 self._draw_empty_state(ctx)
             self._needs_full_redraw = True
+            self.frame_kind = 'full'
+            self.backdrop_changed = True
+            self.backdrop_key = None
+            self._screen_key = None
             return None
         
+        self.frame_kind = 'main'
         # Calculate effective scroll position
         if ctx.dragging:
             drag_index_offset = -ctx.drag_offset / (COVER_SIZE + COVER_SPACING)
@@ -185,39 +222,52 @@ class Renderer:
         
         if self._needs_full_redraw:
             # Full redraw
-            self._draw_background()
-            self._draw_track_info(current_item, ctx)
-            self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button,
-                                bt_connected=ctx.bt_connected, bt_audio_active=ctx.bt_audio_active)
+            self.title_layers = []
+            self.title_key = None
+            self.backdrop_key = ('main', ctx.is_playing, ctx.volume_index, ctx.pressed_button,
+                                 ctx.bt_connected, ctx.bt_audio_active)
+            if self.compositor and self.backdrop_key == self._screen_key:
+                # Slint: background and buttons are already on self.screen
+                # (titles and covers never are): only the title is new.
+                self._draw_track_info(current_item, ctx)
+            else:
+                self._draw_background()
+                self._draw_track_info(current_item, ctx)
+                self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button,
+                                    bt_connected=ctx.bt_connected, bt_audio_active=ctx.bt_audio_active)
+                self._screen_key = self.backdrop_key
+
+                if not self.compositor:
+                    if self._static_layer is None:
+                        self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+                    self._static_layer.blit(self.screen, (0, 0))
             
-            if self._static_layer is None:
-                self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-            self._static_layer.blit(self.screen, (0, 0))
-            
+            self.backdrop_changed = True
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
-            if ctx.toast_message:
-                self._draw_toast(ctx.toast_message)
+            self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
             
             self._needs_full_redraw = False
             return None
         
         elif is_animating or toast_changed:
-            # Partial update - only carousel area
-            self.screen.blit(self._static_layer, 
-                           self._carousel_rect.topleft, 
-                           self._carousel_rect)
+            # Partial update - only carousel area (with Slint the covers are
+            # not on self.screen, so there is nothing to wipe)
+            if not self.compositor:
+                self.screen.blit(self._static_layer,
+                               self._carousel_rect.topleft,
+                               self._carousel_rect)
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
-            if ctx.toast_message:
-                self._draw_toast(ctx.toast_message)
+            self._draw_toast(ctx.toast_message)
             self._last_toast = ctx.toast_message
             return [self._carousel_rect]
         
         else:
             if ctx.now_playing.playing or ctx.is_loading:
-                self.screen.blit(self._static_layer,
-                               self._carousel_rect.topleft,
-                               self._carousel_rect)
+                if not self.compositor:
+                    self.screen.blit(self._static_layer,
+                                   self._carousel_rect.topleft,
+                                   self._carousel_rect)
                 self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
                 return [self._carousel_rect]
             return []
@@ -353,13 +403,29 @@ class Renderer:
             else:
                 self._text_cache['artist_surface'] = None
         
-        self.screen.blit(self._text_cache['name_surface'], self._text_cache['name_rect'])
+        layers = [(self._text_cache['name_surface'], self._text_cache['name_rect'])]
         if self._text_cache.get('artist_surface'):
-            self.screen.blit(self._text_cache['artist_surface'], self._text_cache['artist_rect'])
+            layers.append((self._text_cache['artist_surface'], self._text_cache['artist_rect']))
+        if self.compositor:
+            # Each text with the background under it, as one opaque image:
+            # the same pixels as blitting it onto the screen.
+            self.title_layers = []
+            for surface, rect in layers:
+                area = rect.clip(self.screen.get_rect())
+                patch = self.screen.subsurface(area).copy()
+                patch.blit(surface, (rect.x - area.x, rect.y - area.y))
+                self.title_layers.append((patch, area))
+            self.title_key = (track_key, tuple(tuple(area) for _, area in self.title_layers))
+            return
+        for surface, rect in layers:
+            self.screen.blit(surface, rect)
     
     def _draw_carousel(self, items: List[CatalogItem], scroll_x: float, 
                        now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False):
         """Draw album cover carousel (portrait mode - covers along Y axis)."""
+        if self.compositor:
+            self._describe_carousel(items, scroll_x, now_playing, delete_mode_id, loading)
+            return
         # Portrait mode: covers laid out along Y axis (user's horizontal)
         center_y = CAROUSEL_CENTER_Y  # 640
         x = CAROUSEL_X  # Vertical position for covers
@@ -415,6 +481,95 @@ class Renderer:
             elif delete_mode_id == center_item.id:
                 self._draw_delete_button(center_cover_rect)
     
+    def spinner_frames(self, size: int) -> List[pygame.Surface]:
+        """The loading spinner's frames for a cover of this size."""
+        if size not in self._spinner_cache:
+            self._spinner_cache[size] = self._generate_spinner_frames(size, num_frames=30)
+        return self._spinner_cache[size]
+
+    def _describe_carousel(self, items: List[CatalogItem], scroll_x: float,
+                           now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool):
+        """What _draw_carousel would draw, for Slint to draw (same rules)."""
+        max_index = max(0, len(items) - 1)
+        scroll_x = max(0, min(scroll_x, max_index))
+        start_i = max(0, int(scroll_x) - 2)
+        end_i = min(len(items), int(scroll_x) + 3)
+        center_i = next((i for i in range(start_i, end_i) if abs(i - scroll_x) < 0.5), None)
+
+        overlay = None
+        overlay_key = None
+        if center_i is not None:
+            item = items[center_i]
+            draw_y = int(CAROUSEL_CENTER_Y + (center_i - scroll_x) * (COVER_SIZE + COVER_SPACING)
+                         - COVER_SIZE // 2)
+            if not (draw_y + COVER_SIZE < 0 or draw_y > SCREEN_HEIGHT):
+                progress = self._cover_progress(item, now_playing)
+                fill = int(COVER_SIZE * min(progress, 1.0)) if progress > 0 else 0
+                button = 'add' if item.is_temp else ('delete' if delete_mode_id == item.id else None)
+                overlay_key = (item.image, bool(loading), fill, button)
+                if fill or button:
+                    overlay = self._cover_overlay(item, now_playing, button, loading, overlay_key)
+                add_hit, delete_hit = self._overlay_hits
+                shift = lambda r: (r[0] + CAROUSEL_X, r[1] + draw_y, r[2], r[3]) if r else None
+                if button == 'add':
+                    self.add_button_rect = shift(add_hit)
+                elif button == 'delete':
+                    self.delete_button_rect = shift(delete_hit)
+                if loading:
+                    self._spinner_frame_idx += 1
+            else:
+                center_i = None
+        if center_i is None:
+            overlay_key = None
+
+        tops = {}
+        for i in range(start_i, end_i):
+            size = COVER_SIZE if i == center_i else COVER_SIZE_SMALL
+            tops[i] = int(CAROUSEL_CENTER_Y + (i - scroll_x) * (COVER_SIZE + COVER_SPACING) - size // 2)
+
+        self.carousel_frame = {
+            'items': items,
+            'first': start_i,
+            'last': end_i,
+            'center': center_i if center_i is not None else -1,
+            'tops': tops,
+            'loading': bool(loading and center_i is not None),
+            'spinner_index': (self._spinner_frame_idx - 1) % 30,
+            'overlay_key': overlay_key,
+            'overlay': overlay,
+            'toast': None,
+        }
+
+    def _cover_overlay(self, item: CatalogItem, now_playing: NowPlaying, button: Optional[str],
+                       loading: bool, key: tuple):
+        """The focused cover with its progress bar and +/- button, as Pygame draws it.
+
+        Drawn whole (background, cover, bar, button) with the same calls as
+        _draw_carousel, so it is the same picture to the pixel; Slint shows it
+        over the cover. The background under the covers is the same on every
+        row, so any row of it will do while the cover moves.
+        """
+        if self._overlay_cache and self._overlay_cache[0] == key:
+            return self._overlay_cache[1]
+        layer = self._bg_cache.subsurface((CAROUSEL_X, 0, COVER_SIZE, COVER_SIZE)).copy()
+        cover = (self.image_cache.get_dimmed(item.image, COVER_SIZE) if loading
+                 else self.image_cache.get(item.image, COVER_SIZE))
+        layer.blit(cover, (0, 0))
+        screen, self.screen = self.screen, layer
+        try:
+            rect = (0, 0, COVER_SIZE, COVER_SIZE)
+            self._draw_cover_progress(rect, item, now_playing)
+            hits = (None, None)
+            if button == 'add':
+                hits = (self._draw_overlay_button(rect, 'plus', COLORS['accent']), None)
+            elif button == 'delete':
+                hits = (None, self._draw_overlay_button(rect, 'minus', COLORS['error']))
+        finally:
+            self.screen = screen
+        self._overlay_hits = hits
+        self._overlay_cache = (key, layer)
+        return layer
+
     @staticmethod
     def _cover_progress(item: CatalogItem, now_playing: NowPlaying) -> float:
         """How far along the focused album's track is, 0.0-1.0.
@@ -645,8 +800,19 @@ class Renderer:
         # Blit the pre-rendered frame
         self.screen.blit(frame, (cover_x, cover_y))
     
-    def _draw_toast(self, message: str):
+    def _draw_toast(self, message: Optional[str]):
         """Draw a toast pill with rotated text, centered on the carousel area."""
+        if self.compositor:
+            if self.carousel_frame is not None:
+                self.carousel_frame['toast'] = (message, *self._toast_surface(message)) if message else None
+            return
+        if not message:
+            return
+        rotated, rect = self._toast_surface(message)
+        self.screen.blit(rotated, rect)
+
+    def _toast_surface(self, message: str):
+        """The rotated toast pill and where it goes."""
         text_surface = self.font_medium.render(message, True, COLORS['text_primary'])
         text_w, text_h = text_surface.get_size()
         
@@ -664,7 +830,7 @@ class Renderer:
         
         # Center on carousel area
         rect = rotated.get_rect(center=(CAROUSEL_X + COVER_SIZE // 2, CAROUSEL_CENTER_Y))
-        self.screen.blit(rotated, rect)
+        return rotated, rect
     
     # ============================================
     # SETUP MENU
