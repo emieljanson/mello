@@ -5,13 +5,29 @@ Events fired:
   - session_start    Music starts playing (album, artist)
   - session_end      Music stops (duration, reason: pause/auto_pause/shutdown/switch)
   - track_changed    New track within same session (track name, artist)
-  - app_started      Mello boots up
+  - app_started      Mello boots up (and how the previous run ended)
+  - app_stopped      Mello stops on purpose (uptime)
   - device_sleep     Screen goes to sleep (idle_seconds)
   - device_wake      Screen wakes up
+
+Speaker health, so a release can be compared with the one before it:
+  - unclean_shutdown       Previous run did not stop on purpose (cause: app_crashed / power_lost)
+  - main_loop_froze        Previous run froze for 30 s or died hard (crash.log has a dump)
+  - thread_crashed         An uncaught error stopped a background thread
+  - watchdog_tripped       Loading an album hung and was cancelled
+  - engine_restarted       Spotify engine stopped answering and was restarted
+  - engine_reconnected     Connection to the Spotify engine came back (offline_seconds)
+  - wifi_restored          WiFi came back after a drop (offline_seconds, rejoin rounds)
+  - bluetooth_connected    Headphone connected
+  - bluetooth_disconnected Headphone went away (connected_minutes, while_playing, from_menu)
+  - device_health          Every 6 hours: uptime, free memory, CPU temperature
+
+Every event carries app_version (branch@commit), engine and ui.
 """
 import time
 import socket
 import logging
+from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
@@ -41,9 +57,13 @@ class UsageTracker:
         distinct_id: str = '',
         include_content: bool = False,
         use_machine_id: bool = False,
+        app_version: str = 'unknown',
+        engine: str = '',
+        ui: str = '',
     ):
         self._enabled = False
         self._posthog = None
+        self._started_at = time.monotonic()
 
         if not api_key:
             logger.info('Analytics: no API key, tracking disabled')
@@ -65,6 +85,13 @@ class UsageTracker:
         self._use_machine_id = use_machine_id
         self._distinct_id = distinct_id.strip() or self._get_device_id(self._use_machine_id)
         logger.info(f'Analytics: distinct_id={self._distinct_id}')
+
+        # Sent with every event, so PostHog can split any chart by release.
+        self._common = {
+            'app_version': app_version,
+            'engine': engine,
+            'ui': ui,
+        }
 
         # Session state
         self._was_playing = False
@@ -110,13 +137,30 @@ class UsageTracker:
 
         self._was_playing = is_playing
 
-    def on_app_started(self, catalog_size: int = 0):
-        """Call once at startup."""
+    def on_app_started(self, catalog_size: int = 0, previous_run: Optional[dict] = None):
+        """Call once at startup.
+
+        ``previous_run`` is what crash_log found about the run before this
+        one: {'ended': 'clean' | 'app_crashed' | 'power_lost', 'froze': bool}.
+        """
         if not self._enabled:
             return
+        previous_run = previous_run or {}
+        ended = previous_run.get('ended', 'clean')
+        froze = bool(previous_run.get('froze'))
         self._capture('app_started', {
             'catalog_size': catalog_size,
+            'previous_run': ended,
+            'previous_run_froze': froze,
+            '$set': {k: self._common[k] for k in ('app_version', 'engine', 'ui')},
         })
+        if ended != 'clean':
+            self._capture('unclean_shutdown', {'cause': ended})
+        if froze:
+            self._capture('main_loop_froze', {
+                'cause': previous_run.get('dump', 'hang'),
+                'previous_run': ended,
+            })
 
     def on_shutdown(self):
         """Call before app exits to close any open session and flush."""
@@ -124,6 +168,7 @@ class UsageTracker:
             return
         if self._was_playing:
             self._end_session('shutdown')
+        self._capture('app_stopped', {'uptime_hours': self._uptime_hours()})
         try:
             self._posthog.shutdown()
         except Exception:
@@ -150,6 +195,80 @@ class UsageTracker:
         if not self._enabled:
             return
         self._capture('device_wake', {})
+
+    # ------------------------------------------------------------------
+    # Speaker health
+    # ------------------------------------------------------------------
+
+    def on_thread_crashed(self, thread_name: str, error_type: str):
+        """An uncaught error stopped a background thread."""
+        if not self._enabled:
+            return
+        self._capture('thread_crashed', {
+            'thread': thread_name,
+            'error_type': error_type,
+        })
+
+    def on_watchdog_tripped(self, stall_seconds: float):
+        """Loading an album hung so long that the watchdog cancelled it."""
+        if not self._enabled:
+            return
+        self._capture('watchdog_tripped', {'stall_seconds': round(stall_seconds)})
+
+    def on_engine_restarted(self, outage_seconds: float, ok: bool):
+        """The Spotify engine stopped answering and Mello restarted it."""
+        if not self._enabled:
+            return
+        self._capture('engine_restarted', {
+            'outage_seconds': round(outage_seconds),
+            'ok': ok,
+        })
+
+    def on_engine_reconnected(self, offline_seconds: float):
+        """The connection to the Spotify engine came back after being lost."""
+        if not self._enabled:
+            return
+        self._capture('engine_reconnected', {'offline_seconds': round(offline_seconds)})
+
+    def on_wifi_restored(self, offline_seconds: float, rejoin_rounds: int,
+                         signal_dbm: Optional[int] = None):
+        """WiFi came back. Sent afterwards: while offline nothing gets out."""
+        if not self._enabled:
+            return
+        properties = {
+            'offline_seconds': round(offline_seconds),
+            'rejoin_rounds': rejoin_rounds,
+            'rejoined_by_mello': rejoin_rounds > 0,
+        }
+        if signal_dbm is not None:
+            properties['signal_dbm'] = signal_dbm
+        self._capture('wifi_restored', properties)
+
+    def on_bluetooth_connected(self):
+        if not self._enabled:
+            return
+        self._capture('bluetooth_connected', {})
+
+    def on_bluetooth_disconnected(self, connected_seconds: float, while_playing: bool,
+                                  from_menu: bool):
+        """A headphone went away. ``from_menu`` means the owner most likely
+        chose it; otherwise it switched off, ran out of range or dropped."""
+        if not self._enabled:
+            return
+        self._capture('bluetooth_disconnected', {
+            'connected_minutes': round(connected_seconds / 60, 1),
+            'while_playing': while_playing,
+            'from_menu': from_menu,
+        })
+
+    def on_health(self, health: dict):
+        """Periodic snapshot (see ``device_health``), so crash counts can be
+        set against how many hours speakers ran."""
+        if not self._enabled:
+            return
+        properties = {'app_uptime_hours': self._uptime_hours()}
+        properties.update(health)
+        self._capture('device_health', properties)
 
     # ------------------------------------------------------------------
     # Internal
@@ -218,7 +337,11 @@ class UsageTracker:
             self._daily_date = today
         self._daily_seconds += seconds
 
+    def _uptime_hours(self) -> float:
+        return round((time.monotonic() - self._started_at) / 3600, 2)
+
     def _capture(self, event: str, properties: dict):
+        properties = {**self._common, **properties}
         now = datetime.now()
         properties['hour_of_day'] = now.hour
         properties['day_of_week'] = now.strftime('%A')
@@ -245,3 +368,25 @@ class UsageTracker:
             return f'{hostname}-{machine_id}'
         except Exception:
             return hostname
+
+
+def device_health() -> dict:
+    """System uptime, free memory and CPU temperature (Linux / Pi only)."""
+    health = {}
+    try:
+        health['system_uptime_hours'] = round(
+            float(Path('/proc/uptime').read_text().split()[0]) / 3600, 1)
+    except Exception:
+        pass
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            if line.startswith('MemAvailable:'):
+                health['mem_available_mb'] = int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    try:
+        temp = int(Path('/sys/class/thermal/thermal_zone0/temp').read_text().strip())
+        health['cpu_temp_c'] = round(temp / 1000, 1)
+    except Exception:
+        pass
+    return health

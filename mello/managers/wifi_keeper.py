@@ -9,6 +9,7 @@ offline, this asks again: a few times straight away, since on some speakers
 only about half the attempts get through, then every half minute.
 """
 import logging
+import re
 import subprocess
 import threading
 import time
@@ -96,6 +97,12 @@ def wifi_link_summary() -> str:
     return ', '.join(parts)
 
 
+def signal_dbm(link_summary: str) -> Optional[int]:
+    """The signal strength from a wifi_link_summary line, or None."""
+    match = re.search(r'signal (-?\d+)', link_summary)
+    return int(match.group(1)) if match else None
+
+
 class WifiKeeper:
     """Watches the connection and rejoins a known network when it is gone."""
 
@@ -107,6 +114,7 @@ class WifiKeeper:
         join: Callable[[], str] = join_known_network,
         clock: Callable[[], float] = time.time,
         link_summary: Callable[[], str] = wifi_link_summary,
+        on_restored: Optional[Callable[[float, int, Optional[int]], None]] = None,
     ):
         self._is_online = is_online
         # True while the owner is setting up a new network: the WiFi chip is
@@ -116,6 +124,11 @@ class WifiKeeper:
         self._join = join
         self._clock = clock
         self._link_summary = link_summary
+        # Told (offline seconds, rounds of our own rejoin attempts, signal in
+        # dBm or None) each time the connection comes back: for analytics.
+        self._on_restored = on_restored
+        self._rounds = 0
+        self._setup_seen = False
         self._offline_since: Optional[float] = None
         self._last_try = 0.0
         self._restored = threading.Event()
@@ -150,15 +163,22 @@ class WifiKeeper:
         now = self._clock()
         if self._is_online():
             if self._offline_since is not None:
-                logger.info(f'WiFi keeper: back online after {now - self._offline_since:.0f}s '
-                            f'({self._link_summary()})')
+                offline = now - self._offline_since
+                link = self._link_summary()
+                logger.info(f'WiFi keeper: back online after {offline:.0f}s ({link})')
                 self._offline_since = None
                 self._restored.set()
+                # Going offline for WiFi setup is the owner's choice, not a drop.
+                if self._on_restored is not None and not self._setup_seen:
+                    self._on_restored(offline, self._rounds, signal_dbm(link))
+                self._rounds = 0
+                self._setup_seen = False
             return
         if self._offline_since is None:
             self._offline_since = now
             logger.info(f'WiFi keeper: offline ({self._link_summary()})')
         if self._is_busy():
+            self._setup_seen = True
             return
         if now - self._offline_since < OFFLINE_GRACE or now - self._last_try < RETRY_EVERY:
             return
@@ -167,6 +187,7 @@ class WifiKeeper:
         if not names:
             return      # a Mello that never joined a network has nothing to go back to
         logger.info(f'WiFi keeper: offline for {now - self._offline_since:.0f}s, rejoining (known: {names})')
+        self._rounds += 1
         for attempt in range(1, QUICK_TRIES + 1):
             problem = self._join()
             if not problem:

@@ -23,6 +23,7 @@ def _make_app():
     app._connection_fail_count = 20
     app._show_toast = MagicMock()
     app._poll_wake_event = MagicMock()
+    app.tracker = MagicMock()
     return app
 
 

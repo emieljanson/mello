@@ -52,6 +52,7 @@ def _make_mello(items: list[CatalogItem], now_playing: NowPlaying) -> Mello:
     app.api = SimpleNamespace(pause=MagicMock(), set_repeat_context=MagicMock(return_value=True))
     app.volume = SimpleNamespace(unmute=MagicMock(), mute=MagicMock())
     app.renderer = SimpleNamespace(menu_button_rects={}, invalidate=MagicMock())
+    app.tracker = MagicMock()
     app._focus_epoch = 0
     app._pending_focus_uri = None
     app._pending_focus_since = 0.0

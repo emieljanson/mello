@@ -34,6 +34,7 @@ from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AnimationTimer, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
 from .managers.engine_setup import EngineSetup, PROMPT_BENEFITS, PROMPT_SCAN_HINT
 from .managers.wifi_keeper import WifiKeeper
+from .managers.analytics import device_health
 from .controllers import VolumeController, PlaybackController, is_repeatable_spotify_context
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label, set_system_volume
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 LIBRESPOT_RESTART_AFTER = 60.0
 LIBRESPOT_RESTART_COOLDOWN = 300.0
+HEALTH_REPORT_EVERY = 6 * 3600   # seconds between device_health events
 
 
 class Mello:
@@ -51,6 +53,10 @@ class Mello:
     _last_sync_situation: Optional[tuple] = None
     _last_sync_outcome: Optional[str] = None
     _loader_mismatch_logged = False
+    # Headphone seen connected last frame and since when, for analytics.
+    _bt_seen: Optional[str] = None
+    _bt_seen_since = 0.0
+    _next_health_report = float('inf')   # set when analytics starts
     
     def __init__(self, fullscreen: bool = False):
         # Restore display BEFORE pygame takes over DRM device.
@@ -304,7 +310,12 @@ class Mello:
             distinct_id=ANALYTICS_DISTINCT_ID,
             include_content=ANALYTICS_INCLUDE_CONTENT,
             use_machine_id=ANALYTICS_USE_MACHINE_ID,
+            app_version=self.app_version_label,
+            engine=SPOTIFY_ENGINE,
+            ui=self._ui,
         )
+        crash_log.on_thread_error = self.tracker.on_thread_crashed
+        self._next_health_report = time.monotonic() + HEALTH_REPORT_EVERY
         
         self.auto_pause = AutoPauseManager(
             on_pause=lambda: (self.tracker.on_auto_pause(), run_async(self.api.pause)),
@@ -365,6 +376,7 @@ class Mello:
         self._last_status_unknown_log: float = 0.0
         self._status_failure_started_at: float = 0.0
         self._last_librespot_restart_at: float = 0.0
+        self._connection_lost_at: float = 0.0   # 0: connected, or never was
         self._last_play_commit_uri: Optional[str] = None
         self._last_play_commit_at: float = 0.0
         self._last_snap_pause_at: float = 0.0
@@ -441,6 +453,7 @@ class Mello:
         self.wifi_keeper = WifiKeeper(
             is_online=self._has_network_connection,
             is_busy=lambda: self.setup_menu.wifi_setup_running,
+            on_restored=self.tracker.on_wifi_restored,
         )
         self._pairing_known = True
         self._pairing_checked_at = 0.0
@@ -645,6 +658,7 @@ class Mello:
             f'requested_uri={(self._requested_focus_uri or "none")[:40]} | '
             f'requested_epoch={self._requested_focus_epoch} | focus_epoch={self._focus_epoch}'
         )
+        self.tracker.on_watchdog_tripped(stall_age)
         self.playback.stop_all()
         self._bump_focus_epoch('watchdog_trip')
         self._user_driving = False
@@ -917,6 +931,27 @@ class Mello:
             self.bluetooth.set_volume(self.volume.bt_level)
         self.renderer.invalidate()
 
+    def _report_health_changes(self):
+        """Once per frame: tell analytics about headphones coming and going,
+        and send a health snapshot every few hours."""
+        dev = self.bluetooth.connected_device
+        mac = dev.mac if dev else None
+        if mac != self._bt_seen:
+            now = time.monotonic()
+            if self._bt_seen is not None:
+                self.tracker.on_bluetooth_disconnected(
+                    now - self._bt_seen_since,
+                    while_playing=self.now_playing.playing,
+                    from_menu=self.setup_menu.is_open,
+                )
+            if mac is not None:
+                self.tracker.on_bluetooth_connected()
+            self._bt_seen = mac
+            self._bt_seen_since = now
+        if time.monotonic() >= self._next_health_report:
+            self._next_health_report = time.monotonic() + HEALTH_REPORT_EVERY
+            run_async(lambda: self.tracker.on_health(device_health()))
+
     def _on_fell_asleep(self):
         """The screen just went off after being left alone."""
         # Every touch sets the touchscreen's wake signal and only sleep clears
@@ -950,7 +985,10 @@ class Mello:
     def _start_services(self):
         """Everything that runs once before the first frame."""
         logger.info('Starting Mello...')
-        self.tracker.on_app_started(catalog_size=len(self.catalog_manager.items))
+        self.tracker.on_app_started(
+            catalog_size=len(self.catalog_manager.items),
+            previous_run=crash_log.previous_run,
+        )
         
         # Pre-load images
         self.image_cache.preload_catalog(self.catalog_manager.items)
@@ -1274,8 +1312,12 @@ class Mello:
             if self.connected:
                 logger.info('CONNECTION RESTORED (was disconnected)')
                 self._startup_ready = True
+                if self._connection_lost_at:
+                    self.tracker.on_engine_reconnected(time.time() - self._connection_lost_at)
+                    self._connection_lost_at = 0.0
             else:
                 logger.warning(f'CONNECTION LOST after {self._connection_fail_count} failures')
+                self._connection_lost_at = time.time()
             logger.info(f'  fail_count={self._connection_fail_count}, status={raw is not None}')
         
         if raw and isinstance(raw, dict):
@@ -1399,8 +1441,10 @@ class Mello:
                     'LIBRESPOT recovery | restart failed '
                     f'rc={result.returncode} stderr={result.stderr.strip()}'
                 )
+            self.tracker.on_engine_restarted(now - failure_started_at, ok=result.returncode == 0)
         except Exception as exc:
             logger.error(f'LIBRESPOT recovery | restart error: {exc}', exc_info=True)
+            self.tracker.on_engine_restarted(now - failure_started_at, ok=False)
     
     def _ensure_repeat_context_for_current_status(self):
         """Keep externally-started albums/playlists inside their context."""
@@ -2384,6 +2428,8 @@ class Mello:
             self._pending_focus_uri is not None
         )
         
+        self._report_health_changes()
+
         if self.wifi_keeper.take_restored():
             self._cached_has_network = True
             self.setup_menu.network_restored()
