@@ -163,7 +163,8 @@ fi
 
 case "$STATUS" in
   current)
-    exit 0 ;;  # No updates
+    exit 0  # No updates
+    ;;
   older)
     log "Skip: $CHANNEL target $TARGET_NAME ($TARGET) is older than the running code ($LOCAL)"
     exit 0 ;;
