@@ -145,14 +145,14 @@ _ensure_git_repo() {
 
 _ensure_git_repo
 
-# Always converge to origin/main regardless of local state.
-if ! git fetch origin main 2>/dev/null; then
+# Which version should run here (beta/stable channel, see update-target.sh).
+if ! DECISION=$(bash pi/update-target.sh); then
   log "Fetch failed (network issue?), will retry next run"
   exit 0
 fi
-
+read -r STATUS CHANNEL TARGET_NAME TARGET <<< "$DECISION"
 LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse origin/main)
+BAD_UPDATE_FILE="$HOME/.mello-bad-update"
 
 # Speakers on Spotify Soloist: its binary stops working 90 days after it was
 # built, so renew it in time. Runs every night, also when Mello itself has no
@@ -161,14 +161,105 @@ if [ -f pi/soloist/soloist-setup.sh ]; then
   bash pi/soloist/soloist-setup.sh refresh || log "Soloist renewal failed, will retry next run"
 fi
 
-if [ "$LOCAL" = "$REMOTE" ]; then
-  exit 0  # No updates
-fi
+case "$STATUS" in
+  current)
+    exit 0 ;;  # No updates
+  older)
+    log "Skip: $CHANNEL target $TARGET_NAME ($TARGET) is older than the running code ($LOCAL)"
+    exit 0 ;;
+  failed)
+    log "Skip: $TARGET_NAME ($TARGET) failed its health check before, waiting for a newer version"
+    exit 0 ;;
+esac
 
-log "Updates found, applying (local=$LOCAL remote=$REMOTE)"
+log "Updates found on $CHANNEL channel, applying $TARGET_NAME (local=$LOCAL target=$TARGET)"
 
 # Remember current code directory (may be ~/tomo or ~/berry during transition)
 CODE_DIR="$(pwd)"
+
+# Exactly one Spotify engine runs per speaker (see pi/soloist/soloist-setup.sh).
+engine_service() {
+  if grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' "$CODE_DIR/.env" 2>/dev/null; then
+    echo mello-soloist
+  else
+    echo mello-librespot
+  fi
+}
+
+# Render templated services with install-time user/home/uid, symlink the rest.
+sync_systemd_units() {
+  local tmpl name f
+  for tmpl in "$CODE_DIR/pi/systemd/"*.service.template; do
+    [ -f "$tmpl" ] || continue
+    name=$(basename "$tmpl" .template)
+    sed -e "s|__USER__|$MELLO_USER|g" \
+        -e "s|__HOME__|$MELLO_HOME|g" \
+        -e "s|__UID__|$MELLO_UID|g" \
+        "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
+  done
+  for f in "$CODE_DIR/pi/systemd/"*.service; do
+    [ -f "$f" ] || continue
+    sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")"
+  done
+  sudo systemctl daemon-reload
+}
+
+restart_services() {
+  sudo systemctl restart "$(engine_service)" mello-native
+}
+
+# Healthy = both services still running a minute after the restart, without
+# systemd having had to restart them (a crash loop keeps flipping between
+# "activating" and "active", so is-active alone is not enough).
+HEALTH_WAIT=60
+health_check() {
+  local engine before_native before_engine after_native after_engine
+  engine=$(engine_service)
+  before_native=$(systemctl show -p NRestarts --value mello-native)
+  before_engine=$(systemctl show -p NRestarts --value "$engine")
+  sleep "$HEALTH_WAIT"
+  after_native=$(systemctl show -p NRestarts --value mello-native)
+  after_engine=$(systemctl show -p NRestarts --value "$engine")
+  if ! systemctl is-active --quiet mello-native; then
+    log "Health check: mello-native is not running"
+    return 1
+  fi
+  if ! systemctl is-active --quiet "$engine"; then
+    log "Health check: $engine is not running"
+    return 1
+  fi
+  if [ "$after_native" != "$before_native" ]; then
+    log "Health check: mello-native restarted $((after_native - before_native))x within ${HEALTH_WAIT}s"
+    return 1
+  fi
+  if [ "$after_engine" != "$before_engine" ]; then
+    log "Health check: $engine restarted $((after_engine - before_engine))x within ${HEALTH_WAIT}s"
+    return 1
+  fi
+  return 0
+}
+
+# Put the previous version back and remember the failed one, so the speaker
+# keeps working instead of crash-looping until the next fix is merged.
+# Migrations are not undone: they are written to be safe for older code too.
+rollback() {
+  log "ROLLBACK: $1 — returning to $LOCAL"
+  echo "$TARGET" > "$BAD_UPDATE_FILE"
+  git reset --hard "$LOCAL"
+  if git diff --name-only "$LOCAL" "$TARGET" | grep -q "^requirements\.txt$"; then
+    log "Rollback: restoring Python dependencies"
+    "$CODE_DIR/venv/bin/pip" install -q --disable-pip-version-check -r requirements.txt \
+      || log "Rollback: pip install failed"
+  fi
+  sync_systemd_units || log "Rollback: restoring systemd units failed"
+  restart_services || true
+  if health_check; then
+    log "Rollback complete, running $LOCAL again"
+  else
+    log "ERROR: still unhealthy after rollback"
+  fi
+  exit 1
+}
 
 # Backup user data that may still be tracked by git (e.g. data/catalog.json
 # was committed early on but later gitignored; git rm --cached will cause
@@ -178,9 +269,9 @@ if [ -d data ] && [ "$(ls -A data/ 2>/dev/null)" ]; then
   cp -a data "$DATA_BACKUP"
 fi
 
-# Hard reset to origin/main — always converge to the target state
+# Hard reset to the target — always converge to the target state
 git checkout main 2>/dev/null || true
-git reset --hard origin/main
+git reset --hard "$TARGET"
 
 # Restore any data files that git pull deleted
 if [ -d "$DATA_BACKUP" ]; then
@@ -191,11 +282,12 @@ fi
 # ============================================
 # 1. Update Python dependencies if requirements.txt changed
 # ============================================
-if git diff --name-only "$LOCAL" "$REMOTE" | grep -q "^requirements\.txt$"; then
+if git diff --name-only "$LOCAL" "$TARGET" | grep -q "^requirements\.txt$"; then
   log "Updating Python dependencies"
   cd "$CODE_DIR"
-  source venv/bin/activate
-  pip install -q --disable-pip-version-check -r requirements.txt
+  if ! "$CODE_DIR/venv/bin/pip" install -q --disable-pip-version-check -r requirements.txt; then
+    rollback "pip install failed"
+  fi
 fi
 
 # ============================================
@@ -243,42 +335,20 @@ fi
 # 4. Update systemd services
 # ============================================
 log "Updating systemd services"
-
-# Render templated services with install-time user/home/uid
-for tmpl in "$CODE_DIR/pi/systemd/"*.service.template; do
-  [ -f "$tmpl" ] || continue
-  name=$(basename "$tmpl" .template)
-  sed -e "s|__USER__|$MELLO_USER|g" \
-      -e "s|__HOME__|$MELLO_HOME|g" \
-      -e "s|__UID__|$MELLO_UID|g" \
-      "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
-done
-# Symlink non-templated services
-for f in "$CODE_DIR/pi/systemd/"*.service; do
-  [ -f "$f" ] || continue
-  sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")"
-done
-sudo systemctl daemon-reload
+sync_systemd_units
 
 # ============================================
-# 5. Restart services
+# 5. Restart services and check they stay up
 # ============================================
 log "Restarting services"
-# Exactly one Spotify engine runs per speaker (see pi/soloist/soloist-setup.sh).
-ENGINE_SERVICE=mello-librespot
-if grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' "$CODE_DIR/.env" 2>/dev/null; then
-  ENGINE_SERVICE=mello-soloist
-fi
-sudo systemctl restart "$ENGINE_SERVICE" mello-native
+restart_services || true
 
-# Basic post-update health check to catch hard failures quickly.
-sleep 2
-if ! systemctl is-active --quiet "$ENGINE_SERVICE" || ! systemctl is-active --quiet mello-native; then
-  log "ERROR: service health check failed after restart"
-  exit 1
+if ! health_check; then
+  rollback "service health check failed after update"
 fi
 
-log "Update complete"
+rm -f "$BAD_UPDATE_FILE"
+log "Update complete ($CHANNEL channel, now at $TARGET_NAME)"
 }
 
 main "$@"

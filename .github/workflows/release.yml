@@ -1,0 +1,52 @@
+# Makes a release: tags the current main as vYYYY.MM.DD so speakers on the
+# stable channel pick it up at their next nightly update (03:00).
+# Start it from GitHub: Actions → Release → Run workflow.
+# Speakers on the beta channel (MELLO_UPDATE_CHANNEL=beta) already run main.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      # Never release something with failing tests.
+      - name: Run tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          pip install -r requirements.txt pytest pygame
+          python -m pytest tests -q
+
+      - name: Tag and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base="v$(date -u +%Y.%m.%d)"
+          tag="$base"
+          n=2
+          while git rev-parse -q --verify "refs/tags/$tag" >/dev/null; do
+            tag="$base.$n"
+            n=$((n + 1))
+          done
+          gh release create "$tag" --target "$(git rev-parse HEAD)" \
+            --title "$tag" --generate-notes
+          echo "Released $tag ($(git rev-parse --short HEAD))" >> "$GITHUB_STEP_SUMMARY"
