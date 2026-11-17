@@ -1,0 +1,10 @@
+[Unit]
+Description=Mello nightly update, caught up at boot after a night switched off
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# Missed while the speaker was off or unplugged: run once it is back on.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

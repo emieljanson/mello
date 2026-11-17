@@ -20,6 +20,7 @@ from ..config import (
     SOLOIST_DATA_DIR, SOLOIST_HOME, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
 )
 from ..models import MenuState
+from ..update_status import update_problem
 from .engine_setup import (
     PROMPT_BUTTON_LAST, PROMPT_BUTTON_LATER,
     PROMPT_TITLE_NEW_OWNER, PROMPT_TITLE_UPDATE,
@@ -62,6 +63,8 @@ def _update_command(log_path: Path) -> list:
             f'--unit=mello-manual-update-{int(time.time())}',
             '-p', f'StandardOutput=append:{log_path}',
             '-p', f'StandardError=append:{log_path}',
+            # A hung update would hold the update lock until a reboot.
+            '-p', 'RuntimeMaxSec=45min',
             'bash', script,
         ]
     return ['bash', '-c', f'exec bash "{script}" >> "{log_path}" 2>&1']
@@ -118,6 +121,9 @@ class SetupMenu:
         self._reset_confirm_pending: bool = False
         self._reset_confirm_time: float = 0.0
 
+        # Shown under the version when updates have not worked for a while.
+        self.update_problem: Optional[str] = None
+
         # Manual update state
         self._update_checking: bool = False
         self._update_running: bool = False
@@ -135,6 +141,9 @@ class SetupMenu:
     def open(self):
         """Open the setup menu overlay."""
         logger.info('Setup menu opened')
+        self.update_problem = update_problem()
+        if self.update_problem:
+            logger.warning(f'Setup menu: {self.update_problem} (see ~/mello-update.log)')
         self.state = MenuState.MAIN
         self.scroll_offset = 0
         self.current_network = None

@@ -193,3 +193,38 @@ def test_newest_release_wins_among_many(speaker):
     newest = speaker.commit('second')
     speaker.release('v2026.11.1', newest)
     assert speaker.check() == ['update', 'stable', 'v2026.11.1', newest]
+
+
+def _status(speaker):
+    text = (speaker.home / '.mello-update-status').read_text()
+    return dict(line.split('=', 1) for line in text.splitlines())
+
+
+def test_every_run_says_how_it_ended(speaker):
+    speaker.commit('second')
+    assert speaker.update()[0] == 0
+    status = _status(speaker)
+    assert status['result'] == 'ok' and status['last_ok'] == status['time']
+
+
+def test_unreachable_github_is_written_down_and_keeps_last_ok(speaker):
+    assert speaker.update()[0] == 0
+    last_ok = _status(speaker)['last_ok']
+    speaker.git('remote', 'set-url', 'origin', str(speaker.origin) + '-gone',
+                cwd=speaker.home / 'mello')
+    code, out = speaker.update()
+    assert code == 0
+    assert 'GitHub not reachable' in out
+    status = _status(speaker)
+    assert status['result'] == 'no-internet'
+    assert 'git fetch' in status['message']
+    assert status['last_ok'] == last_ok
+
+
+def test_rollback_is_written_down(speaker):
+    speaker.set_channel('beta')
+    speaker.commit('broken', crash=True)
+    assert speaker.update()[0] == 1
+    status = _status(speaker)
+    assert status['result'] == 'failed'
+    assert 'rolled back' in status['message']

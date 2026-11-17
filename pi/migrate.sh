@@ -917,6 +917,34 @@ _migrate_019() {
 }
 
 # ============================================
+# Migration 021: Nightly update via a systemd timer instead of cron
+# ============================================
+# Cron skips the night when the speaker is off at 03:00 and never catches
+# up; a hung run holds the update lock until a reboot. The timer runs a
+# missed night at boot, and the service stops a run after 45 minutes.
+# (020 is taken by the Slint screen.)
+_migrate_021() {
+  local code_dir="$MELLO_HOME/mello"
+  sed -e "s|__USER__|$MELLO_USER|g" \
+      -e "s|__HOME__|$MELLO_HOME|g" \
+      -e "s|__UID__|$MELLO_UID|g" \
+      "$code_dir/pi/systemd/mello-update.service.template" \
+    | sudo tee /etc/systemd/system/mello-update.service > /dev/null
+  sudo ln -sf "$code_dir/pi/systemd/mello-update.timer" /etc/systemd/system/mello-update.timer
+  sudo systemctl daemon-reload
+  sudo systemctl enable mello-update.timer
+  sudo systemctl start mello-update.timer
+  # Only drop cron once the timer is really waiting, so a speaker never
+  # ends up with neither.
+  if ! systemctl is-active --quiet mello-update.timer; then
+    log "mello-update.timer did not start, keeping the cron job"
+    return 1
+  fi
+  ( (crontab -l 2>/dev/null || true) | grep -v "pi/auto-update.sh" || true ) | crontab -
+  log "Nightly update now runs from mello-update.timer"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -938,3 +966,4 @@ run_migration "016" "Let a speaker switch to Spotify Soloist"
 run_migration "017" "Keep the WiFi chip awake (no power save)"
 run_migration "018" "Faster boot: skip cloud-init after the first boot"
 run_migration "019" "Libraries for the Slint screen"
+run_migration "021" "Nightly update via a systemd timer instead of cron"

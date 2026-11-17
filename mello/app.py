@@ -2547,7 +2547,8 @@ class Mello:
             menu_spotify_switching=self.setup_menu.spotify_switching,
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
-            app_version_label=self.app_version_label,
+            app_version_label=(f'{self.app_version_label} · {self.setup_menu.update_problem}'
+                               if self.setup_menu.update_problem else self.app_version_label),
             bt_connected=bt_dev is not None,
             bt_audio_active=self._bt_audio_active,
             bt_connected_name=bt_dev.name if bt_dev else None,
