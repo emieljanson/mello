@@ -256,3 +256,29 @@ def test_order_is_learned_after_the_album_plays_normally(monkeypatch):
     order = store.get(ALBUM)
     assert order is not None and sorted(order) == sorted(TRACKS)
     assert order[(order.index(TRACKS[2]) + 1) % len(order)] == TRACKS[3]
+
+
+def test_next_track_starts_just_before_the_end(monkeypatch):
+    api = direct_api()
+    api.play(ALBUM, skip_to_uri=TRACKS[1])
+    api.sent.clear()
+    # 0.4 s left of the track: the next one starts after ~0.15 s, without
+    # waiting for Soloist to report the end.
+    api._handle_event(track_snapshot(TRACKS[1], position_ms=DURATION - 400))
+    deadline = time.time() + 1.5
+    while not api.sent and time.time() < deadline:
+        time.sleep(0.02)
+    assert sent(api)[:1] == [('play', TRACKS[2])]
+    # Soloist's own end report afterwards does not skip a second time.
+    api._handle_event(track_snapshot(TRACKS[1], status='buffering', position_ms=DURATION))
+    assert [c for c in sent(api) if c[0] == 'play'] == [('play', TRACKS[2])]
+
+
+def test_paused_track_does_not_move_on():
+    api = direct_api()
+    api.play(ALBUM, skip_to_uri=TRACKS[1])
+    api._handle_event(track_snapshot(TRACKS[1], position_ms=DURATION - 400))
+    api._handle_event({'type': 'playback_changed', 'status': 'paused'})
+    api.sent.clear()
+    time.sleep(0.6)
+    assert sent(api) == []

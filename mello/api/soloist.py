@@ -63,6 +63,10 @@ _END_MARGIN_MS = 2500
 # After a context started the normal way, read its order this long after it
 # plays (the app turns context repeat on first, which makes the queue loop).
 _LEARN_DELAY = 4.0
+# The next track is started this long before the current one ends: with track
+# repeat on, waiting for the end let a moment of the same track start again
+# (seen on the device). The last 0.25 s of a track is nearly always silence.
+_EARLY_START_S = 0.25
 
 
 def _name(entity: Optional[dict]) -> Optional[str]:
@@ -124,6 +128,7 @@ class SoloistAPI:
         self._direct: Optional[dict] = None
         self._learn_epoch = 0
         self._queue_lock = threading.Lock()   # one get_queue at a time
+        self._end_timer: Optional[threading.Timer] = None
 
         self.ws: Optional[websocket.WebSocketApp] = None
         self.thread: Optional[threading.Thread] = None
@@ -301,8 +306,10 @@ class SoloistAPI:
                 self._is_active = bool(event.get('is_active'))
                 self._repeat = (event.get('options') or {}).get('repeat') or 'off'
                 advance = self._direct_follow_unlocked()
+                self._arm_end_timer_unlocked()
             elif event_type == 'playback_changed':
                 self._set_status(event.get('status'))
+                self._arm_end_timer_unlocked()
             elif event_type == 'volume_changed':
                 self._volume = event.get('volume')
             elif event_type == 'device_changed':
@@ -311,6 +318,7 @@ class SoloistAPI:
                 self._repeat = (event.get('options') or {}).get('repeat') or 'off'
             elif event_type == 'position_sync':
                 self._position = event.get('position')
+                self._arm_end_timer_unlocked()
             elif event_type == 'queue_changed':
                 # Mello has no queue view; only resume-in-album reads this.
                 self._queue = event
@@ -752,6 +760,44 @@ class SoloistAPI:
                 return direct['context'], None   # beyond what is known
             return direct['context'], (index + 1) % len(order)
         return None
+
+    def _arm_end_timer_unlocked(self):
+        """During direct play, start the next track just before this one ends."""
+        if self._end_timer:
+            self._end_timer.cancel()
+            self._end_timer = None
+        direct = self._direct
+        if not direct or not direct.get('started') or self._status != 'playing' or not self._item:
+            return
+        item = self._item_uri_unlocked()
+        order = direct['order']
+        if order[direct['index']] != item:
+            return
+        duration = ((self._item.get('decorations') or {}).get('playback') or {}).get('duration_ms') or 0
+        speed = (self._position or {}).get('speed') or 0
+        if not duration or speed <= 0:
+            return
+        remaining = (duration - self._current_position_ms()) / 1000 / speed - _EARLY_START_S
+        if remaining < 0:
+            return
+        context, index = direct['context'], direct['index']
+
+        def fire():
+            with self._state_lock:
+                direct_now = self._direct
+                if (not direct_now or direct_now['context'] != context or direct_now['index'] != index
+                        or direct_now['ended'] == index or self._status != 'playing'
+                        or self._item_uri_unlocked() != item):
+                    return
+                if self._current_position_ms() < duration - 1500:
+                    return   # moved meanwhile; a newer timer takes over
+                direct_now['ended'] = index
+                last_known = index + 1 >= len(order) and not direct_now['complete']
+            self._play_next_direct(context, None if last_known else (index + 1) % len(order))
+
+        self._end_timer = threading.Timer(remaining, fire)
+        self._end_timer.daemon = True
+        self._end_timer.start()
 
     def _play_next_direct(self, context: str, index: Optional[int]):
         """Start the next track of a direct play (called from the socket thread)."""
