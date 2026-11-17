@@ -54,15 +54,28 @@ _SKIP_TIMEOUT = 4.0
 # Broadcast queue updates are capped at this many entries (a full answer to
 # get_queue is not), so a list of exactly this size may be a broadcast.
 _QUEUE_BROADCAST_CAP = 10
+# A full queue answer holds at most this many items (seen on the device).
+_QUEUE_CAP = 80
 # Playing a track directly: how long to wait for it to start (measured 0.3 s).
 _DIRECT_TIMEOUT = 8.0
 # A track counts as finished when Soloist reports it this close to its end.
 # With track repeat on, Soloist says "buffering" at the very end and starts the
 # same track again a second later; Mello starts the next one at that moment.
 _END_MARGIN_MS = 2500
-# After a context started the normal way, read its order this long after it
-# plays (the app turns context repeat on first, which makes the queue loop).
-_LEARN_DELAY = 4.0
+# After a fresh start (no saved track), how long to wait for the album to
+# play before reading its order.
+_LEARN_WAIT = 6.0
+# Quick taps on next/previous are counted and only the last one is played:
+# a burst of skips to Soloist loses some (seen: 6 of 12 arrived) and makes it
+# open every track in between (seconds each for a podcast episode).
+_STEP_SETTLE_S = 0.35
+# A playlist's order is checked again on its first start after this long
+# (starting a playlist and reading its order costs ~0.5 s); albums never
+# change, and a show is not re-read for this (starting a show costs 10-12 s):
+# new episodes come at its end, where it is read again anyway.
+_PLAYLIST_FRESH_S = 20 * 3600
+# If the next track did not start, try again after this long.
+_ADVANCE_RETRY_S = 6.0
 # The next track is started this long before the current one ends: with track
 # repeat on, waiting for the end let a moment of the same track start again
 # (seen on the device). The last 0.25 s of a track is nearly always silence.
@@ -73,6 +86,10 @@ def _name(entity: Optional[dict]) -> Optional[str]:
     if not isinstance(entity, dict):
         return None
     return ((entity.get('decorations') or {}).get('identity') or {}).get('name')
+
+
+def _is_show(context_uri: str) -> bool:
+    return context_uri.startswith('spotify:show:')
 
 
 def _never_changes(context_uri: str) -> bool:
@@ -139,6 +156,9 @@ class SoloistAPI:
         self._learn_epoch = 0
         self._queue_lock = threading.Lock()   # one get_queue at a time
         self._end_timer: Optional[threading.Timer] = None
+        self._step_timer: Optional[threading.Timer] = None
+        # Taps on next/previous not yet sent: {'index', 'beyond'}
+        self._pending_step: Optional[dict] = None
 
         self.ws: Optional[websocket.WebSocketApp] = None
         self.thread: Optional[threading.Thread] = None
@@ -484,6 +504,28 @@ class SoloistAPI:
                 _name(c.get('entity')) for c in (decorations.get('creators') or [])
                 if isinstance(c, dict)
             ]
+            pending, direct = self._pending_step, self._direct
+            if pending and direct and not pending['beyond']:
+                # Quick taps on next/previous: show where they lead at once;
+                # the track itself starts when the tapping stops.
+                target = direct['order'][pending['index']]
+                return {
+                    'stopped': False,
+                    'paused': False,
+                    'buffering': False,
+                    'volume': self._volume,
+                    'context_uri': context_uri,
+                    'repeat_context': True,
+                    'track': {
+                        'uri': target,
+                        'name': self.play_orders.name(direct['context'], target) if self.play_orders else None,
+                        'artist_names': [a for a in artists if a],
+                        'album_name': _name(album),
+                        'album_cover_url': _cover_url(item) or _cover_url(album),
+                        'position': 0,
+                        'duration': 0,
+                    },
+                }
             return {
                 'stopped': False,
                 'paused': self._status == 'paused',
@@ -605,30 +647,62 @@ class SoloistAPI:
             return True
 
         with self._state_lock:
-            self._direct = None
+            self._end_direct_unlocked()
             self._learn_epoch += 1
-        known = self.play_orders.entry(uri) if (self.play_orders and skip_to_uri and not native) else None
-        order, complete = known or (None, False)
-        complete = complete and _never_changes(uri)
-        if order and skip_to_uri in order and (complete or order.index(skip_to_uri) < len(order) - 1):
-            result = self._play_direct(uri, order, order.index(skip_to_uri), paused, epoch, complete)
-            if result is not False:
+        if native or not self.play_orders:
+            return self._play_context(uri, skip_to_uri, paused, epoch, learn=False)
+
+        entry = self.play_orders.entry(uri)
+        if skip_to_uri and entry and self._order_usable(uri, entry, skip_to_uri):
+            items, complete, _learned_at = entry
+            result = self._play_direct(uri, items, items.index(skip_to_uri), paused, epoch,
+                                       complete and _never_changes(uri))
+            if result is not False or self._aborted(epoch):
                 return result
             # Next attempt starts the album the normal way (and learns again).
             self.play_orders.forget(uri)
             return False
+        # Order unknown, possibly out of date, or no saved track: start the
+        # album the normal way, read its order on the spot, and go to the
+        # saved track directly instead of skipping there.
+        return self._play_context(uri, skip_to_uri, paused, epoch, learn=True)
 
+    def _order_usable(self, uri: str, entry, track: str) -> bool:
+        items, complete, learned_at = entry
+        if track not in items:
+            return False
+        last_known = items.index(track) == len(items) - 1
+        if last_known and not (complete and _never_changes(uri)):
+            return False   # what follows it is not known (yet)
+        if not _never_changes(uri) and not _is_show(uri):
+            return time.time() - learned_at < _PLAYLIST_FRESH_S
+        return True
+
+    def _aborted(self, epoch: int) -> bool:
+        with self._state_lock:
+            return self._play_epoch != epoch
+
+    def _play_context(self, uri: str, skip_to_uri: Optional[str], paused: bool, epoch: int,
+                      learn: bool) -> Optional[bool]:
+        """Start the album itself (at its first track) and get to `skip_to_uri`."""
         result = self._activate()
         if result is not True:
             return result
         with self._state_lock:
+            track_repeat = self._repeat == 'track'
             seen_before = self._named_snapshots
             if skip_to_uri or paused:
                 self._positioning_uri = uri
                 self._positioning_since = time.time()
+        if track_repeat:
+            # Left on by direct play: an album would play its first track
+            # over and over, a show its first episode.
+            self._command('set_repeat_track', enabled=False)
         result = self._command('play', uri=uri)
         if result is not True or not (skip_to_uri or paused):
             self._end_positioning()
+            if result is True and learn:
+                self._learn_order_later(uri)
             return result
 
         def wait(predicate, timeout):
@@ -649,6 +723,25 @@ class SoloistAPI:
             and self._status in ('buffering', 'playing'),
             _SWITCH_TIMEOUT,
         )
+        if positioned and skip_to_uri and learn and self._item_uri() != skip_to_uri:
+            if uri.startswith(('spotify:album:', 'spotify:playlist:')):
+                # Looping makes the queue show the whole round of a short
+                # album (the app switches it on after the start anyway).
+                self.set_repeat_context(True)
+            order, complete = self._learn_now(uri)
+            if skip_to_uri in order or _is_show(uri):
+                # Straight to the saved track. For a show that starts past it
+                # (Spotify picks the starting episode), the saved episode is
+                # still the right one to play: what follows it is learned at
+                # its end.
+                items = order if skip_to_uri in order else [skip_to_uri]
+                complete = complete if skip_to_uri in order else False
+                logger.info(f'Soloist play: order read in {time.time() - started:.1f}s, '
+                            f'going to the saved track directly')
+                return self._play_direct(uri, items, items.index(skip_to_uri), paused, epoch,
+                                         complete and _never_changes(uri))
+        elif positioned and learn:
+            self._learn_order_later(uri)
         if positioned and skip_to_uri:
             self._resume_target = skip_to_uri
             positioned = self._skip_to(uri, skip_to_uri, wait)
@@ -669,8 +762,6 @@ class SoloistAPI:
         if not paused:
             self._end_positioning()
         logger.info(f'Soloist play: positioned in {time.time() - started:.1f}s')
-        if self.play_orders:
-            self._learn_order_later(uri)
         return True
 
     # ------------------------------------------------------------------
@@ -688,13 +779,13 @@ class SoloistAPI:
             seen_before = self._named_snapshots
             self._positioning_uri = uri
             self._positioning_since = time.time()
-            self._direct = {'context': uri, 'order': order, 'index': index, 'ended': None, 'last_pos': None,
-                            'started': False, 'complete': complete}
+            self._end_direct_unlocked()
+            self._direct = self._new_direct(uri, order, index, complete, started=False)
         started = time.time()
         result = self._command('play', uri=track)
         if result is not True:
             with self._state_lock:
-                self._direct = None
+                self._end_direct_unlocked()
             self._end_positioning()
             return result
         # Without track repeat Spotify carries on with a suggestion of its own
@@ -721,7 +812,7 @@ class SoloistAPI:
             logger.warning(f'Soloist play: {track} did not start directly '
                            f'({"aborted" if aborted else "no answer"}, {time.time() - started:.1f}s)')
             with self._state_lock:
-                self._direct = None
+                self._end_direct_unlocked()
             self._end_positioning(abandoned=True)
             return False
         self._resume_target = track
@@ -731,11 +822,26 @@ class SoloistAPI:
                     f'in {time.time() - started:.1f}s')
         return True
 
+    @staticmethod
+    def _new_direct(context: str, order: list, index: int, complete: bool, started: bool) -> dict:
+        return {'context': context, 'order': order, 'index': index, 'complete': complete,
+                'started': started, 'ended': None, 'ended_at': 0.0, 'last_pos': None,
+                'left': None, 'hold': False}
+
+    def _end_direct_unlocked(self):
+        for timer in (self._end_timer, self._step_timer):
+            if timer:
+                timer.cancel()
+        self._end_timer = self._step_timer = None
+        self._pending_step = None
+        self._direct = None
+
     def _direct_follow_unlocked(self):
         """After a snapshot during direct play: keep track of where we are.
 
         Returns (context, next_index) when the current track just ended and
-        the next one should start, else None.
+        the next one should start (next_index None: beyond what is known),
+        else None.
         """
         direct = self._direct
         if not direct and self.play_orders and self._is_active:
@@ -753,29 +859,41 @@ class SoloistAPI:
             # this is still the old album's state arriving.
             if direct['started'] and context and context not in order:
                 logger.info('Direct play ended: something else is playing')
-                self._direct = None
+                self._end_direct_unlocked()
             return None
         direct['started'] = True
         position = (self._position or {}).get('position_ms') or 0
         duration = ((self._item.get('decorations') or {}).get('playback') or {}).get('duration_ms') or 0
+        # The last position seen, per track: a wrap is the same track going
+        # from its end back to its start.
+        last_item, last = direct['last_pos'] or (None, None)
+        if last_item != item:
+            last = None
+        direct['last_pos'] = (item, position)
         if item == direct.get('left') and item != order[direct['index']] and \
                 duration and position >= duration - 2 * _END_MARGIN_MS:
             return None   # late news about the end of the track we just moved on from
         index = direct['index'] if order[direct['index']] == item else order.index(item)
         direct['index'] = index
-        last = direct['last_pos']
-        direct['last_pos'] = position
-        if not duration:
+        if not duration or direct['hold'] or self._pending_step:
             return None
         at_end = self._status == 'buffering' and position >= duration - _END_MARGIN_MS
         # Fallback: track repeat already started it again from the top.
         wrapped = last is not None and last >= duration - 5000 and position < 3000
-        if (at_end or wrapped) and direct['ended'] != index:
-            direct['ended'] = index
-            if index + 1 >= len(order) and not direct['complete']:
-                return direct['context'], None   # beyond what is known
-            return direct['context'], (index + 1) % len(order)
-        return None
+        if not (at_end or wrapped):
+            return None
+        retry = direct['ended'] == index and wrapped and time.time() - direct['ended_at'] > _ADVANCE_RETRY_S
+        if direct['ended'] == index and not retry:
+            return None
+        if retry:
+            logger.warning('Soloist: the next track did not start, trying again')
+        return direct['context'], self._next_index_unlocked(direct, index)
+
+    def _next_index_unlocked(self, direct: dict, index: int) -> Optional[int]:
+        """The track after `index`, or None when that is not known."""
+        if index + 1 < len(direct['order']):
+            return index + 1
+        return 0 if direct['complete'] else None
 
     def _recover_direct_unlocked(self) -> Optional[dict]:
         """Pick up a direct play this app did not start (or forgot in a restart).
@@ -794,8 +912,7 @@ class SoloistAPI:
             return None
         album, order, complete = found
         complete = complete and _never_changes(album)
-        self._direct = {'context': album, 'order': order, 'index': order.index(item), 'ended': None,
-                        'last_pos': None, 'started': True, 'complete': complete}
+        self._direct = self._new_direct(album, order, order.index(item), complete, started=True)
         logger.info(f'Direct play picked up again: track {order.index(item) + 1}/{len(order)} of {album[:50]}')
         return self._direct
 
@@ -808,141 +925,232 @@ class SoloistAPI:
             self._end_timer.cancel()
             self._end_timer = None
         direct = self._direct
-        if not direct or not direct.get('started') or self._status != 'playing' or not self._item:
-            return
+        if (not direct or not direct.get('started') or direct['hold'] or self._pending_step
+                or self._status != 'playing' or not self._item):
+            return None
         item = self._item_uri_unlocked()
         order = direct['order']
         if order[direct['index']] != item:
-            return
+            return None
         duration = ((self._item.get('decorations') or {}).get('playback') or {}).get('duration_ms') or 0
         speed = (self._position or {}).get('speed') or 0
         if not duration:
-            return
+            return None
         if speed <= 0:
             # Playing, but the last position was taken while it stood still
             # (after a seek or a resume): ask for a fresh one.
             if not direct.get('asked'):
                 direct['asked'] = True
                 return True
-            return
+            return None
         direct['asked'] = False
         remaining = (duration - self._current_position_ms()) / 1000 / speed - _EARLY_START_S
         if remaining < 0:
-            return
+            return None
         context, index = direct['context'], direct['index']
 
         def fire():
             with self._state_lock:
-                direct_now = self._direct
-                if (not direct_now or direct_now['context'] != context or direct_now['index'] != index
-                        or direct_now['ended'] == index or self._status != 'playing'
+                now = self._direct
+                if (not now or now['context'] != context or now['index'] != index or now['hold']
+                        or now['ended'] == index or self._pending_step or self._status != 'playing'
                         or self._item_uri_unlocked() != item):
                     return
                 if self._current_position_ms() < duration - 1500:
                     return   # moved meanwhile; a newer timer takes over
-                direct_now['ended'] = index
-                last_known = index + 1 >= len(order) and not direct_now['complete']
-            self._play_next_direct(context, None if last_known else (index + 1) % len(order))
+                next_index = self._next_index_unlocked(now, index)
+            self._play_next_direct(context, next_index)
 
         self._end_timer = threading.Timer(remaining, fire)
         self._end_timer.daemon = True
         self._end_timer.start()
+        return None
 
     def _play_next_direct(self, context: str, index: Optional[int]):
-        """Start the next track of a direct play (called from the socket thread)."""
-        if index is None:
-            self._continue_beyond_known(context)
-            return
+        """Start the next track of a direct play (from the socket or a timer thread)."""
         with self._state_lock:
             direct = self._direct
-            if not direct or direct['context'] != context:
+            if not direct or direct['context'] != context or direct['hold']:
                 return
-            left = direct['order'][direct['index']]
-            direct.update(index=index, ended=None, last_pos=None, left=left)
-            track = direct['order'][index]
-            total = len(direct['order'])
+            current = direct['index']
+            direct['ended'] = current
+            direct['ended_at'] = time.time()
+            if index is None:
+                last = direct['order'][current]
+                complete = False
+            else:
+                left = direct['order'][current]
+                direct.update(index=index, last_pos=None, left=left)
+                track = direct['order'][index]
+                total = len(direct['order'])
+        if index is None:
+            self._continue_beyond_known(context, last)
+            return
         logger.info(f'Soloist: track ended, playing track {index + 1}/{total} directly')
-        # Not _command(): it waits for its answer, which arrives on this thread.
+        # Not _command(): it waits for its answer, which arrives on the socket
+        # thread this may be running on.
         self._send('play', uri=track)
         self._send('set_repeat_track', enabled=True)
 
-    def _continue_beyond_known(self, context: str):
-        """The last known track of a long album ended: go on the normal way.
+    def _continue_beyond_known(self, context: str, last: str):
+        """What follows `last` is not known: start the album the normal way.
 
-        Starts the album, skips to the track after the one that ended, and
-        learns the next part of the order on the way. Slow, but once per
-        80 tracks of a long audiobook.
+        Reads the order there (new episodes of a show, edits of a playlist,
+        the next part of a long audiobook) and plays the track after `last`
+        directly. A playlist simply starts over at its first track.
         """
         with self._state_lock:
-            direct = self._direct
-            if not direct or direct['context'] != context:
-                return
-            last = direct['order'][direct['index']]
-            self._direct = None
-        logger.info(f'Soloist: end of the known order of {context[:50]}, continuing the normal way')
+            self._end_direct_unlocked()
+        logger.info(f'Soloist: end of the known order of {context[:50]}, reading it again')
 
         def go_on():
-            if self.play(context, skip_to_uri=last, paused=False, native=True) is True:
-                self._transport('skip_next')
+            with self._state_lock:
+                epoch = self._play_epoch
+            if not _never_changes(context) and not _is_show(context):
+                self._play_context(context, None, False, epoch, learn=True)
+                return
+            # Start it paused-ish: it begins wherever Spotify starts it.
+            if self._play_context(context, None, True, epoch, learn=False) is not True:
+                return
+            order, complete = self._learn_now(context)
+            if last in order and order.index(last) + 1 < len(order):
+                index = order.index(last) + 1
+                self._play_direct(context, order, index, False, epoch, complete and _never_changes(context))
+            else:
+                # Not in sight from where Spotify started: the old way.
+                self._end_positioning()
+                if self.play(context, skip_to_uri=last, paused=False, native=True) is True:
+                    self._transport('skip_next')
 
         threading.Thread(target=go_on, daemon=True, name='beyond-known').start()
 
-    def _direct_step(self, step: int) -> bool:
-        """Next/previous during direct play."""
+    def _direct_step(self, step: int) -> Optional[bool]:
+        """Next/previous using the known order. None: not known, use Spotify's own skip."""
+        restart = False
         with self._state_lock:
-            direct = self._direct
-            if not direct or not self._is_active:
-                return False
-            if step < 0 and self._current_position_ms() > 3000:
-                track = None   # like Spotify: "previous" first goes back to the start
+            if not self._is_active:
+                return None
+            direct = self._direct or self._enter_direct_from_context_unlocked()
+            if not direct:
+                return None
+            direct['hold'] = False
+            order = direct['order']
+            pending = self._pending_step
+            base = pending['index'] if pending else direct['index']
+            if step < 0 and not pending and (self._current_position_ms() > 3000 or
+                                             (base == 0 and not direct['complete'])):
+                restart = True   # like Spotify: "previous" first goes back to the start
             else:
-                left = direct['order'][direct['index']]
-                index = (direct['index'] + step) % len(direct['order'])
-                direct.update(index=index, ended=None, last_pos=None, left=left)
-                track = direct['order'][index]
-        if track is None:
+                target = base + step
+                beyond = False
+                if target < 0:
+                    target = len(order) - 1 if direct['complete'] else 0
+                elif target >= len(order):
+                    if direct['complete']:
+                        target = 0
+                    else:
+                        target, beyond = len(order) - 1, True
+                self._pending_step = {'index': target, 'beyond': beyond}
+                if self._end_timer:
+                    self._end_timer.cancel()
+                    self._end_timer = None
+                if self._step_timer:
+                    self._step_timer.cancel()
+                self._step_timer = threading.Timer(_STEP_SETTLE_S, self._send_step)
+                self._step_timer.daemon = True
+                self._step_timer.start()
+        if restart:
             with self._state_lock:
                 direct['last_pos'] = None   # going back to 0 is not the track ending
             return self._transport('seek', position_ms=0)
-        if not self._transport('play', uri=track):
-            return False
-        self._command('set_repeat_track', enabled=True)
+        if self.on_update:
+            self.on_update()   # the title changes at once
         return True
 
+    def _send_step(self):
+        """The taps stopped: play the track they ended on."""
+        with self._state_lock:
+            pending, direct = self._pending_step, self._direct
+            self._pending_step = None
+            self._step_timer = None
+            if not pending or not direct:
+                return
+            index = pending['index']
+            current = direct['index']
+            if pending['beyond']:
+                last = direct['order'][index]
+            elif index != current:
+                left = direct['order'][current]
+                direct.update(index=index, ended=None, last_pos=None, left=left)
+            track = direct['order'][index]
+            context = direct['context']
+        if pending['beyond']:
+            self._continue_beyond_known(context, last)
+            return
+        if index == current:
+            return
+        if self._transport('play', uri=track):
+            self._command('set_repeat_track', enabled=True)
+
+    def _enter_direct_from_context_unlocked(self) -> Optional[dict]:
+        """The album plays the normal way; with its order known, next/previous go direct."""
+        if not self.play_orders:
+            return None
+        context = (self._context or {}).get('uri')
+        item = self._item_uri_unlocked()
+        if not context or not item or context == item:
+            return None
+        entry = self.play_orders.entry(context)
+        if not entry or item not in entry[0]:
+            return None
+        items, complete, _ = entry
+        self._direct = self._new_direct(context, items, items.index(item),
+                                        complete and _never_changes(context), started=True)
+        return self._direct
+
+    def _learn_now(self, uri: str):
+        """Read the order of `uri`, which plays the normal way right now."""
+        with self._state_lock:
+            current = self._item_uri_unlocked()
+        upcoming = self._upcoming_items()
+        if not current or not upcoming:
+            logger.info(f'Play order not learned: no queue for {uri[:50]}')
+            entry = self.play_orders.entry(uri)
+            return (entry[0], entry[1]) if entry else ([], False)
+        uris = [u for u, _ in upcoming]
+        order, complete = one_round(current, uris)
+        complete = complete and _never_changes(uri)
+        names = {u: n for u, n in upcoming if n}
+        with self._state_lock:
+            if self._item:
+                names.setdefault(current, _name(self._item))
+        self.play_orders.put(uri, order, complete, names)
+        entry = self.play_orders.entry(uri)
+        return (entry[0], entry[1]) if entry else (order, complete)
+
     def _learn_order_later(self, uri: str):
-        """Read the order of `uri` from the queue once it plays (in the background)."""
+        """Read the order of `uri` as soon as it plays (in the background)."""
         with self._state_lock:
             self._learn_epoch += 1
             epoch = self._learn_epoch
 
         def learn():
-            deadline = time.time() + 15.0
-            time.sleep(_LEARN_DELAY)
+            deadline = time.time() + _LEARN_WAIT
             while time.time() < deadline:
                 with self._state_lock:
-                    if self._learn_epoch != epoch or not self._is_playing_context(uri):
+                    if self._learn_epoch != epoch:
                         return
-                    # Albums and playlists loop (the app turns that on right
-                    # after the start; then the queue shows the whole round).
-                    # Shows do not loop: their queue only shows what follows.
-                    loops = self._repeat == 'context' or not uri.startswith(('spotify:album:', 'spotify:playlist:'))
-                    ready = loops and self._status == 'playing'
+                    playing = self._is_playing_context(uri) and self._status in ('playing', 'buffering')
+                    # An album's queue only shows a whole round once it loops
+                    # (the app switches that on right after the start).
+                    ready = playing and (self._repeat == 'context' or not _never_changes(uri))
                 if ready:
                     break
-                time.sleep(0.5)
-            else:
-                logger.info(f'Play order not learned: {uri[:50]} did not start or loop')
-                return
-            current = self._item_uri()
-            upcoming = self._upcoming()
+                time.sleep(0.2)
             with self._state_lock:
                 if self._learn_epoch != epoch or not self._is_playing_context(uri):
                     return
-            if not current or not upcoming:
-                logger.info(f'Play order not learned: no queue for {uri[:50]}')
-                return
-            order, complete = one_round(current, upcoming)
-            self.play_orders.put(uri, order, complete and _never_changes(uri))
+            self._learn_now(uri)
 
         threading.Thread(target=learn, daemon=True, name='learn-order').start()
 
@@ -951,6 +1159,15 @@ class SoloistAPI:
         with self._state_changed:
             self._play_epoch += 1
             self._learn_epoch += 1
+            # The child swiped away: the album that was playing must not start
+            # its next track (or a tapped one) any more.
+            if self._direct:
+                self._direct['hold'] = True
+            for timer in (self._end_timer, self._step_timer):
+                if timer:
+                    timer.cancel()
+            self._end_timer = self._step_timer = None
+            self._pending_step = None
             self._state_changed.notify_all()
 
     def _end_positioning(self, abandoned: bool = False):
@@ -1004,6 +1221,15 @@ class SoloistAPI:
             if current == track_uri:
                 return True
             upcoming = self._upcoming()
+            if upcoming and track_uri not in upcoming and len(upcoming) >= _QUEUE_CAP - 5:
+                # The queue shows only the next ~80 (a long audiobook): move
+                # towards its end and look again.
+                forward = len(upcoming)
+                burst = min(forward, _SKIP_BURST)
+                logger.info(f'Soloist resume: {track_uri} beyond the queue, skip_next x{burst} to look further')
+                if not self._skip_burst(context_uri, 'skip_next', burst, upcoming[burst - 1], wait):
+                    return False
+                continue
             if upcoming is None or track_uri not in upcoming:
                 logger.warning(f'Soloist resume: {track_uri} not coming up in {context_uri[:50]}')
                 return True
@@ -1050,8 +1276,27 @@ class SoloistAPI:
                 logger.warning('Soloist resume: burst did not land on its track, re-reading the queue')
         return self._item_uri() == track_uri
 
+    def _skip_burst(self, context_uri: str, command: str, burst: int, checkpoint: str, wait) -> bool:
+        """Send `burst` skips and wait for `checkpoint`; False when playback left our hands."""
+        for _ in range(burst):
+            with self._state_lock:
+                ours = self._is_playing_context(context_uri)
+            if not ours or not self._send(command):
+                return False
+        if not wait(lambda: self._item_uri_unlocked() == checkpoint, _SKIP_TIMEOUT + burst * 0.5):
+            with self._state_lock:
+                ours = self._is_playing_context(context_uri)
+            if not ours or not wait(lambda: True, 0):
+                return False
+        return True
+
     def _upcoming(self) -> Optional[list]:
         """Track URIs still to come in the current context, or None if unknown."""
+        items = self._upcoming_items()
+        return None if items is None else [u for u, _ in items]
+
+    def _upcoming_items(self) -> Optional[list]:
+        """(uri, name) of what is still to come in the current context."""
         with self._queue_lock:
             return self._upcoming_locked()
 
@@ -1067,7 +1312,7 @@ class SoloistAPI:
                 return None
             with self._state_lock:
                 upcoming = [
-                    (entry.get('item') or {}).get('uri')
+                    ((entry.get('item') or {}).get('uri'), _name(entry.get('item')))
                     for entry in (self._queue or {}).get('upcoming') or []
                     if entry.get('source') == 'context'
                 ]
@@ -1132,19 +1377,20 @@ class SoloistAPI:
             logger.info('Soloist resume not sent: the loaded album was left half-way through a resume')
             return False
         self._end_positioning()
+        with self._state_lock:
+            if self._direct:
+                self._direct['hold'] = False
         if was_positioning and already_playing:
             return True  # play(paused=True) left it running, see there
         return self._transport('play')
 
     def next(self) -> bool:
-        with self._state_lock:
-            direct = self._direct is not None
-        return self._direct_step(1) if direct else self._transport('skip_next')
+        handled = self._direct_step(1)
+        return self._transport('skip_next') if handled is None else handled
 
     def prev(self) -> bool:
-        with self._state_lock:
-            direct = self._direct is not None
-        return self._direct_step(-1) if direct else self._transport('skip_prev')
+        handled = self._direct_step(-1)
+        return self._transport('skip_prev') if handled is None else handled
 
     def seek(self, position: int) -> bool:
         target, self._resume_target = self._resume_target, None

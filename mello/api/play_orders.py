@@ -64,17 +64,22 @@ class PlayOrders:
         entry = self.entry(context_uri)
         return entry[0] if entry else None
 
-    def entry(self, context_uri: str) -> Optional[Tuple[List[str], bool]]:
-        """(items, complete): complete means the whole album, looping round."""
+    def entry(self, context_uri: str) -> Optional[Tuple[List[str], bool, float]]:
+        """(items, complete, learned_at): complete means the whole album, looping round."""
         with self._lock:
             entry = self._orders.get(context_uri)
             if not entry or not entry.get('items'):
                 return None
             if self.max_age is not None and self._clock() - entry.get('learned_at', 0) > self.max_age:
                 return None
-            return list(entry['items']), bool(entry.get('complete'))
+            return list(entry['items']), bool(entry.get('complete')), float(entry.get('learned_at', 0))
 
-    def put(self, context_uri: str, items: List[str], complete: bool = True):
+    def name(self, context_uri: str, track_uri: str) -> Optional[str]:
+        with self._lock:
+            return ((self._orders.get(context_uri) or {}).get('names') or {}).get(track_uri)
+
+    def put(self, context_uri: str, items: List[str], complete: bool = True,
+            names: Optional[dict] = None):
         """Remember an order; a partial one is joined to what is known."""
         if not items:
             return
@@ -82,8 +87,11 @@ class PlayOrders:
             old = self._orders.get(context_uri)
             if not complete and old and not old.get('complete'):
                 items = _join(old['items'], list(items))
+            kept_names = dict((old or {}).get('names') or {})
+            kept_names.update(names or {})
+            kept_names = {k: v for k, v in kept_names.items() if k in set(items)}
             self._orders[context_uri] = {'items': list(items), 'complete': complete,
-                                         'learned_at': self._clock()}
+                                         'learned_at': self._clock(), 'names': kept_names}
             self._save()
         logger.info(f'Play order learned: {context_uri[:50]} ({len(items)} items'
                     f'{"" if complete else ", part of it"})')
