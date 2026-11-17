@@ -140,9 +140,11 @@ _ensure_git_repo() {
   # Clean up broken backup (keep for a bit in case of issues)
   rm -rf "/tmp/mello-broken-backup.$$"
 
+  RECLONED=true
   log "Re-clone complete, repo is healthy"
 }
 
+RECLONED=false
 _ensure_git_repo
 
 # Which version should run here (beta/stable channel, see update-target.sh).
@@ -166,8 +168,15 @@ case "$STATUS" in
     exit 0  # No updates
     ;;
   older)
-    log "Skip: $CHANNEL target $TARGET_NAME ($TARGET) is older than the running code ($LOCAL)"
-    exit 0 ;;
+    # A fresh clone starts on main; a stable speaker must still go to its
+    # release, even though that is older.
+    if [ "$RECLONED" = true ]; then
+      log "Fresh clone: moving to $CHANNEL target $TARGET_NAME"
+    else
+      log "Skip: $CHANNEL target $TARGET_NAME ($TARGET) is older than the running code ($LOCAL)"
+      exit 0
+    fi
+    ;;
   failed)
     log "Skip: $TARGET_NAME ($TARGET) failed its health check before, waiting for a newer version"
     exit 0 ;;
@@ -196,11 +205,11 @@ sync_systemd_units() {
     sed -e "s|__USER__|$MELLO_USER|g" \
         -e "s|__HOME__|$MELLO_HOME|g" \
         -e "s|__UID__|$MELLO_UID|g" \
-        "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null
+        "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null || return 1
   done
   for f in "$CODE_DIR/pi/systemd/"*.service; do
     [ -f "$f" ] || continue
-    sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")"
+    sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")" || return 1
   done
   sudo systemctl daemon-reload
 }
@@ -252,9 +261,13 @@ rollback() {
     "$CODE_DIR/venv/bin/pip" install -q --disable-pip-version-check -r requirements.txt \
       || log "Rollback: pip install failed"
   fi
-  sync_systemd_units || log "Rollback: restoring systemd units failed"
-  restart_services || true
-  if health_check; then
+  local restored=true
+  sync_systemd_units || { log "Rollback: restoring systemd units failed"; restored=false; }
+  restart_services || { log "Rollback: restarting services failed"; restored=false; }
+  if ! health_check; then
+    restored=false
+  fi
+  if [ "$restored" = true ]; then
     log "Rollback complete, running $LOCAL again"
   else
     log "ERROR: still unhealthy after rollback"
@@ -336,13 +349,17 @@ fi
 # 4. Update systemd services
 # ============================================
 log "Updating systemd services"
-sync_systemd_units
+if ! sync_systemd_units; then
+  rollback "installing systemd units failed"
+fi
 
 # ============================================
 # 5. Restart services and check they stay up
 # ============================================
 log "Restarting services"
-restart_services || true
+if ! restart_services; then
+  rollback "restarting services failed"
+fi
 
 if ! health_check; then
   rollback "service health check failed after update"

@@ -23,7 +23,7 @@ cd "$(dirname "$0")/.."
 BAD_UPDATE_FILE="$HOME/.mello-bad-update"
 
 CHANNEL=stable
-if grep -qE '^MELLO_UPDATE_CHANNEL=beta' .env 2>/dev/null; then
+if grep -qE "^MELLO_UPDATE_CHANNEL=[\"']?beta[\"']?[[:space:]]*$" .env 2>/dev/null; then
   CHANNEL=beta
 fi
 
@@ -33,7 +33,8 @@ fi
 
 TARGET_NAME=origin/main
 if [ "$CHANNEL" = stable ]; then
-  RELEASE_TAG=$(git tag -l 'v*' --sort=-v:refname | head -n 1)
+  RELEASE_TAG=$(git for-each-ref --count=1 --sort=-v:refname \
+    --format='%(refname:short)' 'refs/tags/v*')
   if [ -n "$RELEASE_TAG" ]; then
     TARGET_NAME="$RELEASE_TAG"
   fi

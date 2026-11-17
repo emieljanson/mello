@@ -49,6 +49,7 @@ class Speaker:
         self.env = {
             **os.environ,
             'HOME': str(self.home),
+            'USER': 'berry',
             'PATH': f'{bin_dir}:{os.environ["PATH"]}',
             'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@t',
             'GIT_COMMITTER_NAME': 't', 'GIT_COMMITTER_EMAIL': 't@t',
@@ -177,3 +178,18 @@ def test_check_for_updates_agrees_with_the_nightly_update(speaker):
     assert speaker.check() == ['update', 'stable', 'v2026.11.1', second]
     speaker.set_channel('beta')
     assert speaker.check()[:3] == ['update', 'beta', 'origin/main']
+
+
+def test_only_exactly_beta_is_the_beta_channel(speaker):
+    (speaker.home / 'mello' / '.env').write_text('MELLO_UPDATE_CHANNEL=beta-canary\n')
+    assert speaker.check()[1] == 'stable'
+    (speaker.home / 'mello' / '.env').write_text('MELLO_UPDATE_CHANNEL="beta"\n')
+    assert speaker.check()[1] == 'beta'
+
+
+def test_newest_release_wins_among_many(speaker):
+    for day in range(1, 29):
+        speaker.release(f'v2026.10.{day}', speaker.first)
+    newest = speaker.commit('second')
+    speaker.release('v2026.11.1', newest)
+    assert speaker.check() == ['update', 'stable', 'v2026.11.1', newest]
