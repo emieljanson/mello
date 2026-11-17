@@ -31,6 +31,11 @@ HANG_AFTER = 30.0   # main loop silent this long: dump every thread's stack
 _REARM_EVERY = 5.0
 _crash_stream = None
 _last_beat = 0.0
+# How the previous run ended, for analytics: see report_previous_run.
+previous_run: dict = {'ended': 'clean', 'froze': False}
+# Called with (thread name, error type name) when a thread dies of an
+# uncaught error. Set by the app once analytics is up.
+on_thread_error: Optional[Callable[[str, str], None]] = None
 _stopping = False
 STOP_STUCK_AFTER = 3.0   # systemd kills the app after 5 s (TimeoutStopSec)
 
@@ -43,8 +48,14 @@ def _boot_time() -> Optional[float]:
     return time.time() - uptime
 
 
-def report_previous_run(log_dir: Path, boot_time: Callable[[], Optional[float]] = _boot_time):
-    """Log how the previous run ended, then mark this run as running."""
+def report_previous_run(log_dir: Path, boot_time: Callable[[], Optional[float]] = _boot_time) -> dict:
+    """Log how the previous run ended, then mark this run as running.
+
+    Returns {'ended': 'clean' | 'app_crashed' | 'power_lost', 'froze': bool,
+    'dump': 'hang' | 'fatal'}: froze is True when crash.log got a stack
+    dump (a main loop that hung 30 s, or a hard crash such as a segfault).
+    """
+    result = {'ended': 'clean', 'froze': False}
     marker = log_dir / _MARKER
     crash = log_dir / _CRASH_FILE
     if marker.exists():
@@ -54,7 +65,9 @@ def report_previous_run(log_dir: Path, boot_time: Callable[[], Optional[float]] 
         if booted is not None and booted > started:
             logger.warning(f'Previous run (started {started_text}) did not shut down: '
                            f'the speaker lost power or rebooted while Mello ran')
+            result['ended'] = 'power_lost'
         else:
+            result['ended'] = 'app_crashed'
             logger.warning(f'Previous run (started {started_text}) did not shut down: '
                            f'the app crashed or was killed')
     # Anything after the last start line is what faulthandler wrote during
@@ -65,10 +78,15 @@ def report_previous_run(log_dir: Path, boot_time: Callable[[], Optional[float]] 
         dump = lines[starts[-1] + 1:] if starts else lines
         if dump:
             logger.warning('Previous run wrote to crash.log:\n' + '\n'.join(dump[-_CRASH_TAIL:]))
+            result['froze'] = True
+            # dump_traceback_later starts with "Timeout (0:00:30)!"; a hard
+            # crash with "Fatal Python error".
+            result['dump'] = 'hang' if any(l.startswith('Timeout (') for l in dump) else 'fatal'
     try:
         marker.write_text(f'{time.time():.0f}\n')
     except OSError as e:
         logger.debug(f'Could not write run marker: {e}')
+    return result
 
 
 def heartbeat(now: Optional[float] = None):
@@ -117,18 +135,23 @@ def _log_uncaught_in_thread(args: threading.ExceptHookArgs):
     name = args.thread.name if args.thread else '?'
     logger.error(f'Uncaught error in thread {name}, the thread stopped',
                  exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    if on_thread_error is not None:
+        try:
+            on_thread_error(name, args.exc_type.__name__)
+        except Exception as e:
+            logger.debug(f'Thread error listener failed: {e}')
 
 
 def install(log_dir: Path):
     """Route crashes into the logs. Call once, after logging is set up."""
-    global _crash_stream
+    global _crash_stream, previous_run
     sys.excepthook = _log_uncaught
     threading.excepthook = _log_uncaught_in_thread
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
-    report_previous_run(log_dir)    # before crash.log is written to again
+    previous_run = report_previous_run(log_dir)    # before crash.log is written to again
     crash = log_dir / _CRASH_FILE
     try:
         if crash.exists() and crash.stat().st_size > _CRASH_MAX_BYTES:
