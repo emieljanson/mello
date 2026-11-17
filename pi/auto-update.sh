@@ -60,13 +60,14 @@ fi
 STATUS_FILE="$HOME/.mello-update-status"
 STATUS_WRITTEN=false
 write_status() {
-  local last_ok
+  local last_ok now
+  now=$(date +%s)
   last_ok=$(sed -n 's/^last_ok=//p' "$STATUS_FILE" 2>/dev/null || true)
   if [ "$1" = ok ]; then
-    last_ok=$(date +%s)
+    last_ok=$now
   fi
   printf 'time=%s\nresult=%s\nmessage=%s\nlast_ok=%s\n' \
-    "$(date +%s)" "$1" "$2" "$last_ok" > "$STATUS_FILE.tmp" \
+    "$now" "$1" "$2" "$last_ok" > "$STATUS_FILE.tmp" \
     && mv "$STATUS_FILE.tmp" "$STATUS_FILE" || true
   STATUS_WRITTEN=true
 }
@@ -127,9 +128,15 @@ _ensure_git_repo() {
 
   # Re-clone into a temp dir, then swap
   local tmp_clone="/tmp/mello-reclone-repo.$$"
-  if ! git clone --depth 1 "$REPO_URL" "$tmp_clone" 2>/dev/null; then
-    log "Re-clone failed (network issue?), will retry next run"
-    write_status no-internet "re-clone failed"
+  local clone_err
+  if ! clone_err=$(git clone --quiet --depth 1 "$REPO_URL" "$tmp_clone" 2>&1); then
+    clone_err=$(echo "$clone_err" | tr '\n' ' ')
+    log "Re-clone failed, will retry next run: $clone_err"
+    if echo "$clone_err" | grep -qiE "could not resolve|unable to access|timed out|network is unreachable"; then
+      write_status no-internet "re-clone: $clone_err"
+    else
+      write_status failed "re-clone: $clone_err"
+    fi
     rm -rf "$tmp_clone" "$data_backup" "$env_backup" "$dotenv_backup"
     exit 0
   fi

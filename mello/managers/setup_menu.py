@@ -20,7 +20,7 @@ from ..config import (
     SOLOIST_DATA_DIR, SOLOIST_HOME, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
 )
 from ..models import MenuState
-from ..update_status import update_problem
+from ..update_status import last_run_label, update_problem
 from .engine_setup import (
     PROMPT_BUTTON_LAST, PROMPT_BUTTON_LATER,
     PROMPT_TITLE_NEW_OWNER, PROMPT_TITLE_UPDATE,
@@ -67,7 +67,7 @@ def _update_command(log_path: Path) -> list:
             '-p', 'RuntimeMaxSec=45min',
             'bash', script,
         ]
-    return ['bash', '-c', f'exec bash "{script}" >> "{log_path}" 2>&1']
+    return ['bash', '-c', f'exec timeout 45m bash "{script}" >> "{log_path}" 2>&1']
 
 
 class SetupMenu:
@@ -479,9 +479,13 @@ class SetupMenu:
             if ret is not None:
                 self._update_process = None
                 self._update_running = False
-                if ret != 0:
-                    logger.error(f'Manual update failed (exit code {ret}), see ~/mello-update.log')
-                    self._set_update_result('Update failed')
+                # A good update restarts Mello before this point. Still
+                # here: it found nothing to do, or it could not (no
+                # internet ends with exit 0, so read what the run wrote).
+                label = 'Update failed' if ret != 0 else last_run_label()
+                if label:
+                    logger.error(f'Manual update: {label} (exit code {ret}), see ~/mello-update.log')
+                    self._set_update_result(label)
                 self._on_invalidate()
 
         if self._update_result and time.time() - self._update_result_time > _UPDATE_RESULT_SECONDS:

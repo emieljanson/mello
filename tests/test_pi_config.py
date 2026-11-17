@@ -529,7 +529,7 @@ def test_nightly_update_catches_up_and_cannot_hang_forever():
     timer = (ROOT / 'pi/systemd/mello-update.timer').read_text()
     service = (ROOT / 'pi/systemd/mello-update.service.template').read_text()
     assert 'OnCalendar=*-*-* 03:00:00' in timer and 'Persistent=true' in timer
-    assert 'TimeoutStartSec=' in service and 'auto-update.sh' in service
+    assert 'TimeoutStartSec=45min' in service and 'auto-update.sh' in service
     migrate = (ROOT / 'pi/migrate.sh').read_text()
     assert 'run_migration "021"' in migrate
     # cron is only dropped after the timer is confirmed running

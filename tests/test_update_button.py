@@ -12,6 +12,7 @@ import pytest
 
 from mello.managers import setup_menu as sm
 from mello.managers.setup_menu import SetupMenu
+from mello import update_status as sm_status
 
 
 class _InlineThread:
@@ -97,3 +98,15 @@ def test_version_that_failed_here_before_says_so(monkeypatch, started):
     menu._check_for_update()
     started.assert_not_called()
     assert menu.update_button_label == 'Update failed'
+
+
+def test_manual_update_without_internet_says_so(monkeypatch, started, tmp_path):
+    status = tmp_path / 'status'
+    status.write_text('time=1\nresult=no-internet\nmessage=x\nlast_ok=\n')
+    monkeypatch.setattr(sm, 'last_run_label', lambda: sm_status.last_run_label(status))
+    monkeypatch.setattr(sm.subprocess, 'run', _fake_git('a' * 40, 'b' * 40))
+    menu = _menu()
+    menu._check_for_update()
+    started.return_value.poll.return_value = 0
+    menu.update()
+    assert menu.update_button_label == 'No internet'

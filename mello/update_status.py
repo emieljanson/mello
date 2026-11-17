@@ -16,10 +16,27 @@ FAILING_FOR = 36 * 3600
 SILENT_FOR = 3 * 24 * 3600
 
 
+def _read(path: Path) -> dict:
+    return dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line)
+
+
+def last_run_label(path: Path = STATUS_FILE) -> Optional[str]:
+    """How the run that just ended went, for the update button (None: fine)."""
+    try:
+        result = _read(path).get('result')
+    except OSError:
+        return None
+    if result == 'no-internet':
+        return 'No internet'
+    if result == 'failed':
+        return 'Update failed'
+    return None
+
+
 def update_problem(path: Path = STATUS_FILE, now: Optional[float] = None) -> Optional[str]:
     """A few words when updates have not worked for a while, else None."""
     try:
-        fields = dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line)
+        fields = _read(path)
         last_run = float(fields['time'])
     except (OSError, KeyError, ValueError):
         return None      # never ran on this version yet

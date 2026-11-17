@@ -929,18 +929,20 @@ _migrate_021() {
       -e "s|__HOME__|$MELLO_HOME|g" \
       -e "s|__UID__|$MELLO_UID|g" \
       "$code_dir/pi/systemd/mello-update.service.template" \
-    | sudo tee /etc/systemd/system/mello-update.service > /dev/null
-  sudo ln -sf "$code_dir/pi/systemd/mello-update.timer" /etc/systemd/system/mello-update.timer
-  sudo systemctl daemon-reload
-  sudo systemctl enable mello-update.timer
-  sudo systemctl start mello-update.timer
+    | sudo tee /etc/systemd/system/mello-update.service > /dev/null || return 1
+  # run_migration calls this inside an `if`, where set -e is off: every
+  # step is checked by hand.
+  sudo ln -sf "$code_dir/pi/systemd/mello-update.timer" /etc/systemd/system/mello-update.timer || return 1
+  sudo systemctl daemon-reload || return 1
+  sudo systemctl enable mello-update.timer || return 1
+  sudo systemctl start mello-update.timer || return 1
   # Only drop cron once the timer is really waiting, so a speaker never
   # ends up with neither.
   if ! systemctl is-active --quiet mello-update.timer; then
     log "mello-update.timer did not start, keeping the cron job"
     return 1
   fi
-  ( (crontab -l 2>/dev/null || true) | grep -v "pi/auto-update.sh" || true ) | crontab -
+  ( (crontab -l 2>/dev/null || true) | grep -v "pi/auto-update.sh" || true ) | crontab - || return 1
   log "Nightly update now runs from mello-update.timer"
 }
 
