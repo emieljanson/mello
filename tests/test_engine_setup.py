@@ -99,7 +99,8 @@ def test_a_second_request_while_switching_is_ignored(tmp_path):
     setup = setup_for(tmp_path, script_body='sleep 1')
 
     assert setup.submit_key(KEY) is True
-    assert setup.submit_key(KEY) is False
+    assert setup.submit_key(KEY[:-1] + 'A') is False
+    assert (tmp_path / 'soloist' / 'key').read_text() == KEY + '\n'
 
 
 def test_page_exists_only_between_start_and_stop_and_never_shows_the_key(tmp_path):

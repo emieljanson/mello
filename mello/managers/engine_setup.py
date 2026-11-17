@@ -306,6 +306,9 @@ class EngineSetup:
     def submit_key(self, key: str) -> bool:
         """Store the owner's key and switch the speaker to Soloist."""
         key = (key or '').strip()
+        with self._lock:
+            if self.state == 'switching':
+                return False   # the running switch keeps the code it started with
         if not valid_key(key):
             self._set('failed', "That code doesn't look right. Copy it again from Spotify and paste it here.")
             return False
