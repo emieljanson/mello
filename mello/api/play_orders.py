@@ -20,16 +20,17 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Playlists get edited and shows get new episodes, and the queue is the only
-# way to see that (by playing the context the normal, slow way). Learn again
-# when the order is this old, or when the saved track is not in it.
-MAX_AGE = 3 * 24 * 3600
+# An order is kept until it turns out to be out of date: an album never
+# changes, and for playlists and shows (edited, new episodes) direct play
+# notices it by itself: the saved track is not in the order, or the order
+# runs out. Then that one play goes the normal way and learns again.
+MAX_AGE = None
 
 
 class PlayOrders:
     """Track orders per context URI, saved to a JSON file."""
 
-    def __init__(self, path: Optional[Path] = None, max_age: float = MAX_AGE, clock=time.time):
+    def __init__(self, path: Optional[Path] = None, max_age: Optional[float] = MAX_AGE, clock=time.time):
         self.path = Path(path) if path else None
         self.max_age = max_age
         self._clock = clock
@@ -69,7 +70,7 @@ class PlayOrders:
             entry = self._orders.get(context_uri)
             if not entry or not entry.get('items'):
                 return None
-            if self._clock() - entry.get('learned_at', 0) > self.max_age:
+            if self.max_age is not None and self._clock() - entry.get('learned_at', 0) > self.max_age:
                 return None
             return list(entry['items']), bool(entry.get('complete'))
 

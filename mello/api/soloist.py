@@ -75,6 +75,16 @@ def _name(entity: Optional[dict]) -> Optional[str]:
     return ((entity.get('decorations') or {}).get('identity') or {}).get('name')
 
 
+def _never_changes(context_uri: str) -> bool:
+    """Albums stay the same; playlists get edited and shows get new episodes.
+
+    Only for an album may direct play go round from the last track to the
+    first: elsewhere the end of the known order may be followed by something
+    new, so the end is reached the normal way (and the order learned again).
+    """
+    return context_uri.startswith('spotify:album:')
+
+
 def _playable(item: Optional[dict]) -> Optional[dict]:
     """Soloist briefly reports an item with an empty URI while it switches."""
     if isinstance(item, dict) and item.get('uri'):
@@ -599,6 +609,7 @@ class SoloistAPI:
             self._learn_epoch += 1
         known = self.play_orders.entry(uri) if (self.play_orders and skip_to_uri and not native) else None
         order, complete = known or (None, False)
+        complete = complete and _never_changes(uri)
         if order and skip_to_uri in order and (complete or order.index(skip_to_uri) < len(order) - 1):
             result = self._play_direct(uri, order, order.index(skip_to_uri), paused, epoch, complete)
             if result is not False:
@@ -782,6 +793,7 @@ class SoloistAPI:
         if not found:
             return None
         album, order, complete = found
+        complete = complete and _never_changes(album)
         self._direct = {'context': album, 'order': order, 'index': order.index(item), 'ended': None,
                         'last_pos': None, 'started': True, 'complete': complete}
         logger.info(f'Direct play picked up again: track {order.index(item) + 1}/{len(order)} of {album[:50]}')
@@ -930,7 +942,7 @@ class SoloistAPI:
                 logger.info(f'Play order not learned: no queue for {uri[:50]}')
                 return
             order, complete = one_round(current, upcoming)
-            self.play_orders.put(uri, order, complete)
+            self.play_orders.put(uri, order, complete and _never_changes(uri))
 
         threading.Thread(target=learn, daemon=True, name='learn-order').start()
 
