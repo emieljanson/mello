@@ -47,6 +47,7 @@ class Daemon:
         self.position = 1000
         self.api = None
         self.plays = []
+        self.context_delay = 0.0   # Spotify takes a while to start an album
 
     def snapshot(self):
         event = playback_state(status=self.status, position_ms=self.position, repeat=self.repeat)
@@ -75,6 +76,8 @@ class Daemon:
         if command == 'play' and 'uri' in message:
             uri = message['uri']
             self.plays.append(uri)
+            if uri in self.contexts and self.context_delay:
+                time.sleep(self.context_delay)
             self.status, self.position = 'playing', 1000
             if uri in self.contexts:
                 self.context = uri
@@ -347,6 +350,26 @@ def test_end_of_a_playlist_starts_it_over_the_normal_way():
     assert daemon.plays == [TRACKS[-1]]
     daemon.end_of_track()
     assert wait_until(lambda: PLAYLIST in daemon.plays)
+    assert daemon.item == TRACKS[0]
+
+
+def test_while_reading_the_list_again_the_album_is_shown_not_the_last_track():
+    """Seen on the device: next tapped past the last known track of a list.
+
+    For a moment only the bare track that played directly was known; the app
+    showed it as a new item and the carousel jumped to it and back.
+    """
+    api, daemon, store = playing(track=TRACKS[-1], context=PLAYLIST, store_kwargs={'complete': False})
+    daemon.context_delay = 0.3
+    seen = []
+    api.next()
+    end = time.time() + 1.5
+    while time.time() < end:
+        status = api.status()
+        seen.append(status and status.get('context_uri'))
+        time.sleep(0.01)
+    assert PLAYLIST in daemon.plays
+    assert set(seen) == {PLAYLIST}, set(seen)
     assert daemon.item == TRACKS[0]
 
 
