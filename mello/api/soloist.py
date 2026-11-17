@@ -159,6 +159,7 @@ class SoloistAPI:
         self._step_timer: Optional[threading.Timer] = None
         # Taps on next/previous not yet sent: {'index', 'beyond'}
         self._pending_step: Optional[dict] = None
+        self._reset_track_repeat = False
 
         self.ws: Optional[websocket.WebSocketApp] = None
         self.thread: Optional[threading.Thread] = None
@@ -364,6 +365,9 @@ class SoloistAPI:
             self._play_next_direct(*advance)
         elif need_snapshot:
             self._request_snapshot()
+        if self._reset_track_repeat:
+            self._reset_track_repeat = False
+            self._send('set_repeat_track', enabled=False)
 
         self._keep_spotify_volume_full()
         if became_inactive:
@@ -853,13 +857,18 @@ class SoloistAPI:
         order = direct['order']
         if not item:
             return None
-        if context not in order or item not in order:
+        # The album itself playing the normal way (next/previous were used
+        # before it ever went direct) is ours too.
+        ours = context == direct['context'] or context in order
+        if not ours or item not in order:
             # Something else is playing now (started from the Spotify app, or
             # a new album): direct play is over. Before our track was seen,
             # this is still the old album's state arriving.
-            if direct['started'] and context and context not in order:
+            if direct['started'] and context and not ours:
                 logger.info('Direct play ended: something else is playing')
                 self._end_direct_unlocked()
+                # Track repeat is direct play's; it must not stay on.
+                self._reset_track_repeat = self._repeat == 'track'
             return None
         direct['started'] = True
         position = (self._position or {}).get('position_ms') or 0
@@ -1028,7 +1037,7 @@ class SoloistAPI:
         """Next/previous using the known order. None: not known, use Spotify's own skip."""
         restart = False
         with self._state_lock:
-            if not self._is_active:
+            if not self._is_active or self._positioning_uri:
                 return None
             direct = self._direct or self._enter_direct_from_context_unlocked()
             if not direct:
@@ -1225,7 +1234,8 @@ class SoloistAPI:
             if current == track_uri:
                 return True
             upcoming = self._upcoming()
-            if upcoming and track_uri not in upcoming and len(upcoming) >= _QUEUE_CAP - 5:
+            if (upcoming and track_uri not in upcoming and current not in upcoming
+                    and len(upcoming) >= _QUEUE_CAP - 5):
                 # The queue shows only the next ~80 (a long audiobook): move
                 # towards its end and look again.
                 forward = len(upcoming)

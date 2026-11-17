@@ -498,3 +498,32 @@ def test_a_single_track_picked_by_the_child_is_not_taken_for_its_album():
     event['item'] = entity(TRACKS[2], 'x', playback={'duration_ms': DURATION})
     api._handle_event(event)
     assert api.context_uri == TRACKS[2]
+
+
+def test_saved_track_gone_from_a_changing_playlist_does_not_skip_round_and_round():
+    api, daemon, store = setup()
+    assert api.play(PLAYLIST, skip_to_uri='spotify:track:gone', paused=True) is True
+    skips = [m for m in api.sent if m['command'] in ('skip_next', 'skip_prev')]
+    assert skips == []
+    assert daemon.item == TRACKS[0]                    # it starts at the beginning
+
+
+def test_taps_while_the_playlist_plays_the_normal_way_are_not_lost():
+    api, daemon, store = setup()
+    api.play(PLAYLIST)                                 # normal way, from the start
+    assert wait_until(lambda: store.get(PLAYLIST) is not None)
+    daemon.plays.clear()
+    api.next(); api.next(); api.next()
+    api._handle_event(daemon.snapshot())               # the playlist's own news meanwhile
+    assert wait_until(lambda: daemon.plays == [TRACKS[3]])
+    assert daemon.repeat == 'track'
+
+
+def test_leaving_direct_play_switches_track_repeat_off():
+    api, daemon, _ = playing()
+    assert daemon.repeat == 'track'
+    other = playback_state(repeat='track')
+    other['context'] = entity('spotify:album:other', 'x')
+    other['item'] = entity('spotify:track:x', 'x', playback={'duration_ms': DURATION})
+    api._handle_event(other)
+    assert daemon.repeat == 'off'
