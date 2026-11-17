@@ -39,6 +39,8 @@ _SPOTIFY_PROMPT_TIMEOUT = 180
 # How long "Hold to close" must be held: long enough that a child's tap or
 # swipe does not close it by accident.
 PROMPT_HOLD_SECONDS = 3.0
+# How long the update button shows how a check or update ended.
+_UPDATE_RESULT_SECONDS = 4.0
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +119,14 @@ class SetupMenu:
         self._reset_confirm_time: float = 0.0
 
         # Manual update state
-        self._update_available: bool = False
         self._update_checking: bool = False
         self._update_running: bool = False
         self._update_process: Optional[subprocess.Popen] = None
+        # How the last check or update ended ("Up to date", "No internet"...),
+        # shown on the button itself for a moment: toasts are not drawn
+        # while the menu is open, so this is the only place it can be seen.
+        self._update_result: Optional[str] = None
+        self._update_result_time: float = 0.0
 
     @property
     def is_open(self) -> bool:
@@ -276,10 +282,7 @@ class SetupMenu:
             elif 'check_update' in button_rects and button_rects['check_update'].collidepoint(x, y):
                 if self._update_running or self._update_checking:
                     return
-                if self._update_available:
-                    self._run_update()
-                else:
-                    self._check_for_update()
+                self._check_for_update()
 
     def _show_spotify_screen(self):
         """Show how to reach the key entry page, and serve it meanwhile."""
@@ -415,6 +418,22 @@ class SetupMenu:
         last = bool(self.settings) and self.settings.soloist_prompt_is_last
         return PROMPT_BUTTON_LAST if last else PROMPT_BUTTON_LATER
 
+    @property
+    def update_button_label(self) -> str:
+        """What the update button says: what it is doing, or how it ended."""
+        if self._update_running:
+            return 'Updating...'
+        if self._update_checking:
+            return 'Checking...'
+        if self._update_result:
+            return self._update_result
+        return 'Check for updates'
+
+    def _set_update_result(self, label: str):
+        self._update_result = label
+        self._update_result_time = time.time()
+        self._on_invalidate()
+
     def handle_scroll(self, delta: int, max_overflow: int):
         """Adjust scroll offset by delta, clamped to valid range."""
         self.scroll_offset = max(0, min(max_overflow, self.scroll_offset + delta))
@@ -452,9 +471,13 @@ class SetupMenu:
                 self._update_process = None
                 self._update_running = False
                 if ret != 0:
-                    self._on_toast('Update failed')
-                self._update_available = False
+                    logger.error(f'Manual update failed (exit code {ret}), see ~/mello-update.log')
+                    self._set_update_result('Update failed')
                 self._on_invalidate()
+
+        if self._update_result and time.time() - self._update_result_time > _UPDATE_RESULT_SECONDS:
+            self._update_result = None
+            self._on_invalidate()
 
         if self.state == MenuState.WIFI_AP and self._wifi_process:
             ret = self._wifi_process.poll()
@@ -475,9 +498,13 @@ class SetupMenu:
     # ------------------------------------------------------------------
 
     def _check_for_update(self):
-        """Check if a newer version is available on the remote branch."""
+        """Look for a newer version and, when there is one, install it.
+
+        One tap does both: someone who taps "Check for updates" wants the
+        update. The outcome shows on the button itself.
+        """
         self._update_checking = True
-        self._update_available = False
+        self._update_result = None
         self._on_invalidate()
 
         def _check():
@@ -489,9 +516,7 @@ class SetupMenu:
                 )
                 if git_dir_check.returncode != 0:
                     logger.warning('Git repo broken — triggering auto-update to re-clone')
-                    self._on_toast('Repairing install...')
                     self._update_checking = False
-                    self._on_invalidate()
                     self._run_update()
                     return
 
@@ -502,21 +527,30 @@ class SetupMenu:
                     capture_output=True, text=True, timeout=30,
                 )
                 if result.returncode != 0:
-                    if result.returncode != 2:
-                        logger.error(f'Update check failed: {result.stderr.strip()}')
-                    self._on_toast('No internet?' if result.returncode == 2 else 'Check failed')
+                    reason = result.stderr.strip()
                     self._update_checking = False
-                    self._on_invalidate()
+                    if result.returncode == 2:
+                        logger.warning(f'Update check: GitHub not reachable: {reason}')
+                        self._set_update_result('No internet')
+                    else:
+                        logger.error(f'Update check failed: {reason}')
+                        self._set_update_result('Check failed')
                     return
                 logger.info(f'Update check: {result.stdout.strip()}')
-                self._update_available = result.stdout.split()[:1] == ['update']
-                if self._update_available:
-                    self._on_toast('Update available!')
+                status = (result.stdout.split() or [''])[0]
+                self._update_checking = False
+                if status == 'update':
+                    self._run_update()
+                elif status == 'failed':
+                    # The newest version broke on this speaker before and
+                    # was rolled back: waiting for a newer one.
+                    self._set_update_result('Update failed')
                 else:
-                    self._on_toast('Up to date')
+                    self._set_update_result('Up to date')
             except Exception as e:
                 logger.error(f'Update check failed: {e}')
-                self._on_toast('Check failed')
+                self._update_checking = False
+                self._set_update_result('Check failed')
             finally:
                 self._update_checking = False
                 self._on_invalidate()
@@ -526,8 +560,8 @@ class SetupMenu:
     def _run_update(self):
         """Trigger the auto-update script (will restart the app)."""
         self._update_running = True
+        self._update_result = None
         self._on_invalidate()
-        self._on_toast("Updating... don't unplug")
         try:
             self._update_process = subprocess.Popen(
                 _update_command(Path.home() / 'mello-update.log'),
@@ -538,8 +572,7 @@ class SetupMenu:
         except Exception as e:
             logger.error(f'Failed to start update: {e}')
             self._update_running = False
-            self._on_toast('Update failed')
-            self._on_invalidate()
+            self._set_update_result('Update failed')
 
     def _handle_volume_tap(self, button_rects: dict, x: int, y: int):
         """Handle taps on the volume settings screen (+/- buttons)."""
