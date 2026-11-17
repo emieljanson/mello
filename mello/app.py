@@ -862,6 +862,18 @@ class Mello:
             self.bluetooth.set_volume(self.volume.bt_level)
         self.renderer.invalidate()
 
+    def _on_fell_asleep(self):
+        """The screen just went off after being left alone."""
+        # Every touch sets the touchscreen's wake signal and only sleep clears
+        # it, so a touch from before the screen went off was still pending:
+        # the screen woke 0.2 s later with nobody touching it (9 of 18 touch
+        # wakes on the daily speaker) and stayed on for 2 more minutes. Only a
+        # touch while asleep may wake it.
+        self.evdev_touch.wake_event.clear()
+        self.bluetooth.pause_monitoring()
+        idle = time.time() - self.sleep_manager.last_activity
+        self.tracker.on_sleep(idle)
+
     def _handle_signal(self, signum, frame):
         """Handle SIGTERM/SIGINT/SIGHUP for graceful shutdown."""
         sig_name = signal.Signals(signum).name
@@ -2269,9 +2281,7 @@ class Mello:
         menu_open = self.setup_menu.state != MenuState.CLOSED
         self.sleep_manager.check_sleep(self.now_playing.playing or menu_open)
         if was_awake and self.sleep_manager.is_sleeping:
-            self.bluetooth.pause_monitoring()
-            idle = time.time() - self.sleep_manager.last_activity
-            self.tracker.on_sleep(idle)
+            self._on_fell_asleep()
         
         self.playback.update_loading_state(
             self.now_playing, self.carousel.settled,
