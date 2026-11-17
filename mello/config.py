@@ -180,6 +180,9 @@ CAROUSEL_TOUCH_MARGIN = 50  # Extra pixels beyond cover for touch zone
 MAX_SWIPE_JUMP = 5          # Max items to skip in one swipe
 VELOCITY_THRESHOLDS = (1.0, 2.0, 3.5)  # Velocity breakpoints for swipe bonus
 ACTION_DEBOUNCE = 0.3     # Seconds between button actions
+# Next/previous: every quick tap of a child counts (the engine adds them up
+# and plays where they end); this only stops one tap counting twice.
+SKIP_DEBOUNCE = 0.12
 BUTTON_PRESS_DURATION = 0.15  # Seconds to show pressed state
 MENU_HOLD_TIME = 3.0      # Seconds to hold volume button to open setup menu
 
