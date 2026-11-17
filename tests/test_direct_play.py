@@ -545,7 +545,8 @@ def test_taps_while_the_playlist_plays_the_normal_way_are_not_lost():
     api.next(); api.next(); api.next()
     api._handle_event(daemon.snapshot())               # the playlist's own news meanwhile
     assert wait_until(lambda: daemon.plays == [TRACKS[3]])
-    assert daemon.repeat == 'track'
+    # The step timer sends play, then track repeat: the second may still be on its way.
+    assert wait_until(lambda: daemon.repeat == 'track')
 
 
 def test_leaving_direct_play_switches_track_repeat_off():
