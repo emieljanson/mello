@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ..config import (
     CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH,
-    SOLOIST_DATA_DIR, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
+    SOLOIST_DATA_DIR, SOLOIST_HOME, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
 )
 from ..models import MenuState
 from .engine_setup import (
@@ -932,26 +932,27 @@ class SetupMenu:
 
         self.close()
 
-    def _clear_soloist_login(self):
-        """Log Soloist out of Spotify.
+    def _forget_soloist_owner(self):
+        """Log Soloist out and remove the owner's API key.
 
-        Soloist has no logout command and keeps the session inside its data
-        directory, so the daemon is stopped, the directory emptied, and the
-        daemon started again: it comes back waiting for a new owner.
+        The key belongs to the owner's own Spotify developer account. After a
+        factory reset the speaker may go to someone else, so it must not keep
+        it: the speaker goes back to the standard Spotify engine (at the end of
+        the reset) and a new owner can enter their own key.
         """
         subprocess.run(
             ['sudo', 'systemctl', 'stop', SPOTIFY_ENGINE_SERVICE],
             capture_output=True, timeout=15,
         )
-        try:
-            if SOLOIST_DATA_DIR.exists():
-                shutil.rmtree(SOLOIST_DATA_DIR)
-            logger.info('Spotify credentials cleared')
-        finally:
-            subprocess.run(
-                ['sudo', 'systemctl', 'start', SPOTIFY_ENGINE_SERVICE],
-                capture_output=True, timeout=15,
-            )
+        if SOLOIST_DATA_DIR.exists():
+            shutil.rmtree(SOLOIST_DATA_DIR)
+        logger.info('Spotify credentials cleared')
+        for name in ('key', 'key.tmp'):
+            try:
+                (SOLOIST_HOME / name).unlink()
+            except FileNotFoundError:
+                pass
+        logger.info('Soloist API key removed')
 
     def _factory_reset(self):
         """Full factory reset: catalog, settings, Spotify, Bluetooth, WiFi."""
@@ -970,7 +971,7 @@ class SetupMenu:
         # 2. Clear Spotify credentials
         try:
             if SPOTIFY_ENGINE == 'soloist':
-                self._clear_soloist_login()
+                self._forget_soloist_owner()
             elif LIBRESPOT_STATE_PATH.exists():
                 state = json.loads(LIBRESPOT_STATE_PATH.read_text())
                 state['credentials'] = {'username': '', 'data': None}
@@ -1046,9 +1047,22 @@ class SetupMenu:
         except Exception as e:
             logger.error(f'Failed to forget WiFi networks: {e}')
 
-        # 7. Restart app
+        # 7. Restart app. A speaker on Soloist has no key any more: it goes
+        # back to go-librespot, and that script restarts the app itself.
         def _restart_app():
             time.sleep(2)
+            if SPOTIFY_ENGINE == 'soloist':
+                script = Path(_REPO_DIR) / 'pi' / 'soloist' / 'soloist-setup.sh'
+                try:
+                    result = subprocess.run(
+                        ['bash', str(script), 'deactivate'],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if result.returncode == 0:
+                        return
+                    logger.warning(f'Switching back to go-librespot failed: {result.stdout[-300:]}')
+                except Exception as ex:
+                    logger.warning(f'Could not switch back to go-librespot: {ex}')
             try:
                 subprocess.run(
                     ['sudo', 'systemctl', 'restart', 'mello-native'],
