@@ -1521,7 +1521,7 @@ class Mello:
                     self._wake_from_sleep(f'pygame_touch:{event.pos}')
                     continue
                 self.sleep_manager.reset_timer()
-                self._handle_touch_down(event.pos)
+                self._handle_touch_down(event.pos, getattr(event, 'touched_at', None))
             
             elif event.type == pygame.KEYDOWN:
                 if self.sleep_manager.is_sleeping:
@@ -1563,7 +1563,7 @@ class Mello:
                         self._menu_touch_start = None
                         self._menu_touch_scrolled = False
                     else:
-                        self._handle_touch_up(event.pos)
+                        self._handle_touch_up(event.pos, getattr(event, 'touched_at', None))
                     self._handle_button_up()
     
     def _handle_key(self, key):
@@ -1581,7 +1581,7 @@ class Mello:
         elif key == pygame.K_p:
             self._skip_track(self.api.prev)
     
-    def _handle_touch_down(self, pos):
+    def _handle_touch_down(self, pos, touched_at: Optional[float] = None):
         """Handle touch/mouse down."""
         # Menu intercept — track touch start for scroll vs tap detection
         if self.setup_menu.is_open:
@@ -1611,7 +1611,7 @@ class Mello:
         # Carousel swipes - within carousel X zone, full Y range
         if carousel_x_min <= x <= carousel_x_max:
             logger.debug('Touch down: carousel swipe start')
-            self.touch.on_down(pos)
+            self.touch.on_down(pos, touched_at)
             self.user_interacting = True
         else:
             logger.debug('Touch down: outside carousel')
@@ -1718,7 +1718,7 @@ class Mello:
         self._delete_button_rect = None
         self.renderer.invalidate()
     
-    def _handle_touch_up(self, pos):
+    def _handle_touch_up(self, pos, touched_at: Optional[float] = None):
         """Handle touch/mouse up."""
         logger.debug(f'Touch up: pos={pos}, dragging={self.touch.dragging}')
         if not self.touch.dragging:
@@ -1728,7 +1728,7 @@ class Mello:
         drag_index_offset = -self.touch.drag_offset / (COVER_SIZE + COVER_SPACING)
         visual_position = self.selected_index + drag_index_offset
         
-        action, velocity = self.touch.on_up(pos)
+        action, velocity = self.touch.on_up(pos, touched_at)
         self.carousel.scroll_x = visual_position
         
         x, y = pos
@@ -1761,7 +1761,7 @@ class Mello:
                 # Tap on next item (higher Y)
                 self._navigate(1)
             else:
-                logger.debug('Carousel tap: play')
+                logger.info('Carousel tap: play')
                 self._last_action_time = now
                 self._pressed_button = 'play'
                 self._pressed_time = now
@@ -1816,7 +1816,7 @@ class Mello:
                 # Don't toggle volume here — wait for button up (short tap) or hold (menu)
             
             if button_pressed:
-                logger.debug(f'Button press: {button_pressed}')
+                logger.info(f'Button press: {button_pressed}')
                 self._last_action_time = now
                 self._pressed_button = button_pressed
                 self._pressed_time = now
