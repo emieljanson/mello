@@ -282,3 +282,28 @@ def test_paused_track_does_not_move_on():
     api.sent.clear()
     time.sleep(0.6)
     assert sent(api) == []
+
+
+def test_direct_play_is_picked_up_after_a_restart():
+    store = PlayOrders(None)
+    store.put(ALBUM, TRACKS)
+    api = connected_api(play_orders=store)       # a fresh app; Spotify is still on the single track
+    api._handle_event(track_snapshot(TRACKS[2], position_ms=5000))
+    assert api.context_uri == ALBUM
+    api.sent.clear()
+    api._handle_event(track_snapshot(TRACKS[2], status='buffering', position_ms=DURATION))
+    assert [m.get('uri') for m in api.sent if m['command'] == 'play'] == [TRACKS[3]]
+
+
+def test_a_single_track_that_is_in_no_album_is_left_alone():
+    api = connected_api(play_orders=PlayOrders(None))
+    api._handle_event(track_snapshot('spotify:track:alone'))
+    assert api.context_uri == 'spotify:track:alone'
+
+
+def test_a_single_track_picked_by_the_child_is_not_taken_for_its_album():
+    store = PlayOrders(None)
+    store.put(ALBUM, TRACKS)
+    api = connected_api(play_orders=store)
+    api._handle_event(track_snapshot(TRACKS[2], repeat='off'))     # Mello plays a track item
+    assert api.context_uri == TRACKS[2]

@@ -724,6 +724,8 @@ class SoloistAPI:
         the next one should start, else None.
         """
         direct = self._direct
+        if not direct and self.play_orders and self._is_active:
+            direct = self._recover_direct_unlocked()
         if not direct or not self._is_active:
             return None
         item = self._item_uri_unlocked()
@@ -760,6 +762,27 @@ class SoloistAPI:
                 return direct['context'], None   # beyond what is known
             return direct['context'], (index + 1) % len(order)
         return None
+
+    def _recover_direct_unlocked(self) -> Optional[dict]:
+        """Pick up a direct play this app did not start (or forgot in a restart).
+
+        Spotify keeps playing the single track with track repeat on: without
+        Mello moving on, it would play that one track over and over.
+        """
+        item = self._item_uri_unlocked()
+        context = (self._context or {}).get('uri')
+        # Track repeat is only ever switched on by direct play: a single
+        # track the child picked in Mello (or in the Spotify app) is left alone.
+        if not item or context != item or self._repeat != 'track':
+            return None
+        found = self.play_orders.find(item)
+        if not found:
+            return None
+        album, order, complete = found
+        self._direct = {'context': album, 'order': order, 'index': order.index(item), 'ended': None,
+                        'last_pos': None, 'started': True, 'complete': complete}
+        logger.info(f'Direct play picked up again: track {order.index(item) + 1}/{len(order)} of {album[:50]}')
+        return self._direct
 
     def _arm_end_timer_unlocked(self):
         """During direct play, start the next track just before this one ends."""
@@ -873,12 +896,16 @@ class SoloistAPI:
                 with self._state_lock:
                     if self._learn_epoch != epoch or not self._is_playing_context(uri):
                         return
-                    ready = self._repeat == 'context' and self._status == 'playing'
+                    # Albums and playlists loop (the app turns that on right
+                    # after the start; then the queue shows the whole round).
+                    # Shows do not loop: their queue only shows what follows.
+                    loops = self._repeat == 'context' or not uri.startswith(('spotify:album:', 'spotify:playlist:'))
+                    ready = loops and self._status == 'playing'
                 if ready:
                     break
                 time.sleep(0.5)
             else:
-                logger.info(f'Play order not learned: {uri[:50]} did not loop yet')
+                logger.info(f'Play order not learned: {uri[:50]} did not start or loop')
                 return
             current = self._item_uri()
             upcoming = self._upcoming()

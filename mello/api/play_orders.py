@@ -87,6 +87,18 @@ class PlayOrders:
         logger.info(f'Play order learned: {context_uri[:50]} ({len(items)} items'
                     f'{"" if complete else ", part of it"})')
 
+    def find(self, track_uri: str) -> Optional[Tuple[str, List[str], bool]]:
+        """The album a track belongs to: (context, items, complete), newest first."""
+        with self._lock:
+            best = None
+            for context, entry in self._orders.items():
+                if track_uri in (entry.get('items') or []):
+                    if best is None or entry.get('learned_at', 0) > best[1].get('learned_at', 0):
+                        best = (context, entry)
+            if not best:
+                return None
+            return best[0], list(best[1]['items']), bool(best[1].get('complete'))
+
     def forget(self, context_uri: str):
         with self._lock:
             if self._orders.pop(context_uri, None) is not None:
