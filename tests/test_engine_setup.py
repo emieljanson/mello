@@ -99,7 +99,7 @@ def test_a_second_request_while_switching_is_ignored(tmp_path):
     setup = setup_for(tmp_path, script_body='sleep 1')
 
     assert setup.submit_key(KEY) is True
-    assert setup.switch_back() is False
+    assert setup.forget_account() is False
 
 
 def test_page_exists_only_between_start_and_stop_and_never_shows_the_key(tmp_path):
@@ -110,8 +110,8 @@ def test_page_exists_only_between_start_and_stop_and_never_shows_the_key(tmp_pat
     try:
         page = urllib.request.urlopen(url, timeout=3).read().decode()
         assert 'Paste the code' in page
-        assert 'librespot' not in page.replace('action="/librespot"', '')   # no engine names for the owner
-        assert 'Turn off faster playback' in page      # only offered while on Soloist
+        assert 'librespot' not in page   # no engine names for the owner
+        assert 'Turn off faster playback' not in page   # once on, it stays on
 
         answer = urllib.request.urlopen(
             urllib.request.Request(f'{url}/key', data=f'key={KEY}'.encode()), timeout=3,

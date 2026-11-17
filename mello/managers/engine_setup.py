@@ -106,9 +106,6 @@ _ACCOUNT = """<hr><p class="eyebrow">Spotify account</p>
 </form>
 <p class="small">Mello forgets this account. Then choose Mello in the Spotify app of the account it should play with, on a phone on the same WiFi. Your code from Spotify stays.</p>"""
 
-_BACK = """<hr><form method="post" action="/librespot">
- <button type="submit" class="plain">Turn off faster playback</button>
-</form>"""
 
 # The same words as on Mello's own screen while it switches.
 _BUSY = """<h1>One moment&hellip;</h1>
@@ -231,8 +228,6 @@ class EngineSetup:
                 fields = parse_qs(self.rfile.read(length).decode('utf-8', 'replace'))
                 if self.path == '/key':
                     setup.submit_key((fields.get('key') or [''])[0])
-                elif self.path == '/librespot':
-                    setup.switch_back()
                 elif self.path == '/account' and setup.engine == 'soloist':
                     setup.forget_account()
                 else:
@@ -314,7 +309,7 @@ class EngineSetup:
             lead=lead,
             button='Save' if on_soloist else 'Connect',
             message=message,
-            back=(self._account_section() + _BACK) if on_soloist else '',
+            back=self._account_section() if on_soloist else '',
         )
 
     def _account_section(self) -> str:
@@ -343,9 +338,6 @@ class EngineSetup:
             return False
         logger.info('Soloist API key saved')
         return self._run_script('activate')
-
-    def switch_back(self) -> bool:
-        return self._run_script('deactivate')
 
     def forget_account(self) -> bool:
         """Log the Spotify account out, so another one can pick Mello."""
