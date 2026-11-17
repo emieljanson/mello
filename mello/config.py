@@ -165,7 +165,9 @@ BT_SCAN_DURATION = 20.0
 # ============================================
 
 SLEEP_TIMEOUT = 120.0  # 2 minutes of inactivity
-PLAY_TIMER_DELAY = 1.0  # seconds before auto-play
+# Seconds the carousel must stand still on an album before it starts playing.
+# Long enough that swiping past an album stays silent, short enough to feel instant.
+PLAY_TIMER_DELAY = float(os.environ.get('MELLO_PLAY_DELAY', '0.4'))
 SYNC_COOLDOWN = 5.0  # Block sync for 5s after play timer fires
 PROGRESS_SAVE_INTERVAL = 10  # Save progress every 10 seconds
 PROGRESS_EXPIRY_HOURS = 96  # Expire saved progress after 96 hours
