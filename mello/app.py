@@ -1637,7 +1637,7 @@ class Mello:
                 # Tap on next item (higher Y)
                 self._navigate(1)
             else:
-                logger.debug('Carousel tap: play')
+                logger.info('Carousel tap: play')
                 self._last_action_time = now
                 self._pressed_button = 'play'
                 self._pressed_time = now
@@ -1692,7 +1692,7 @@ class Mello:
                 # Don't toggle volume here — wait for button up (short tap) or hold (menu)
             
             if button_pressed:
-                logger.debug(f'Button press: {button_pressed}')
+                logger.info(f'Button press: {button_pressed}')
                 self._last_action_time = now
                 self._pressed_button = button_pressed
                 self._pressed_time = now
