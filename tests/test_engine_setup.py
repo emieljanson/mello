@@ -2,6 +2,7 @@
 Tests for the Spotify engine setup page (entering the Soloist API key).
 """
 import stat
+import types
 import sys
 import time
 import urllib.request
@@ -521,3 +522,52 @@ def test_damaged_settings_file_does_not_stop_mello_from_starting(tmp_path):
     path.write_text('{"soloist_prompt_declined": null, "soloist_prompt_after": "soon"}')
     settings = Settings(path=path)
     assert settings.auto_pause_minutes == 30
+
+
+def test_factory_reset_on_soloist_removes_the_owners_key(tmp_path, monkeypatch):
+    """A speaker that is given away must not keep the previous owner's key."""
+    import mello.managers.setup_menu as sm
+
+    home = tmp_path / 'soloist'
+    (home / 'data').mkdir(parents=True)
+    (home / 'data' / 'session.json').write_text('{}')
+    (home / 'key').write_text(KEY + '\n')
+    (home / 'soloist').write_text('binary')
+    monkeypatch.setattr(sm, 'SPOTIFY_ENGINE', 'soloist')
+    monkeypatch.setattr(sm, 'SOLOIST_HOME', home)
+    monkeypatch.setattr(sm, 'SOLOIST_DATA_DIR', home / 'data')
+    monkeypatch.setattr(sm, 'CATALOG_PATH', tmp_path / 'catalog.json')
+    monkeypatch.setattr(sm, 'SETTINGS_PATH', tmp_path / 'settings.json')
+    monkeypatch.setattr(sm, 'IMAGES_DIR', tmp_path / 'images')
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+
+    class InlineThread:
+        def __init__(self, target, daemon=None, **_kw):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(sm.subprocess, 'run', fake_run)
+    monkeypatch.setattr(sm.threading, 'Thread', InlineThread)
+    monkeypatch.setattr(sm.time, 'sleep', lambda _s: None)
+    menu = SetupMenu(
+        catalog_manager=types.SimpleNamespace(clear_all_progress=lambda: None), settings=None,
+        on_toast=lambda _m: None, on_invalidate=lambda: None, on_library_cleared=lambda: None,
+    )
+
+    menu._factory_reset()
+
+    assert not (home / 'key').exists()
+    assert not (home / 'data').exists()
+    assert (home / 'soloist').exists()   # the downloaded build stays for the next owner
+    scripts = [c for c in calls if c[0] == 'bash']
+    assert len(scripts) == 1 and scripts[0][1].endswith('pi/soloist/soloist-setup.sh')
+    assert scripts[0][2] == 'deactivate'
+    # The script restarts the app itself; no second restart on top of it.
+    assert ['sudo', 'systemctl', 'restart', 'mello-native'] not in calls
+    assert ['sudo', 'systemctl', 'start', 'mello-soloist'] not in calls
