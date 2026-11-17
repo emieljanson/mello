@@ -15,7 +15,7 @@ from . import crash_log
 from .config import (
     LOG_DIR,
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE, UI_ENGINE,
+    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, SPOTIFY_ENGINE_SERVICE, UI_ENGINE, DIRECT_PLAY,
     SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR, DATA_DIR,
     MOCK_MODE,
@@ -252,7 +252,7 @@ class Mello:
             self.api = SoloistAPI(
                 SOLOIST_WS, self._on_ws_update, self._on_ws_reconnect,
                 on_inactive=self._on_spotify_inactive,
-                play_orders=PlayOrders(DATA_DIR / 'play_orders.json'),
+                play_orders=PlayOrders(DATA_DIR / 'play_orders.json') if DIRECT_PLAY else None,
             )
         else:
             self.api = LibrespotAPI(LIBRESPOT_URL)
