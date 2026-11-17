@@ -9,3 +9,6 @@ evdev>=1.7.0; sys_platform == 'linux'
 dbus-fast>=2.0.0; sys_platform == 'linux'
 posthog>=3.0.0
 qrcode>=7.4
+# Slint screen (MELLO_UI=slint). Pinned: Slint's Python package is a beta,
+# and only 64-bit Pi OS has wheels (32-bit speakers keep the Pygame screen).
+slint==1.19.0b1; sys_platform == 'linux' and platform_machine == 'aarch64'

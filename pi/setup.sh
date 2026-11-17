@@ -41,7 +41,8 @@ sudo apt-get install -y \
   python3-venv python3-pip python3-dev python3-pygame \
   libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
   network-manager \
-  pipewire pipewire-pulse wireplumber pipewire-alsa libspa-0.2-bluetooth
+  pipewire pipewire-pulse wireplumber pipewire-alsa libspa-0.2-bluetooth \
+  libinput10
 
 # ============================================
 # 2. Configure boot settings (display + audio + quiet boot)
