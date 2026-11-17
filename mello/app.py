@@ -22,7 +22,7 @@ from .config import (
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     CAROUSEL_TOUCH_MARGIN, MAX_SWIPE_JUMP, VELOCITY_THRESHOLDS,
-    ACTION_DEBOUNCE, SKIP_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
+    ACTION_DEBOUNCE, SKIP_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME, PLAY_TIMER_DELAY,
     CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
@@ -2320,7 +2320,7 @@ class Mello:
             self._user_driving = False
         elif self._pending_focus_since == 0.0:
             self._pending_focus_since = now
-        elif now - self._pending_focus_since >= 1.0:
+        elif now - self._pending_focus_since >= PLAY_TIMER_DELAY:
             self._play_item(item.uri)
 
     def _update(self, dt: float):
