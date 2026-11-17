@@ -100,6 +100,45 @@ class CatalogManager:
             filename = image_path[8:]  # Remove "/images/" prefix
             return (self.images_path / filename).exists()
         return False
+
+    def _promote_temp_image(self, image_path: Optional[str]) -> Optional[str]:
+        """A saved item must never point at a temporary cover (temp_<hash>).
+
+        Temporary covers are renamed to permanent the moment an item using
+        them is saved. If another item with the same cover was saved first,
+        its rename left the temp path pointing at nothing (seen on the daily
+        speaker: a single and its album share a cover; the single lost it).
+        Returns the permanent path when the cover exists under it.
+        """
+        if not image_path or not image_path.startswith('/images/temp_'):
+            return image_path
+        hash_short = image_path[len('/images/temp_'):].replace('.png', '')
+        for suffix in ['', '_small', '_dim', '_small_dim']:
+            old = self.images_path / f'temp_{hash_short}{suffix}.png'
+            new = self.images_path / f'{hash_short}{suffix}.png'
+            if old.exists() and not new.exists():
+                old.rename(new)
+        permanent = f'/images/{hash_short}.png'
+        if self._image_exists(permanent):
+            self.image_hashes[hash_short] = permanent
+            return permanent
+        return image_path
+
+    def _repair_image_paths(self):
+        """Point saved items that still use a temporary cover at the permanent one."""
+        catalog = self._load_raw()
+        repaired = []
+        for item in catalog.get('items', []):
+            if not isinstance(item, dict):
+                continue
+            image = item.get('image')
+            fixed = self._promote_temp_image(image)
+            if fixed != image:
+                item['image'] = fixed
+                repaired.append(item.get('name'))
+        if repaired:
+            self._save_raw(catalog)
+            logger.info(f'Cover paths repaired: {", ".join(str(n) for n in repaired)}')
     
     def load(self) -> List[CatalogItem]:
         """Load catalog items from disk."""
@@ -124,6 +163,11 @@ class CatalogManager:
             except (json.JSONDecodeError, IOError, OSError) as e:
                 logger.warning(f'Could not recover from temp file: {e}')
                 temp_path.unlink()
+
+        try:
+            self._repair_image_paths()
+        except Exception as e:
+            logger.warning(f'Could not repair cover paths: {e}', exc_info=True)
 
         try:
             logger.info(f'Loading catalog from {self.catalog_path}')
@@ -625,6 +669,9 @@ class CatalogManager:
                     logger.warning(f'Unexpected error downloading image: {e}', exc_info=True)
                     local_image = image_url  # Fallback to URL
             
+            # A cached cover may still be a temporary one: make it permanent.
+            local_image = self._promote_temp_image(local_image or item_data.get('image'))
+
             # Build new item (no images array, just single image)
             new_item = {
                 'id': str(int(time.time() * 1000)),
