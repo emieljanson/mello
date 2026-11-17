@@ -170,8 +170,8 @@ _ensure_git_repo() {
     rm -f "$dotenv_backup"
   fi
 
-  # Recreate venv (pygame is installed via apt, so --system-site-packages
-  # is required for the venv to see it).
+  # Recreate venv (--system-site-packages: older versions use apt's
+  # python3-pygame, which a speaker held on such a version still needs).
   log "Recreating venv"
   rm -rf venv
   python3 -m venv --system-site-packages venv

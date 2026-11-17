@@ -1,6 +1,4 @@
-# Mello - Pygame UI
-# pygame is installed via apt (python3-pygame) for SDL 2.32+ / kmsdrm support.
-# Do NOT add it here — the venv uses --system-site-packages to pick it up.
+# Mello
 requests>=2.31.0
 websocket-client>=1.7.0
 Pillow>=10.0.0
@@ -9,9 +7,10 @@ evdev>=1.7.0; sys_platform == 'linux'
 dbus-fast>=2.0.0; sys_platform == 'linux'
 posthog>=3.0.0
 qrcode>=7.4
-# Slint screen (MELLO_UI=slint). Pinned: Slint's Python package is a beta,
-# and only 64-bit Pi OS has wheels (32-bit speakers keep the Pygame screen).
-# It needs Python 3.12+ (Raspberry Pi OS Trixie): on Bookworm (3.11) pip
-# would fail, which stops the nightly update halfway; those speakers keep
-# the Pygame screen instead.
-slint==1.19.0b1; sys_platform == 'linux' and platform_machine == 'aarch64' and python_version >= '3.12'
+# The screen. Pinned: Slint's Python package is a beta. Its ready-made
+# packages need Python 3.12+ and glibc 2.35+ (Raspberry Pi OS Trixie), 64-bit
+# (aarch64) or 32-bit (armv7l; a 32-bit system on a 64-bit kernel reports
+# aarch64 or armv8l). Older systems skip it; pi/migrate.sh then keeps them on
+# the last version that drew the screen without Slint.
+slint==1.19.0b1; sys_platform == 'linux' and python_version >= '3.12' and platform_machine in 'aarch64 armv7l armv8l'
+slint==1.19.0b1; sys_platform == 'darwin' and python_version >= '3.12'
