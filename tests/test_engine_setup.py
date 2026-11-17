@@ -5,6 +5,7 @@ import stat
 import types
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -597,6 +598,18 @@ def test_owner_sees_the_spotify_account_and_can_hand_mello_to_another(tmp_path):
 def test_account_choice_is_only_offered_on_soloist(tmp_path):
     setup = setup_for(tmp_path, engine='librespot')
     assert 'Use another Spotify account' not in setup._render('/code')
+    assert setup.start() is True
+    url = f'http://127.0.0.1:{setup._server.server_address[1]}'
+    try:
+        try:
+            urllib.request.urlopen(urllib.request.Request(f'{url}/account', data=b''), timeout=3)
+            status = 200
+        except urllib.error.HTTPError as e:
+            status = e.code
+        assert status == 404
+        assert not (tmp_path / 'calls').exists()
+    finally:
+        setup.stop()
     soloist = setup_for(tmp_path, engine='soloist')
     assert soloist.current_account() is None
     assert 'No account yet' in soloist._render('/code')
@@ -609,6 +622,8 @@ def test_forget_account_keeps_the_key_and_the_speaker_identity(tmp_path):
     cache.mkdir(parents=True)
     (home / 'data' / 'cache' / 'client_token').write_text('x')
     (home / 'data' / '.device_id').write_text('id')
+    (home / 'data' / '..odd').write_text('x')
+    (home / 'data' / 'dangling').symlink_to(tmp_path / 'nowhere')
     (home / 'key').write_text(KEY + '\n')
     code_dir = tmp_path / 'code'
     (code_dir / 'pi' / 'soloist').mkdir(parents=True)
@@ -625,5 +640,5 @@ def test_forget_account_keeps_the_key_and_the_speaker_identity(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert sorted(p.name for p in (home / 'data').iterdir()) == ['.device_id']
     assert (home / 'key').exists()
-    assert (tmp_path / 'sudo').read_text().split('\n')[:3] == [
+    assert (tmp_path / 'sudo').read_text().splitlines() == [
         'systemctl stop mello-soloist', 'systemctl start mello-soloist', 'systemctl restart mello-native']

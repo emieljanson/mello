@@ -156,14 +156,10 @@ cmd_deactivate() {
 # it while Soloist is stopped, keeping only the speaker's identity, so the
 # next account that picks Mello in Spotify becomes its account.
 cmd_forget_account() {
-  local data="$SOLOIST_HOME/data" entry
+  local data="$SOLOIST_HOME/data"
   sudo systemctl stop mello-soloist
   if [ -d "$data" ]; then
-    for entry in "$data"/* "$data"/.[!.]*; do
-      [ -e "$entry" ] || continue
-      [ "$(basename "$entry")" = ".device_id" ] && continue
-      rm -rf "$entry"
-    done
+    find "$data" -mindepth 1 -maxdepth 1 ! -name .device_id -exec rm -rf {} +
   fi
   log "Spotify account forgotten; waiting for someone to pick Mello in Spotify"
   if [ "$(engine)" = "soloist" ]; then

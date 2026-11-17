@@ -233,7 +233,7 @@ class EngineSetup:
                     setup.submit_key((fields.get('key') or [''])[0])
                 elif self.path == '/librespot':
                     setup.switch_back()
-                elif self.path == '/account':
+                elif self.path == '/account' and setup.engine == 'soloist':
                     setup.forget_account()
                 else:
                     self.send_error(404)
