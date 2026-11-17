@@ -1,0 +1,17 @@
+[Unit]
+Description=Mello update (pi/auto-update.sh), started by mello-update.timer
+Wants=network-online.target
+After=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+User=__USER__
+Environment=HOME=__HOME__
+# Right after boot (a night that was missed) WiFi may still be connecting.
+ExecStartPre=-/bin/bash -c 'for i in $(seq 45); do getent hosts github.com >/dev/null && exit 0; sleep 2; done'
+ExecStart=/bin/bash __HOME__/mello/pi/auto-update.sh
+StandardOutput=append:__HOME__/mello-update.log
+StandardError=append:__HOME__/mello-update.log
+# A hung update (pip, apt) would hold the update lock until the next reboot
+# and every later update would skip itself. Stop it instead.
+TimeoutStartSec=45min

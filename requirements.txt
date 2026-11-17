@@ -11,4 +11,7 @@ posthog>=3.0.0
 qrcode>=7.4
 # Slint screen (MELLO_UI=slint). Pinned: Slint's Python package is a beta,
 # and only 64-bit Pi OS has wheels (32-bit speakers keep the Pygame screen).
-slint==1.19.0b1; sys_platform == 'linux' and platform_machine == 'aarch64'
+# It needs Python 3.12+ (Raspberry Pi OS Trixie): on Bookworm (3.11) pip
+# would fail, which stops the nightly update halfway; those speakers keep
+# the Pygame screen instead.
+slint==1.19.0b1; sys_platform == 'linux' and platform_machine == 'aarch64' and python_version >= '3.12'

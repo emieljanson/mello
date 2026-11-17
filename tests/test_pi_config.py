@@ -520,3 +520,26 @@ def test_slint_package_only_where_it_has_wheels():
     req = (ROOT / 'requirements.txt').read_text()
     line = next(l for l in req.splitlines() if l.startswith('slint'))
     assert "platform_machine == 'aarch64'" in line and '==' in line
+    # Bookworm (Python 3.11) has no Slint package: pip would fail and stop
+    # the nightly update halfway.
+    assert "python_version >= '3.12'" in line
+
+
+def test_nightly_update_catches_up_and_cannot_hang_forever():
+    timer = (ROOT / 'pi/systemd/mello-update.timer').read_text()
+    service = (ROOT / 'pi/systemd/mello-update.service.template').read_text()
+    assert 'OnCalendar=*-*-* 03:00:00' in timer and 'Persistent=true' in timer
+    assert 'TimeoutStartSec=45min' in service and 'auto-update.sh' in service
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    assert 'run_migration "021"' in migrate
+    # cron is only dropped after the timer is confirmed running
+    body = migrate.split('_migrate_021() {', 1)[1].split('\n}\n', 1)[0]
+    assert body.index('is-active --quiet mello-update.timer') < body.index('crontab -')
+    # the update itself keeps timer units linked, like the services
+    assert '*.timer' in (ROOT / 'pi/auto-update.sh').read_text()
+
+
+def test_manual_update_is_stopped_if_it_hangs(tmp_path, monkeypatch):
+    from mello.managers import setup_menu as sm
+    monkeypatch.setattr(sm.shutil, 'which', lambda name: '/usr/bin/systemd-run')
+    assert 'RuntimeMaxSec=45min' in sm._update_command(tmp_path / 'u.log')

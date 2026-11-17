@@ -1,13 +1,14 @@
 #!/bin/bash
 # Mello Auto-Update Script
-# Runs via cron, checks GitHub and applies ALL changes
+# Runs nightly via mello-update.timer (cron on installs from before it),
+# and from "Check for updates" in the settings menu
 #
 # The entire script body is wrapped in main() so bash reads it fully into
 # memory before executing.  This prevents corruption when git pull updates
 # this file while it is running.
 
 main() {
-set -euo pipefail
+set -Eeuo pipefail
 
 # Support transitional directory names (berry → tomo → mello)
 if [ -d ~/mello ]; then
@@ -52,6 +53,40 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# How the last run ended, for the settings menu (mello/update_status.py):
+#   time=<when>  result=ok|no-internet|failed  message=<why>  last_ok=<when>
+# Without it a speaker that cannot update looks exactly like one that is
+# up to date, to its owner and to us.
+STATUS_FILE="$HOME/.mello-update-status"
+STATUS_WRITTEN=false
+write_status() {
+  local last_ok now
+  now=$(date +%s)
+  last_ok=$(sed -n 's/^last_ok=//p' "$STATUS_FILE" 2>/dev/null || true)
+  if [ "$1" = ok ]; then
+    last_ok=$now
+  fi
+  printf 'time=%s\nresult=%s\nmessage=%s\nlast_ok=%s\n' \
+    "$now" "$1" "$2" "$last_ok" > "$STATUS_FILE.tmp" \
+    && mv "$STATUS_FILE.tmp" "$STATUS_FILE" || true
+  STATUS_WRITTEN=true
+}
+# A run that stops on an unexpected error (set -e) still says so.
+LAST_FAILED_COMMAND=""
+trap 'LAST_FAILED_COMMAND=$BASH_COMMAND' ERR
+on_exit() {
+  local code=$?
+  if [ "$STATUS_WRITTEN" = false ]; then
+    if [ "$code" = 0 ]; then
+      write_status ok ""
+    else
+      log "ERROR: update stopped (exit $code) at: $LAST_FAILED_COMMAND"
+      write_status failed "stopped at: $LAST_FAILED_COMMAND"
+    fi
+  fi
+}
+trap on_exit EXIT
+
 REPO_URL="https://github.com/emieljanson/mello.git"
 
 # Ensure we have a healthy git repo.  If .git is missing or fetch fails for
@@ -93,8 +128,15 @@ _ensure_git_repo() {
 
   # Re-clone into a temp dir, then swap
   local tmp_clone="/tmp/mello-reclone-repo.$$"
-  if ! git clone --depth 1 "$REPO_URL" "$tmp_clone" 2>/dev/null; then
-    log "Re-clone failed (network issue?), will retry next run"
+  local clone_err
+  if ! clone_err=$(git clone --quiet --depth 1 "$REPO_URL" "$tmp_clone" 2>&1); then
+    clone_err=$(echo "$clone_err" | tr '\n' ' ')
+    log "Re-clone failed, will retry next run: $clone_err"
+    if echo "$clone_err" | grep -qiE "could not resolve|unable to access|timed out|network is unreachable"; then
+      write_status no-internet "re-clone: $clone_err"
+    else
+      write_status failed "re-clone: $clone_err"
+    fi
     rm -rf "$tmp_clone" "$data_backup" "$env_backup" "$dotenv_backup"
     exit 0
   fi
@@ -148,10 +190,18 @@ RECLONED=false
 _ensure_git_repo
 
 # Which version should run here (beta/stable channel, see update-target.sh).
-if ! DECISION=$(bash pi/update-target.sh); then
-  log "Fetch failed (network issue?), will retry next run"
+DECISION=$(bash pi/update-target.sh 2>"$HOME/.mello-update-target.err") || {
+  code=$?
+  reason=$(tr '\n' ' ' < "$HOME/.mello-update-target.err")
+  if [ "$code" = 2 ]; then
+    log "GitHub not reachable, will retry next run: $reason"
+    write_status no-internet "$reason"
+  else
+    log "ERROR: could not decide the version (exit $code): $reason"
+    write_status failed "update-target: $reason"
+  fi
   exit 0
-fi
+}
 read -r STATUS CHANNEL TARGET_NAME TARGET <<< "$DECISION"
 LOCAL=$(git rev-parse HEAD)
 BAD_UPDATE_FILE="$HOME/.mello-bad-update"
@@ -179,6 +229,7 @@ case "$STATUS" in
     ;;
   failed)
     log "Skip: $TARGET_NAME ($TARGET) failed its health check before, waiting for a newer version"
+    write_status failed "waiting for a fix: $TARGET_NAME failed here before"
     exit 0 ;;
 esac
 
@@ -207,7 +258,7 @@ sync_systemd_units() {
         -e "s|__UID__|$MELLO_UID|g" \
         "$tmpl" | sudo tee "/etc/systemd/system/$name" > /dev/null || return 1
   done
-  for f in "$CODE_DIR/pi/systemd/"*.service; do
+  for f in "$CODE_DIR/pi/systemd/"*.service "$CODE_DIR/pi/systemd/"*.timer; do
     [ -f "$f" ] || continue
     sudo ln -sf "$f" "/etc/systemd/system/$(basename "$f")" || return 1
   done
@@ -272,6 +323,7 @@ rollback() {
   else
     log "ERROR: still unhealthy after rollback"
   fi
+  write_status failed "rolled back: $1"
   exit 1
 }
 

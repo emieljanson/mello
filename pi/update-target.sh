@@ -27,7 +27,9 @@ if grep -qE "^MELLO_UPDATE_CHANNEL=[\"']?beta[\"']?[[:space:]]*$" .env 2>/dev/nu
   CHANNEL=beta
 fi
 
-if ! git fetch --quiet --force --tags origin main 2>/dev/null; then
+# git's own words (DNS, TLS, timeout...) go to stderr for the log.
+if ! FETCH_ERR=$(git fetch --quiet --force --tags origin main 2>&1); then
+  echo "git fetch: $FETCH_ERR" >&2
   exit 2
 fi
 

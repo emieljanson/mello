@@ -353,14 +353,16 @@ sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/mello-wifi
 rm -f "$TMP_SUDOERS"
 
 # ============================================
-# 11. Setup auto-update cron job
+# 11. Nightly auto-update (03:00, caught up at boot after a night switched off)
 # ============================================
 echo "Setting up auto-updates..."
 chmod +x ~/mello/pi/auto-update.sh
-# crontab -l exits 1 when empty; with pipefail that would abort the whole script
-( (crontab -l 2>/dev/null || true) | grep -v "mello/pi/auto-update" || true
-  echo "0 3 * * * bash ~/mello/pi/auto-update.sh >> ~/mello-update.log 2>&1"
-) | crontab -
+sudo ln -sf ~/mello/pi/systemd/mello-update.timer /etc/systemd/system/mello-update.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now mello-update.timer
+# Installs from before the timer used cron (crontab -l exits 1 when empty;
+# with pipefail that would abort the whole script)
+( (crontab -l 2>/dev/null || true) | grep -v "pi/auto-update.sh" || true ) | crontab -
 
 # ============================================
 # 12. CPU power management (energy saving)
