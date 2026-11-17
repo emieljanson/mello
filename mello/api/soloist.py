@@ -19,7 +19,7 @@ from typing import Callable, Optional
 
 import websocket
 
-from .play_orders import PlayOrders, one_round
+from .play_orders import PlayOrders, one_round, playable
 
 logger = logging.getLogger(__name__)
 
@@ -1343,6 +1343,7 @@ class SoloistAPI:
                     ((entry.get('item') or {}).get('uri'), _name(entry.get('item')))
                     for entry in (self._queue or {}).get('upcoming') or []
                     if entry.get('source') == 'context'
+                    and playable((entry.get('item') or {}).get('uri'))
                 ]
             # A list of exactly the broadcast size may be a capped broadcast
             # that crossed our request; ask once more to be sure.

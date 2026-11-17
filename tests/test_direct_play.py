@@ -5,6 +5,7 @@ starts at its first track, a show wherever Spotify decides; the queue shows
 at most 80 items and runs on into the next round when the context repeats;
 a single track played on its own is its own context.
 """
+import json
 import time
 from pathlib import Path
 
@@ -48,6 +49,7 @@ class Daemon:
         self.api = None
         self.plays = []
         self.context_delay = 0.0   # Spotify takes a while to start an album
+        self.placeholder = False   # Spotify's queue may hold non-playable entries
 
     def snapshot(self):
         event = playback_state(status=self.status, position_ms=self.position, repeat=self.repeat)
@@ -71,6 +73,9 @@ class Daemon:
                 coming = [self.item] * 10 if self.repeat != 'off' else []
             coming = coming[:self.queue_cap]
             upcoming = [{'uid': u, 'source': 'context', 'item': entity(u, f'Name {u}')} for u in coming]
+            if self.placeholder:
+                upcoming.insert(1, {'uid': 'p', 'source': 'context',
+                                    'item': entity('spotify:meta:node_rules_placeholder', '')})
             return {'type': 'queue_changed', 'previous': [], 'upcoming': upcoming}
         api._handle_event({'type': 'command_result', 'command': command})
         if command == 'play' and 'uri' in message:
@@ -143,11 +148,12 @@ def test_one_round_of_a_looping_queue():
 
 def test_parts_of_a_long_album_are_joined():
     store = PlayOrders(None)
-    store.put(ALBUM, ['t1', 't2', 't3', 't4'], complete=False)
-    store.put(ALBUM, ['t3', 't4', 't5', 't6'], complete=False)
-    assert store.get(ALBUM) == ['t1', 't2', 't3', 't4', 't5', 't6']
-    store.put(ALBUM, ['t2', 't3'], complete=False)
-    assert store.get(ALBUM) == ['t1', 't2', 't3', 't4', 't5', 't6']
+    t = TRACKS
+    store.put(ALBUM, t[0:4], complete=False)
+    store.put(ALBUM, t[2:6], complete=False)
+    assert store.get(ALBUM) == t
+    store.put(ALBUM, t[1:3], complete=False)
+    assert store.get(ALBUM) == t
 
 
 def test_orders_and_names_survive_a_restart_and_do_not_expire(tmp_path):
@@ -550,3 +556,17 @@ def test_leaving_direct_play_switches_track_repeat_off():
     other['item'] = entity('spotify:track:x', 'x', playback={'duration_ms': DURATION})
     api._handle_event(other)
     assert daemon.repeat == 'off'
+
+
+def test_placeholders_in_spotifys_queue_are_not_learned_as_tracks(tmp_path):
+    """Seen on the device: a single's queue held spotify:meta:node_rules_placeholder;
+    "next" then asked Spotify to play it and was refused."""
+    api, daemon, store = setup()
+    daemon.placeholder = True
+    assert api.play(ALBUM, skip_to_uri=TRACKS[3], paused=True) is True
+    assert store.get(ALBUM) == TRACKS
+
+    path = tmp_path / 'play_orders.json'
+    path.write_text(json.dumps({ALBUM: {'items': [TRACKS[0], 'spotify:meta:node_rules_placeholder'],
+                                        'complete': False, 'learned_at': time.time()}}))
+    assert PlayOrders(path).get(ALBUM) == [TRACKS[0]]
