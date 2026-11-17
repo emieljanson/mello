@@ -307,3 +307,42 @@ def test_a_single_track_picked_by_the_child_is_not_taken_for_its_album():
     api = connected_api(play_orders=store)
     api._handle_event(track_snapshot(TRACKS[2], repeat='off'))     # Mello plays a track item
     assert api.context_uri == TRACKS[2]
+
+
+def test_orders_do_not_expire():
+    now = [1000.0]
+    store = PlayOrders(None, clock=lambda: now[0])
+    store.put(ALBUM, TRACKS)
+    now[0] += 365 * 24 * 3600
+    assert store.get(ALBUM) == TRACKS
+
+
+def test_end_of_a_show_is_reached_the_normal_way_to_find_new_episodes():
+    show = 'spotify:show:s1'
+    episodes = [f'spotify:episode:e{n}' for n in range(1, 4)]
+    box = []
+    store = PlayOrders(None)
+    store.put(show, episodes)                       # stored as a whole round
+    api = connected_api(reply=direct_daemon(box), play_orders=store)
+    box.append(api)
+    assert api.play(show, skip_to_uri=episodes[1]) is True
+    api.sent.clear()
+    api._handle_event(track_snapshot(episodes[1], status='buffering', position_ms=DURATION))
+    assert sent(api)[0] == ('play', episodes[2])
+    api.sent.clear()
+    api._handle_event(track_snapshot(episodes[2], status='buffering', position_ms=DURATION))
+    deadline = time.time() + 2
+    while not api.sent and time.time() < deadline:
+        time.sleep(0.02)
+    assert api.sent[0] == {'type': 'command', 'command': 'play', 'uri': show}   # not back to episode 1
+
+
+def test_saved_episode_missing_from_the_order_starts_the_show_normally():
+    show = 'spotify:show:s1'
+    box = []
+    store = PlayOrders(None)
+    store.put(show, ['spotify:episode:e1', 'spotify:episode:e2'], complete=False)
+    api = connected_api(reply=fake_daemon(box), play_orders=store)
+    box.append(api)
+    api.play(show, skip_to_uri='spotify:episode:new')
+    assert api.sent[0]['uri'] == show
