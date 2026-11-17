@@ -39,7 +39,7 @@ Print the case from [MakerWorld](https://makerworld.com/en/models/2692843-distra
 ### 1. Flash Raspberry Pi OS
 
 Use the [Raspberry Pi Imager](https://www.raspberrypi.com/software/):
-- Choose **Raspberry Pi OS Lite (64-bit)**
+- Choose **Raspberry Pi OS Lite** (64-bit, or 32-bit on older boards), the current version (Trixie or newer)
 - Choose a hostname and username (e.g. `mello` / `mello`)
 - Configure WiFi and enable SSH
 
@@ -66,7 +66,7 @@ curl -sSL https://raw.githubusercontent.com/emieljanson/mello/main/install.sh | 
 
 ## How It Works
 
-Mello is a Python app using Pygame for the UI and [go-librespot](https://github.com/devgianlu/go-librespot) as a Spotify Connect receiver. When you select Mello as a speaker in Spotify and play an album, go-librespot handles the audio stream while Mello displays the album art and provides touch controls.
+Mello is a Python app using [Slint](https://slint.dev) for the UI and [go-librespot](https://github.com/devgianlu/go-librespot) as a Spotify Connect receiver. When you select Mello as a speaker in Spotify and play an album, go-librespot handles the audio stream while Mello displays the album art and provides touch controls.
 
 ```
 Your phone (Spotify app)
@@ -75,7 +75,7 @@ Your phone (Spotify app)
 go-librespot (Spotify Connect daemon)
     │
     ▼
-Mello (Pygame UI + touch input)
+Mello (Slint UI + touch input)
     │
     ▼
 Touchscreen + Speaker
@@ -161,5 +161,6 @@ See [SECURITY.md](SECURITY.md) for the security policy and responsible disclosur
 ## Acknowledgments
 
 - [go-librespot](https://github.com/devgianlu/go-librespot) — Spotify Connect implementation
-- [Pygame](https://www.pygame.org/) — UI framework
+- [Slint](https://slint.dev) — UI framework
+- [GNU FreeFont](https://www.gnu.org/software/freefont/) — the screen's font (FreeSans Bold)
 - [PostHog](https://posthog.com/) — Anonymous usage analytics

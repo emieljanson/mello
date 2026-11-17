@@ -31,18 +31,26 @@ install_service() {
 echo "Mello Setup Starting..."
 echo ""
 
+# Mello's screen (Slint) needs Raspberry Pi OS Trixie or newer: Python 3.12+.
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+  echo "Mello needs Raspberry Pi OS Trixie or newer (this system has Python $(python3 -V 2>&1 | cut -d" " -f2))."
+  echo "Write the current Raspberry Pi OS Lite to the SD card with Raspberry Pi Imager and run this again."
+  exit 1
+fi
+
 # ============================================
 # 1. Install system packages (needed by later steps)
 # ============================================
 echo "Installing system packages..."
+# What Slint needs to draw the screen (graphics chip, fonts, input)
+SLINT_LIBS="libinput10 libgbm1 libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri libxkbcommon0 libudev1 libfontconfig1 libfreetype6"
 sudo apt-get update
 sudo apt-get install -y \
   curl git \
-  python3-venv python3-pip python3-dev python3-pygame \
-  libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+  python3-venv python3-pip python3-dev \
   network-manager \
   pipewire pipewire-pulse wireplumber pipewire-alsa libspa-0.2-bluetooth \
-  libinput10
+  $SLINT_LIBS
 
 # ============================================
 # 2. Configure boot settings (display + audio + quiet boot)
@@ -241,10 +249,6 @@ fi
 
 source venv/bin/activate
 
-# Remove pip-built pygame if present — it bundles an older SDL that breaks kmsdrm.
-# The system python3-pygame (apt) uses SDL 2.32+ and must be used instead.
-pip show pygame 2>/dev/null | grep -q "Location.*venv" && pip uninstall -y pygame 2>/dev/null || true
-
 pip install -q -r requirements.txt
 
 mkdir -p data/images
@@ -321,7 +325,7 @@ echo 'SUBSYSTEM=="backlight", RUN+="/bin/chgrp mello /sys/class/backlight/%k/bri
 sudo chgrp mello /sys/class/backlight/*/bl_power /sys/class/backlight/*/brightness 2>/dev/null || true
 sudo chmod 660 /sys/class/backlight/*/bl_power /sys/class/backlight/*/brightness 2>/dev/null || true
 
-# DRM/KMS access for pygame kmsdrm driver (card + render nodes)
+# DRM/KMS access for the screen (Slint: card + render nodes)
 cat << 'UDEV' | sudo tee /etc/udev/rules.d/99-mello-drm.rules > /dev/null
 SUBSYSTEM=="drm", GROUP="video", MODE="0660"
 SUBSYSTEM=="video4linux", GROUP="video", MODE="0660"

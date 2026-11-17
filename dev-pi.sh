@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Mello Pi Development Script
-# Syncs files and runs the Pygame app on the Pi via systemd
+# Syncs files and runs the app on the Pi via systemd
 
 set -e
 

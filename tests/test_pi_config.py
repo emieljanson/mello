@@ -518,10 +518,11 @@ def test_slint_libraries_already_there(tmp_path):
 
 def test_slint_package_only_where_it_has_wheels():
     req = (ROOT / 'requirements.txt').read_text()
-    line = next(l for l in req.splitlines() if l.startswith('slint'))
-    assert "platform_machine == 'aarch64'" in line and '==' in line
-    # Bookworm (Python 3.11) has no Slint package: pip would fail and stop
-    # the nightly update halfway.
+    line = next(l for l in req.splitlines() if l.startswith('slint') and 'armv7l' in l)
+    assert '==' in line
+    # 64-bit and 32-bit Pi OS (a 32-bit system on a 64-bit kernel says aarch64 or armv8l)
+    assert "platform_machine in 'aarch64 armv7l armv8l'" in line
+    # Its wheels need Python 3.12+: older systems skip it instead of failing the update
     assert "python_version >= '3.12'" in line
 
 
@@ -543,3 +544,131 @@ def test_manual_update_is_stopped_if_it_hangs(tmp_path, monkeypatch):
     from mello.managers import setup_menu as sm
     monkeypatch.setattr(sm.shutil, 'which', lambda name: '/usr/bin/systemd-run')
     assert 'RuntimeMaxSec=45min' in sm._update_command(tmp_path / 'u.log')
+
+
+def test_no_pygame_left():
+    assert 'pygame' not in (ROOT / 'requirements.txt').read_text().lower()
+    setup = (ROOT / 'pi/setup.sh').read_text()
+    assert 'python3-pygame' not in setup and 'libsdl2' not in setup
+    for path in (ROOT / 'mello').rglob('*.py'):
+        assert 'import pygame' not in path.read_text(), path
+
+
+def test_setup_and_migration_install_the_same_screen_libraries():
+    def libs(path):
+        line = next(l for l in (ROOT / path).read_text().splitlines() if l.startswith('SLINT_LIBS='))
+        return set(line.split('=', 1)[1].strip('"').split())
+    assert libs('pi/setup.sh') == libs('pi/migrate.sh')
+    assert {'libinput10', 'libgbm1', 'libegl1', 'libgles2', 'libfontconfig1'} <= libs('pi/setup.sh')
+
+
+def _run_migration_020(tmp_path, installed):
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    assert 'run_migration "020"' in migrate
+    body = migrate.split('_migrate_020() {', 1)[1].split('\n}', 1)[0]
+    calls = tmp_path / 'calls'
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        log() {{ :; }}
+        SLINT_LIBS="libinput10 libgbm1"
+        dpkg() {{ [ "$2" = libinput10 ] || return {0 if installed else 1}; }}
+        sudo() {{ echo "$*" >> {str(calls)!r}; }}
+        _migrate_020() {{
+        {body}
+        }}
+        _migrate_020
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    return calls.read_text() if calls.exists() else ''
+
+
+def test_missing_screen_libraries_are_installed(tmp_path):
+    calls = _run_migration_020(tmp_path, installed=False)
+    assert 'apt-get install -y -q libgbm1' in calls
+    assert 'libinput10' not in calls.split('apt-get install')[1]
+
+
+def test_screen_libraries_already_there(tmp_path):
+    assert _run_migration_020(tmp_path, installed=True) == ''
+
+
+def _git(repo, *args):
+    subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True,
+                   env={'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@t', 'GIT_COMMITTER_NAME': 't',
+                        'GIT_COMMITTER_EMAIL': 't@t', 'PATH': '/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin'})
+    return subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], capture_output=True,
+                          text=True).stdout.strip()
+
+
+def _speaker(tmp_path, slint_works: bool, python='3.11.2'):
+    """A speaker checkout: an old version with Pygame's screen, then the one without."""
+    repo = tmp_path / 'mello'
+    (repo / 'mello/ui').mkdir(parents=True)
+    _git(repo, 'init', '-q', '-b', 'main')
+    (repo / 'mello/ui/helpers.py').write_text('# pygame drawing\n')
+    (repo / 'requirements.txt').write_text('requests\n')
+    old = _git(repo, 'add', '-A') and _git(repo, 'commit', '-qm', 'Pygame screen')
+    (repo / 'mello/ui/helpers.py').unlink()
+    _git(repo, 'add', '-A')
+    new = _git(repo, 'commit', '-qm', 'Slint only')
+    (repo / 'venv/bin').mkdir(parents=True)
+    python_stub = repo / 'venv/bin/python'
+    python_stub.write_text(textwrap.dedent(f'''\
+        #!/bin/bash
+        case "$*" in
+          *"import slint"*) exit {0 if slint_works else 1} ;;
+          *version_info*) [ "{python}" \\< "3.12" ] && exit 1; exit 0 ;;
+          *python_version*) echo {python} ;;
+        esac
+        '''))
+    python_stub.chmod(0o755)
+    pip_stub = repo / 'venv/bin/pip'
+    pip_stub.write_text(f'#!/bin/bash\necho "$*" >> {tmp_path}/pip_calls\n')
+    pip_stub.chmod(0o755)
+    return repo, old, new
+
+
+def _run_hold_check(tmp_path, repo):
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    assert 'slint_hold_check "$(cd' in migrate
+    body = migrate.split('slint_hold_check() {', 1)[1].split('\n}', 1)[0]
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        log() {{ echo "$*"; }}
+        HOME={str(tmp_path)!r}
+        SLINT_HOLD_FILE="$HOME/.mello-slint-hold"
+        slint_hold_check() {{
+        {body}
+        }}
+        slint_hold_check {str(repo)!r}
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    head = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    return result.stdout, head
+
+
+def test_speaker_without_slint_stays_on_the_last_pygame_version(tmp_path):
+    repo, old, new = _speaker(tmp_path, slint_works=False, python='3.11.2')
+    out, head = _run_hold_check(tmp_path, repo)
+    assert head == old
+    assert 'HOLD' in out and 'Python 3.11.2' in out and 'Trixie' in out
+    assert 'kept on' in (tmp_path / '.mello-slint-hold').read_text()
+    assert not (tmp_path / 'pip_calls').exists()       # nothing to install on Python 3.11
+
+
+def test_speaker_with_slint_moves_on(tmp_path):
+    repo, old, new = _speaker(tmp_path, slint_works=True, python='3.13.5')
+    (tmp_path / '.mello-slint-hold').write_text('old hold')
+    out, head = _run_hold_check(tmp_path, repo)
+    assert head == new
+    assert not (tmp_path / '.mello-slint-hold').exists()
+
+
+def test_trixie_speaker_without_the_package_gets_it_installed_first(tmp_path):
+    repo, old, new = _speaker(tmp_path, slint_works=False, python='3.13.5')
+    out, head = _run_hold_check(tmp_path, repo)
+    assert 'install' in (tmp_path / 'pip_calls').read_text()
+    # (the stub still cannot import it, so it is held back after trying)
+    assert head == old

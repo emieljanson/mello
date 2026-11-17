@@ -21,7 +21,10 @@ Speaker health, so a release can be compared with the one before it:
   - bluetooth_connected    Headphone connected
   - bluetooth_disconnected Headphone went away (connected_minutes, while_playing, from_menu)
   - device_health          Every 6 hours: uptime, free memory, CPU temperature
-  - slint_fallback         Slint was asked for but could not load; Pygame shows the screen
+  - slint_fallback         Slint could not load (error). Since Pygame was removed the
+                           screen then shows "needs a newer Raspberry Pi OS" (fallback=
+                           screen_message). Speakers held back on Bookworm by pi/migrate.sh
+                           run the last Pygame version and report it from there (ui=pygame).
 
 Every event carries app_version (branch@commit), engine, ui (the screen
 actually in use) and arch (aarch64 = 64-bit, armv7l/armv6l = 32-bit). The
@@ -171,6 +174,15 @@ class UsageTracker:
                 'previous_run': ended,
             })
 
+    def flush(self):
+        """Send what is queued now (when Mello will not run long enough to)."""
+        if not self._enabled:
+            return
+        try:
+            self._posthog.shutdown()
+        except Exception:
+            pass
+
     def on_shutdown(self):
         """Call before app exits to close any open session and flush."""
         if not self._enabled:
@@ -270,12 +282,12 @@ class UsageTracker:
             'from_menu': from_menu,
         })
 
-    def on_slint_fallback(self, error: str):
-        """Slint was asked for but could not load (e.g. a 32-bit speaker
-        without a Slint wheel), so Pygame shows the screen."""
+    def on_slint_fallback(self, error: str, fallback: str = 'screen_message'):
+        """Slint could not load, so Mello cannot draw its screen; the speaker
+        shows a plain "needs a newer Raspberry Pi OS" message instead."""
         if not self._enabled:
             return
-        self._capture('slint_fallback', {'error': error})
+        self._capture('slint_fallback', {'error': error, 'fallback': fallback})
 
     def on_health(self, health: dict):
         """Periodic snapshot (see ``device_health``), so crash counts can be

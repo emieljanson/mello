@@ -37,11 +37,6 @@ LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
 # Which Spotify Connect engine the app talks to: 'librespot' (go-librespot)
 # or 'soloist' (Spotify's official headless client).
 SPOTIFY_ENGINE = os.environ.get('MELLO_SPOTIFY_ENGINE', 'librespot')
-# 'slint' (default): the screen is shown and animated by Slint on the
-# graphics chip (smooth ~60 fps swiping, same pixels). 'pygame': the original
-# renderer; also used by itself when Slint cannot load (32-bit Pi OS, missing
-# libraries). Set MELLO_UI=pygame in .env to switch a speaker back.
-UI_ENGINE = os.environ.get('MELLO_UI', 'slint')
 # Soloist: start a saved track/episode directly (~0.5 s) instead of skipping
 # to it through its album (up to 40 s for a podcast). See api/play_orders.py.
 # On by default; MELLO_DIRECT_PLAY=0 in .env switches it off for a speaker.
