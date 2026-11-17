@@ -266,6 +266,7 @@ class SoloistAPI:
     def _handle_event(self, event: dict):
         event_type = event.get('type')
         advance = None
+        need_snapshot = False
 
         if event_type in ('command_result', 'error'):
             self._deliver_reply(event)
@@ -306,10 +307,10 @@ class SoloistAPI:
                 self._is_active = bool(event.get('is_active'))
                 self._repeat = (event.get('options') or {}).get('repeat') or 'off'
                 advance = self._direct_follow_unlocked()
-                self._arm_end_timer_unlocked()
+                need_snapshot = self._arm_end_timer_unlocked()
             elif event_type == 'playback_changed':
                 self._set_status(event.get('status'))
-                self._arm_end_timer_unlocked()
+                need_snapshot = self._arm_end_timer_unlocked()
             elif event_type == 'volume_changed':
                 self._volume = event.get('volume')
             elif event_type == 'device_changed':
@@ -318,7 +319,7 @@ class SoloistAPI:
                 self._repeat = (event.get('options') or {}).get('repeat') or 'off'
             elif event_type == 'position_sync':
                 self._position = event.get('position')
-                self._arm_end_timer_unlocked()
+                need_snapshot = self._arm_end_timer_unlocked()
             elif event_type == 'queue_changed':
                 # Mello has no queue view; only resume-in-album reads this.
                 self._queue = event
@@ -331,6 +332,8 @@ class SoloistAPI:
             self._state_changed.notify_all()
         if event_type == 'playback_state' and advance is not None:
             self._play_next_direct(*advance)
+        elif need_snapshot:
+            self._request_snapshot()
 
         self._keep_spotify_volume_full()
         if became_inactive:
@@ -784,8 +787,11 @@ class SoloistAPI:
         logger.info(f'Direct play picked up again: track {order.index(item) + 1}/{len(order)} of {album[:50]}')
         return self._direct
 
-    def _arm_end_timer_unlocked(self):
-        """During direct play, start the next track just before this one ends."""
+    def _arm_end_timer_unlocked(self) -> Optional[bool]:
+        """During direct play, start the next track just before this one ends.
+
+        Returns True when a fresh snapshot is needed to know the position.
+        """
         if self._end_timer:
             self._end_timer.cancel()
             self._end_timer = None
@@ -798,8 +804,16 @@ class SoloistAPI:
             return
         duration = ((self._item.get('decorations') or {}).get('playback') or {}).get('duration_ms') or 0
         speed = (self._position or {}).get('speed') or 0
-        if not duration or speed <= 0:
+        if not duration:
             return
+        if speed <= 0:
+            # Playing, but the last position was taken while it stood still
+            # (after a seek or a resume): ask for a fresh one.
+            if not direct.get('asked'):
+                direct['asked'] = True
+                return True
+            return
+        direct['asked'] = False
         remaining = (duration - self._current_position_ms()) / 1000 / speed - _EARLY_START_S
         if remaining < 0:
             return
