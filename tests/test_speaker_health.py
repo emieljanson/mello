@@ -219,3 +219,35 @@ def test_health_snapshot_is_sent_every_few_hours(tracker, monkeypatch):
     assert len(sent) == 1
     sent[0]()
     assert "app_uptime_hours" in last(tracker, "device_health")
+
+
+# -- which speakers could lose Pygame --------------------------------------
+
+def test_every_event_says_the_cpu_architecture(tracker, monkeypatch):
+    monkeypatch.setattr(analytics_module, "pi_model", lambda: "Raspberry Pi 3 Model B")
+    tracker.on_app_started()
+    props = last(tracker, "app_started")
+    assert props["arch"]
+    assert props["$set"]["arch"] == props["arch"]
+    assert props["$set"]["pi_model"] == "Raspberry Pi 3 Model B"
+
+
+def test_slint_that_cannot_load_is_reported(tracker, monkeypatch):
+    import builtins
+    import mello.app as app_module
+    monkeypatch.setattr(app_module, "UI_ENGINE", "slint")
+    real_import = builtins.__import__
+
+    def no_slint(name, *args, **kwargs):
+        if name == "slint":
+            raise ImportError("no wheel for armv7l")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_slint)
+    app = Mello.__new__(Mello)
+    assert app._choose_ui() == "pygame"
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    assert "no wheel for armv7l" in app._slint_error
+
+    tracker.on_slint_fallback(app._slint_error)
+    assert "armv7l" in last(tracker, "slint_fallback")["error"]

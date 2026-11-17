@@ -57,6 +57,7 @@ class Mello:
     _bt_seen: Optional[str] = None
     _bt_seen_since = 0.0
     _next_health_report = float('inf')   # set when analytics starts
+    _slint_error: Optional[str] = None   # why Slint was asked for but could not load
     
     def __init__(self, fullscreen: bool = False):
         # Restore display BEFORE pygame takes over DRM device.
@@ -85,8 +86,7 @@ class Mello:
             return
         self._init_components()
     
-    @staticmethod
-    def _choose_ui() -> str:
+    def _choose_ui(self) -> str:
         """Slint when asked for (MELLO_UI=slint) and it can load, else Pygame."""
         if UI_ENGINE != 'slint':
             return 'pygame'
@@ -94,6 +94,7 @@ class Mello:
             import slint  # noqa: F401  (also loads libinput etc.)
         except Exception as e:
             logger.error(f'MELLO_UI=slint but Slint cannot load ({e}); using Pygame')
+            self._slint_error = f'{type(e).__name__}: {e}'[:200]
             return 'pygame'
         logger.info('Screen: Slint')
         return 'slint'
@@ -989,6 +990,8 @@ class Mello:
             catalog_size=len(self.catalog_manager.items),
             previous_run=crash_log.previous_run,
         )
+        if self._slint_error:
+            self.tracker.on_slint_fallback(self._slint_error)
         
         # Pre-load images
         self.image_cache.preload_catalog(self.catalog_manager.items)

@@ -21,12 +21,17 @@ Speaker health, so a release can be compared with the one before it:
   - bluetooth_connected    Headphone connected
   - bluetooth_disconnected Headphone went away (connected_minutes, while_playing, from_menu)
   - device_health          Every 6 hours: uptime, free memory, CPU temperature
+  - slint_fallback         Slint was asked for but could not load; Pygame shows the screen
 
-Every event carries app_version (branch@commit), engine and ui.
+Every event carries app_version (branch@commit), engine, ui (the screen
+actually in use) and arch (aarch64 = 64-bit, armv7l/armv6l = 32-bit). The
+speaker's person in PostHog also gets pi_model, so you can count speakers
+per architecture before dropping something only 64-bit can run.
 """
 import time
 import socket
 import logging
+import platform
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -91,6 +96,7 @@ class UsageTracker:
             'app_version': app_version,
             'engine': engine,
             'ui': ui,
+            'arch': platform.machine() or 'unknown',
         }
 
         # Session state
@@ -152,7 +158,10 @@ class UsageTracker:
             'catalog_size': catalog_size,
             'previous_run': ended,
             'previous_run_froze': froze,
-            '$set': {k: self._common[k] for k in ('app_version', 'engine', 'ui')},
+            '$set': {
+                **{k: self._common[k] for k in ('app_version', 'engine', 'ui', 'arch')},
+                'pi_model': pi_model(),
+            },
         })
         if ended != 'clean':
             self._capture('unclean_shutdown', {'cause': ended})
@@ -260,6 +269,13 @@ class UsageTracker:
             'while_playing': while_playing,
             'from_menu': from_menu,
         })
+
+    def on_slint_fallback(self, error: str):
+        """Slint was asked for but could not load (e.g. a 32-bit speaker
+        without a Slint wheel), so Pygame shows the screen."""
+        if not self._enabled:
+            return
+        self._capture('slint_fallback', {'error': error})
 
     def on_health(self, health: dict):
         """Periodic snapshot (see ``device_health``), so crash counts can be
@@ -390,3 +406,11 @@ def device_health() -> dict:
     except Exception:
         pass
     return health
+
+
+def pi_model() -> str:
+    """'Raspberry Pi 3 Model B Rev 1.2', or 'unknown' off a Pi."""
+    try:
+        return Path('/proc/device-tree/model').read_text().strip().replace('\x00', '') or 'unknown'
+    except Exception:
+        return 'unknown'
