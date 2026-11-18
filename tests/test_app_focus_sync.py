@@ -115,6 +115,7 @@ def playback_app(monkeypatch):
 
     monkeypatch.setattr('mello.app.run_async', run_inline)
     monkeypatch.setattr('mello.app_parts.spotify_sync.run_async', run_inline)
+    monkeypatch.setattr('mello.app_parts.touch_input.run_async', run_inline)
     monkeypatch.setattr('mello.controllers.playback.run_async', run_inline)
     return app
 
