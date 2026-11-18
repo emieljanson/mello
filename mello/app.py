@@ -25,7 +25,7 @@ from .config import (
     POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
-from .models import CatalogItem, NowPlaying, LibrespotStatus, MenuState
+from .models import CatalogItem, NowPlaying, LibrespotStatus
 from .api import LibrespotAPI, NullLibrespotAPI, SoloistAPI, CatalogManager
 from .api.play_orders import PlayOrders
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler, InputEvent
@@ -859,6 +859,14 @@ class Mello:
                     # The touch that woke the screen is not a tap
                     self.evdev_touch.clear_events()
                     return True
+                if self.setup_menu.wifi_setup_running:
+                    # The hotspot keeps going with the screen off: someone may
+                    # be filling in the WiFi page on a phone. When it finishes,
+                    # light the screen so they see how it went.
+                    self.setup_menu.update()
+                    if not self.setup_menu.wifi_setup_running:
+                        self._wake_from_sleep('wifi_setup_done')
+                        return True
                 self._log_sleep_wait_if_due()
                 return True
 
@@ -2177,9 +2185,10 @@ class Mello:
             self._cover_collect_context = None
         
         was_awake = not self.sleep_manager.is_sleeping
-        # Don't sleep while the setup menu is open (e.g. WiFi AP mode)
-        menu_open = self.setup_menu.state != MenuState.CLOSED
-        self.sleep_manager.check_sleep(self.now_playing.playing or menu_open)
+        # An open menu does not keep the screen on: touching it does. The
+        # WiFi screen opens by itself when a speaker starts without WiFi, and
+        # kept the backlight on all night on a speaker whose WiFi was gone.
+        self.sleep_manager.check_sleep(self.now_playing.playing)
         if was_awake and self.sleep_manager.is_sleeping:
             self._on_fell_asleep()
         
