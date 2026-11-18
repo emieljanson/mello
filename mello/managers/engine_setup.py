@@ -384,11 +384,16 @@ class EngineSetup:
     # What the speaker's own screen shows
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def can_run_soloist() -> bool:
+        """Spotify only builds Soloist for 64-bit ARM."""
+        return platform.machine() in ('aarch64', 'arm64')
+
     def can_offer_soloist(self) -> bool:
         """Whether this speaker could switch and has not been set up for it yet."""
         return (
             self.engine != 'soloist'
-            and platform.machine() in ('aarch64', 'arm64')   # the only Soloist build Mello knows
+            and self.can_run_soloist()
             and not (self.soloist_home / 'key').exists()
         )
 

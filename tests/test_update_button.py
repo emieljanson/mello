@@ -152,3 +152,17 @@ def test_a_speaker_that_just_switched_to_soloist_is_not_told_to(monkeypatch):
     menu.engine_setup = MagicMock(engine='soloist')
     menu.open()
     assert menu.update_button_label == 'Check for updates'
+
+
+def test_a_32_bit_speaker_is_told_it_cannot_update_and_tapping_does_nothing(monkeypatch, started):
+    monkeypatch.setattr(sm, 'needs_soloist', lambda: True)
+    menu = _menu()
+    menu.engine_setup = MagicMock(engine='librespot')
+    menu.engine_setup.can_run_soloist.return_value = False
+    menu.open()
+    assert menu.update_button_label == 'No updates: needs 64-bit'
+    rect = MagicMock()
+    rect.collidepoint.return_value = True
+    menu.handle_tap((0, 0), {'check_update': rect})
+    assert menu.state == sm.MenuState.MAIN
+    started.assert_not_called()

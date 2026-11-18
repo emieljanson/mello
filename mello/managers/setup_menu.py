@@ -56,6 +56,8 @@ _SPOTIFY_PROMPT_TIMEOUT = 180
 PROMPT_HOLD_SECONDS = 3.0
 # The update button while newer versions need Spotify Soloist.
 UPDATE_NEEDS_SOLOIST = 'Update needs Soloist'
+# ...on a 32-bit speaker, which cannot run Soloist: it stays on this version.
+UPDATE_NEEDS_64BIT = 'No updates: needs 64-bit'
 # How long the update button shows how a check or update ended.
 _UPDATE_RESULT_SECONDS = 4.0
 
@@ -333,8 +335,9 @@ class SetupMenu:
             elif 'check_update' in button_rects and button_rects['check_update'].collidepoint(x, y):
                 if self._update_running or self._update_checking:
                     return
-                if self.needs_soloist and self.engine_setup:
-                    self._show_spotify_screen()
+                if self.needs_soloist:
+                    if self.engine_setup and self.engine_setup.can_run_soloist():
+                        self._show_spotify_screen()
                     return
                 self._check_for_update()
 
@@ -490,8 +493,13 @@ class SetupMenu:
         if self._update_result:
             return self._update_result
         if self.needs_soloist:
-            return UPDATE_NEEDS_SOLOIST
+            return self._needs_soloist_label()
         return 'Check for updates'
+
+    def _needs_soloist_label(self) -> str:
+        if self.engine_setup and not self.engine_setup.can_run_soloist():
+            return UPDATE_NEEDS_64BIT
+        return UPDATE_NEEDS_SOLOIST
 
     def _set_update_result(self, label: str):
         self._update_result = label
@@ -630,7 +638,7 @@ class SetupMenu:
                     # was rolled back: waiting for a newer one.
                     self._set_update_result('Update failed')
                 elif self.needs_soloist:
-                    self._set_update_result(UPDATE_NEEDS_SOLOIST)
+                    self._set_update_result(self._needs_soloist_label())
                 else:
                     self._set_update_result('Up to date')
             except Exception as e:
