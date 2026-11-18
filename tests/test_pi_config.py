@@ -702,11 +702,13 @@ def _librespot_speaker(tmp_path, engine_line):
     return repo, last, new
 
 
-def _run_soloist_hold(tmp_path, repo):
+def _run_soloist_hold(tmp_path, repo, returncode=0):
     migrate = (ROOT / 'pi/migrate.sh').read_text()
     assert 'if soloist_hold_check "$(cd' in migrate
     # It runs before the migrations: a held speaker must not get the new ones.
     assert migrate.index('if soloist_hold_check "$(cd') < migrate.index('run_migration "001"')
+    # Held: the older version's own migrations run, not this file's.
+    assert 'exec bash "$(cd' in migrate.split('if soloist_hold_check "$(cd', 1)[1].split('\nfi', 1)[0]
     body = migrate.split('soloist_hold_check() {', 1)[1].split('\n}', 1)[0]
     script = textwrap.dedent(f'''\
         set -euo pipefail
@@ -719,8 +721,22 @@ def _run_soloist_hold(tmp_path, repo):
         if soloist_hold_check {str(repo)!r}; then echo HELD; fi
         ''')
     result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == returncode, result.stderr
     return result.stdout, _git(repo, 'rev-parse', 'HEAD')
+
+
+def test_hold_fails_closed_when_the_old_version_is_unknown(tmp_path):
+    # The marker is there but not in the history: stop before any migration
+    # (024 would remove go-librespot) instead of carrying on.
+    repo = tmp_path / 'mello'
+    (repo / 'pi').mkdir(parents=True)
+    _git(repo, 'init', '-q', '-b', 'main')
+    (repo / 'a.txt').write_text('a')
+    _git(repo, 'add', '-A')
+    _git(repo, 'commit', '-qm', 'some version')
+    (repo / 'pi/needs-soloist').write_text('')
+    out, head = _run_soloist_hold(tmp_path, repo, returncode=1)
+    assert 'HELD' not in out and 'stopping' in out
 
 
 @pytest.mark.parametrize('engine_line', [None, 'MELLO_SPOTIFY_ENGINE=librespot',

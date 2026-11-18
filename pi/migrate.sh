@@ -1086,17 +1086,23 @@ soloist_hold_check() {
   [ -f "$code_dir/pi/needs-soloist" ] || return 1
   added=$(git -C "$code_dir" log -1 --first-parent --diff-filter=A --format=%H HEAD -- pi/needs-soloist 2>/dev/null || true)
   if [ -z "$added" ]; then
-    log "WARNING: not on Soloist, and no earlier version with go-librespot was found"
-    return 1
+    # Fail closed: without the old version, stop rather than remove go-librespot
+    log "ERROR: not on Soloist, and no earlier version with go-librespot was found; stopping"
+    exit 1
   fi
   keep=$(git -C "$code_dir" rev-parse "$added^")
   log "HOLD: this speaker is not on Soloist yet. Staying on $(git -C "$code_dir" log -1 --format='%h %s' "$keep") until it is."
   echo "$(date '+%Y-%m-%d %H:%M:%S') not on Soloist; kept on $keep" > "$SOLOIST_HOLD_FILE"
-  git -C "$code_dir" checkout -q --detach "$keep"
+  if ! git -C "$code_dir" checkout -q --detach "$keep"; then
+    log "ERROR: cannot go back to the version with go-librespot; stopping"
+    exit 1
+  fi
 }
 
 if soloist_hold_check "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; then
-  exit 0     # the older version's own migrations already ran on this speaker
+  # The speaker may come from code older than that version, so run its own
+  # migrations (that migrate.sh has no Soloist hold, so this does not loop).
+  exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pi/migrate.sh"
 fi
 
 # ============================================

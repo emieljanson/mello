@@ -39,7 +39,7 @@ Print the case from [MakerWorld](https://makerworld.com/en/models/2692843-distra
 ### 1. Flash Raspberry Pi OS
 
 Use the [Raspberry Pi Imager](https://www.raspberrypi.com/software/):
-- Choose **Raspberry Pi OS Lite** (64-bit, or 32-bit on older boards), the current version (Trixie or newer)
+- Choose **Raspberry Pi OS Lite (64-bit)**, the current version (Trixie or newer). Spotify Soloist only runs on 64-bit
 - Choose a hostname and username (e.g. `mello` / `mello`)
 - Configure WiFi and enable SSH
 

@@ -270,6 +270,8 @@ sudo systemctl daemon-reload
 pkill -9 -f "mello.py" 2>/dev/null || true
 sleep 0.5
 
+# go-librespot is gone (migration 024 removes it on real updates)
+sudo systemctl disable --now mello-librespot 2>/dev/null || true
 # Spotify's player (Soloist) runs once an API key has been entered
 if [ -s ~/soloist/key ]; then
     if ! systemctl is-active --quiet mello-soloist; then
