@@ -116,6 +116,7 @@ def playback_app(monkeypatch):
     monkeypatch.setattr('mello.app.run_async', run_inline)
     monkeypatch.setattr('mello.app_parts.spotify_sync.run_async', run_inline)
     monkeypatch.setattr('mello.app_parts.touch_input.run_async', run_inline)
+    monkeypatch.setattr('mello.app_parts.focus_playback.run_async', run_inline)
     monkeypatch.setattr('mello.controllers.playback.run_async', run_inline)
     return app
 
@@ -436,7 +437,7 @@ class TestContextSwitchWatchdog:
         app._user_driving = True
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr('mello.app.run_async', lambda fn, *a: fn(*a))
+            mp.setattr('mello.app_parts.focus_playback.run_async', lambda fn, *a: fn(*a))
             app._check_context_switch_watchdog(focused)
 
         app.playback.stop_all.assert_called_once()
