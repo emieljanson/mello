@@ -47,6 +47,15 @@ jobs:
             echo "::error::$sha is not on main"
             exit 1
           fi
+          # A release older than the previous one would look "older" to
+          # stable speakers and could pull re-cloned ones back.
+          latest_tag=$(git for-each-ref --count=1 --sort=-v:refname \
+            --format='%(refname:short)' 'refs/tags/v*')
+          if [ -n "$latest_tag" ] && \
+             ! git merge-base --is-ancestor "$latest_tag^{commit}" "$sha"; then
+            echo "::error::$sha is older than the latest release $latest_tag"
+            exit 1
+          fi
           git checkout --quiet "$sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
