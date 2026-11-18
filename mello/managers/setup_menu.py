@@ -939,8 +939,10 @@ class SetupMenu:
                         ['sudo', 'nmcli', '--wait', str(_JOIN_WAIT), 'con', 'up', ssid],
                         capture_output=True, text=True, timeout=_JOIN_WAIT + 15,
                     )
+                    lines = (result.stderr or result.stdout).strip().splitlines() or ['?']
+                    # nmcli ends with a "Hint: use journalctl" line; the error is before it.
                     problem = '' if result.returncode == 0 else \
-                        ((result.stderr or result.stdout).strip().splitlines() or ['?'])[-1]
+                        next((l for l in lines if l.startswith('Error')), lines[0])
                 except Exception as e:
                     problem = str(e)
                 if not problem:
