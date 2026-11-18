@@ -269,3 +269,24 @@ def test_the_gate_holds_even_if_needs_soloist_is_edited_later(speaker):
     (speaker.work / 'pi' / 'needs-soloist').write_text('edited')
     speaker.commit('edit')
     assert speaker.check()[3] == last
+
+
+def test_gate_lands_on_main_when_removal_is_merged_with_a_merge_commit(speaker):
+    speaker.set_channel('beta')
+    speaker.git('checkout', '-q', '-b', 'remove-librespot')
+    (speaker.work / 'pi' / 'needs-soloist').write_text('')
+    speaker.commit('no-librespot', push=False)
+    speaker.git('checkout', '-q', 'main')
+    last = speaker.commit('meanwhile-on-main', push=False)
+    speaker.git('merge', '-q', '--no-ff', '-m', 'Merge', 'remove-librespot')
+    speaker.git('push', '-q', 'origin', 'main')
+    assert speaker.check()[3] == last
+
+
+def test_engine_must_be_exactly_soloist(speaker):
+    speaker.set_channel('beta')
+    last = speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    (speaker.home / 'mello' / '.env').write_text(
+        'MELLO_UPDATE_CHANNEL=beta\nMELLO_SPOTIFY_ENGINE=soloist-disabled\n')
+    assert speaker.check()[3] == last

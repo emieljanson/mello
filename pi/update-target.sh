@@ -49,10 +49,12 @@ TARGET=$(git rev-parse "$TARGET_NAME^{commit}")
 
 # Versions with pi/needs-soloist no longer have go-librespot. A speaker that
 # has not switched to Spotify Soloist stays on the version just before that
-# file was added, and moves on by itself once it has switched.
-if ! grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' .env 2>/dev/null \
+# file was added, and moves on by itself once it has switched. --first-parent:
+# a PR merged with a merge commit must land on main's commit before the merge,
+# not on the branch's own history.
+if ! grep -qE "^MELLO_SPOTIFY_ENGINE=[\"']?soloist[\"']?[[:space:]]*$" .env 2>/dev/null \
    && git cat-file -e "$TARGET:pi/needs-soloist" 2>/dev/null; then
-  ADDED=$(git log -1 --diff-filter=A --format=%H "$TARGET" -- pi/needs-soloist)
+  ADDED=$(git log -1 --first-parent --diff-filter=A --format=%H "$TARGET" -- pi/needs-soloist)
   TARGET=$(git rev-parse "$ADDED^")
   TARGET_NAME=last-librespot-version
 fi
