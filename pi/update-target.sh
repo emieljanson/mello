@@ -15,6 +15,8 @@
 #            stable); never go backwards, wait until the channel catches up
 #   failed   the target failed its health check on this speaker before
 #            (see BAD_UPDATE_FILE); wait for a newer one
+# A speaker still on go-librespot never goes past the version before the one
+# that added pi/needs-soloist (see below).
 # Exits 2 when GitHub cannot be reached.
 set -euo pipefail
 
@@ -44,6 +46,16 @@ fi
 
 LOCAL=$(git rev-parse HEAD)
 TARGET=$(git rev-parse "$TARGET_NAME^{commit}")
+
+# Versions with pi/needs-soloist no longer have go-librespot. A speaker that
+# has not switched to Spotify Soloist stays on the version just before that
+# file was added, and moves on by itself once it has switched.
+if ! grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' .env 2>/dev/null \
+   && git cat-file -e "$TARGET:pi/needs-soloist" 2>/dev/null; then
+  ADDED=$(git log -1 --diff-filter=A --format=%H "$TARGET" -- pi/needs-soloist)
+  TARGET=$(git rev-parse "$ADDED^")
+  TARGET_NAME=last-librespot-version
+fi
 
 if [ "$LOCAL" = "$TARGET" ]; then
   STATUS=current
