@@ -1313,6 +1313,7 @@ class Mello:
 
             elif event.kind == 'move':
                 if self.setup_menu.is_open and self._menu_touch_start is not None:
+                    self.sleep_manager.reset_timer()
                     # Menu scroll: track vertical drag (physical x-axis)
                     dx = event.pos[0] - self._menu_touch_start[0]
                     if abs(dx) > 10 and self.renderer.menu_content_overflow > 0:
