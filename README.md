@@ -121,9 +121,9 @@ Mello plays Spotify through [go-librespot](https://github.com/devgianlu/go-libre
 4. Paste the code and tap **Connect**. Mello downloads Soloist, switches over and restarts by itself (about half a minute)
 5. If Spotify was never connected on this speaker: open Spotify, tap the speaker icon and select "Mello" once
 
-The page only works while the speaker shows the QR code. The same page has a button to switch back.
+The page only works while the speaker shows the QR code.
 
-**Another Spotify account** (for example your child's, so Mello stops taking over your own phone): open Settings → Spotify, scan the code and tap **Use another Spotify account**. The page shows which account Mello plays with now. Mello forgets that account (your code from Spotify stays) and shows **Play to Mello via Spotify**; then pick "Mello" once in the Spotify app of the other account, on the same WiFi. Saved albums stay.
+**Another Spotify account** (for example your child's, so Mello stops taking over your own phone): your code from Spotify is only the speaker's licence, not who listens. Mello plays with the Spotify account that picked it in the Spotify app (on the same WiFi). To use another account, pick "Mello" from that account's Spotify app.
 
 **After an update**
 
