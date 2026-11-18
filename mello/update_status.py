@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 STATUS_FILE = Path.home() / '.mello-update-status'
+# Written by pi/update-target.sh while newer versions need Spotify Soloist.
+NEEDS_SOLOIST_FILE = Path.home() / '.mello-needs-soloist'
 
 # One failed night (WiFi asleep, GitHub down) is not worth mentioning.
 FAILING_FOR = 36 * 3600
@@ -53,3 +55,8 @@ def update_problem(path: Path = STATUS_FILE, now: Optional[float] = None) -> Opt
     if now - last_ok < FAILING_FOR:
         return None
     return 'Update failed: no internet' if result == 'no-internet' else 'Update failed'
+
+
+def needs_soloist(path: Path = NEEDS_SOLOIST_FILE) -> bool:
+    """Newer versions need Spotify Soloist, which this speaker does not use yet."""
+    return path.exists()

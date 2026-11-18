@@ -20,7 +20,7 @@ from ..config import (
     SOLOIST_DATA_DIR, SOLOIST_HOME, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
 )
 from ..models import MenuState
-from ..update_status import last_run_label, update_problem
+from ..update_status import last_run_label, needs_soloist, update_problem
 from .engine_setup import (
     PROMPT_BUTTON_LAST, PROMPT_BUTTON_LATER,
     PROMPT_TITLE_NEW_OWNER, PROMPT_TITLE_UPDATE,
@@ -54,6 +54,8 @@ _SPOTIFY_PROMPT_TIMEOUT = 180
 # How long "Hold to close" must be held: long enough that a child's tap or
 # swipe does not close it by accident.
 PROMPT_HOLD_SECONDS = 3.0
+# The update button while newer versions need Spotify Soloist.
+UPDATE_NEEDS_SOLOIST = 'Update needs Soloist'
 # How long the update button shows how a check or update ended.
 _UPDATE_RESULT_SECONDS = 4.0
 
@@ -159,6 +161,9 @@ class SetupMenu:
 
         # Shown under the version when updates have not worked for a while.
         self.update_problem: Optional[str] = None
+        # Newer versions need Soloist: the update button says so and opens
+        # Settings > Spotify, where it is turned on.
+        self.needs_soloist: bool = False
 
         # Manual update state
         self._update_checking: bool = False
@@ -178,6 +183,7 @@ class SetupMenu:
         """Open the setup menu overlay."""
         logger.info('Setup menu opened')
         self.update_problem = update_problem()
+        self.needs_soloist = self._waits_for_soloist()
         if self.update_problem:
             logger.warning(f'Setup menu: {self.update_problem} (see ~/mello-update.log)')
         self.state = MenuState.MAIN
@@ -327,7 +333,14 @@ class SetupMenu:
             elif 'check_update' in button_rects and button_rects['check_update'].collidepoint(x, y):
                 if self._update_running or self._update_checking:
                     return
+                if self.needs_soloist and self.engine_setup:
+                    self._show_spotify_screen()
+                    return
                 self._check_for_update()
+
+    def _waits_for_soloist(self) -> bool:
+        """Updates wait for Soloist (a speaker that just switched is past it)."""
+        return needs_soloist() and not (self.engine_setup and self.engine_setup.engine == 'soloist')
 
     def _show_spotify_screen(self):
         """Show how to reach the key entry page, and serve it meanwhile."""
@@ -419,7 +432,10 @@ class SetupMenu:
                 logger.info('Setup menu: new Mello is in use without Spotify connected, offer follows later')
                 self.settings.postpone_soloist_prompt()
             return False
-        if not self.settings.soloist_prompt_due or not lan_address():
+        # While updates wait for Soloist, the offer keeps coming back.
+        due = self.settings.soloist_prompt_due or (
+            self._waits_for_soloist() and self.settings.soloist_prompt_waited)
+        if not due or not lan_address():
             return False                 # (offline: the phone could not reach the page)
         logger.info('Setup menu: showing the faster-Mello offer')
         self.spotify_prompt_active = True
@@ -460,7 +476,8 @@ class SetupMenu:
 
     @property
     def prompt_button(self) -> str:
-        last = bool(self.settings) and self.settings.soloist_prompt_is_last
+        last = (bool(self.settings) and self.settings.soloist_prompt_is_last
+                and not self._waits_for_soloist())
         return PROMPT_BUTTON_LAST if last else PROMPT_BUTTON_LATER
 
     @property
@@ -472,6 +489,8 @@ class SetupMenu:
             return 'Checking...'
         if self._update_result:
             return self._update_result
+        if self.needs_soloist:
+            return UPDATE_NEEDS_SOLOIST
         return 'Check for updates'
 
     def _set_update_result(self, label: str):
@@ -603,12 +622,15 @@ class SetupMenu:
                 logger.info(f'Update check: {result.stdout.strip()}')
                 status = (result.stdout.split() or [''])[0]
                 self._update_checking = False
+                self.needs_soloist = self._waits_for_soloist()
                 if status == 'update':
                     self._run_update()
                 elif status == 'failed':
                     # The newest version broke on this speaker before and
                     # was rolled back: waiting for a newer one.
                     self._set_update_result('Update failed')
+                elif self.needs_soloist:
+                    self._set_update_result(UPDATE_NEEDS_SOLOIST)
                 else:
                     self._set_update_result('Up to date')
             except Exception as e:
