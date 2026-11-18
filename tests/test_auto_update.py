@@ -228,3 +228,65 @@ def test_rollback_is_written_down(speaker):
     status = _status(speaker)
     assert status['result'] == 'failed'
     assert 'rolled back' in status['message']
+
+
+def _drop_librespot(speaker):
+    """The version that removes go-librespot says so with pi/needs-soloist."""
+    (speaker.work / 'pi' / 'needs-soloist').write_text('')
+    return speaker.commit('no-librespot')
+
+
+def test_librespot_speaker_stays_on_the_last_version_with_librespot(speaker):
+    speaker.set_channel('beta')
+    last = speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    speaker.commit('after')
+    assert speaker.check() == ['update', 'beta', 'last-librespot-version', last]
+    assert speaker.update()[0] == 0
+    assert speaker.version == last
+    assert speaker.check()[0] == 'current'
+    assert speaker.update()[0] == 0          # next night: still there
+    assert speaker.version == last
+
+
+def test_speaker_moves_on_once_it_has_soloist(speaker):
+    speaker.set_channel('beta')
+    speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    newest = speaker.commit('after')
+    speaker.update()
+    (speaker.home / 'mello' / '.env').write_text(
+        'MELLO_UPDATE_CHANNEL=beta\nMELLO_SPOTIFY_ENGINE=soloist\n')
+    assert speaker.check() == ['update', 'beta', 'origin/main', newest]
+    assert speaker.update()[0] == 0
+    assert speaker.version == newest
+
+
+def test_the_gate_holds_even_if_needs_soloist_is_edited_later(speaker):
+    speaker.set_channel('beta')
+    last = speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    (speaker.work / 'pi' / 'needs-soloist').write_text('edited')
+    speaker.commit('edit')
+    assert speaker.check()[3] == last
+
+
+def test_gate_lands_on_main_when_removal_is_merged_with_a_merge_commit(speaker):
+    speaker.set_channel('beta')
+    speaker.git('checkout', '-q', '-b', 'remove-librespot')
+    (speaker.work / 'pi' / 'needs-soloist').write_text('')
+    speaker.commit('no-librespot', push=False)
+    speaker.git('checkout', '-q', 'main')
+    last = speaker.commit('meanwhile-on-main', push=False)
+    speaker.git('merge', '-q', '--no-ff', '-m', 'Merge', 'remove-librespot')
+    speaker.git('push', '-q', 'origin', 'main')
+    assert speaker.check()[3] == last
+
+
+def test_engine_must_be_exactly_soloist(speaker):
+    speaker.set_channel('beta')
+    last = speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    (speaker.home / 'mello' / '.env').write_text(
+        'MELLO_UPDATE_CHANNEL=beta\nMELLO_SPOTIFY_ENGINE=soloist-disabled\n')
+    assert speaker.check()[3] == last
