@@ -33,6 +33,7 @@ speaker's person in PostHog also gets pi_model, so you can count speakers
 per architecture before dropping something only 64-bit can run.
 """
 import time
+import atexit
 import socket
 import threading
 import logging
@@ -205,6 +206,12 @@ class UsageTracker:
         sender.start()
         sender.join(FLUSH_TIMEOUT)
         if sender.is_alive():
+            # PostHog also joins its upload thread at interpreter exit
+            # (atexit), which would hang the stop just the same.
+            try:
+                atexit.unregister(posthog.join)
+            except Exception:
+                pass
             logger.info(f'Analytics: could not send within {FLUSH_TIMEOUT}s (offline?), dropped')
 
     def on_shutdown(self):
