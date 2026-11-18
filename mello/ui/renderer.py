@@ -474,11 +474,18 @@ class Renderer:
                 ('spacer',),
                 ('text', '3. Enter the password'),
             ]
-            if ctx.menu_wifi_join_failed:
+            if ctx.menu_wifi_joining:
+                items = [
+                    ('text', f'Connecting to {ctx.menu_wifi_joining}...'),
+                    ('text', 'This can take a minute or two'),
+                ]
+            elif ctx.menu_wifi_join_failed:
                 # The phone just shows the password page again; say why.
                 items = [
                     ('text', f'Could not join {ctx.menu_wifi_join_failed}'),
-                    ('text', 'This happens sometimes, please try again'),
+                    ('text', 'Check the password and try again'
+                             if ctx.menu_wifi_join_wrong_password else
+                             'The router did not answer, try again'),
                     ('spacer',),
                 ] + items
         elif ctx.menu_state == MenuState.SPOTIFY:

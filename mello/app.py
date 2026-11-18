@@ -2290,6 +2290,8 @@ class Mello:
             menu_known_networks=self.setup_menu.known_networks,
             menu_current_network=self.setup_menu.current_network,
             menu_wifi_join_failed=self.setup_menu.wifi_join_failed,
+            menu_wifi_joining=self.setup_menu.wifi_joining,
+            menu_wifi_join_wrong_password=self.setup_menu.wifi_join_wrong_password,
             menu_spotify_items=self.setup_menu.spotify_items,
             menu_spotify_prompt=self.setup_menu.spotify_prompt_active,
             menu_prompt_hold_progress=self.setup_menu.prompt_hold_progress,
