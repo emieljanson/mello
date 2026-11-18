@@ -60,7 +60,7 @@ if ! grep -qE "^MELLO_SPOTIFY_ENGINE=[\"']?soloist[\"']?[[:space:]]*$" .env 2>/d
 fi
 # For the settings menu (mello/update_status.py): updates wait for Soloist.
 if [ "$TARGET_NAME" = last-librespot-version ]; then
-  touch "$HOME/.mello-needs-soloist" 2>/dev/null || true
+  touch "$HOME/.mello-needs-soloist" || echo "update-target: cannot write $HOME/.mello-needs-soloist" >&2
 else
   rm -f "$HOME/.mello-needs-soloist"
 fi
