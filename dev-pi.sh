@@ -268,20 +268,22 @@ sudo systemctl daemon-reload
 
 # Stop any orphan processes first
 pkill -9 -f "mello.py" 2>/dev/null || true
-pkill -9 -f "go-librespot" 2>/dev/null || true
 sleep 0.5
 
-# Start librespot if not running
-if ! systemctl is-active --quiet mello-librespot; then
-    sudo systemctl start mello-librespot
-    sleep 2
-fi
-
-if pgrep -f "go-librespot" > /dev/null; then
-    echo "go-librespot running"
+# Spotify's player (Soloist) runs once an API key has been entered
+if [ -s ~/soloist/key ]; then
+    if ! systemctl is-active --quiet mello-soloist; then
+        sudo systemctl start mello-soloist
+        sleep 2
+    fi
+    if systemctl is-active --quiet mello-soloist; then
+        echo "Soloist running"
+    else
+        echo "Soloist failed"
+        journalctl -u mello-soloist -n 3 --no-pager
+    fi
 else
-    echo "go-librespot failed"
-    journalctl -u mello-librespot -n 3 --no-pager
+    echo "Soloist: no API key yet (Mello asks for it on screen)"
 fi
 
 # Setup Python environment

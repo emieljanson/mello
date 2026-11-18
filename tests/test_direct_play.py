@@ -17,7 +17,7 @@ import pytest
 
 from mello.api import soloist as soloist_module
 from mello.api.play_orders import PlayOrders, one_round
-from mello.models import LibrespotStatus
+from mello.models import PlayerStatus
 from test_soloist_api import connected_api, entity, playback_state
 
 ALBUM = 'spotify:album:a1'
@@ -189,7 +189,7 @@ def test_known_order_plays_the_saved_track_at_once():
     assert api.play(ALBUM, skip_to_uri=TRACKS[3], paused=True) is True
     assert daemon.plays == [TRACKS[3]]
     assert daemon.repeat == 'track'
-    loading = LibrespotStatus.from_dict(api.status())
+    loading = PlayerStatus.from_dict(api.status())
     assert (loading.context_uri, loading.track_uri) == (ALBUM, None)     # "loading" until resumed
     api.resume()
     assert api.status()['repeat_context'] is True

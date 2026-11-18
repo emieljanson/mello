@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import Optional, Callable, List
 
-from ..api.librespot import LibrespotAPIProtocol
+from ..api.player import PlayerAPIProtocol
 from ..api.catalog import CatalogManager
 from ..models import CatalogItem, NowPlaying, PlayState
 from ..config import PROGRESS_SAVE_INTERVAL
@@ -33,7 +33,7 @@ class PlaybackController:
 
     def __init__(
         self,
-        api: LibrespotAPIProtocol,
+        api: PlayerAPIProtocol,
         catalog_manager: CatalogManager,
         volume: VolumeController,
         mock_mode: bool = False,

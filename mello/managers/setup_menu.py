@@ -16,7 +16,7 @@ import shutil
 from pathlib import Path
 
 from ..config import (
-    CATALOG_PATH, IMAGES_DIR, LIBRESPOT_STATE_PATH, SETTINGS_PATH,
+    CATALOG_PATH, IMAGES_DIR, SETTINGS_PATH,
     SOLOIST_DATA_DIR, SOLOIST_HOME, SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE,
 )
 from ..models import MenuState
@@ -361,7 +361,7 @@ class SetupMenu:
     def _tell_page_who_is_asking(self):
         """The phone page words itself for a new Mello or for one that was updated."""
         if self.settings:
-            self.engine_setup.new_owner = self.settings.soloist_new_owner
+            self.engine_setup.new_owner = self.settings.soloist_new_owner or self._no_key_yet
             self.engine_setup.setup_step = self._spotify_is_setup_step
 
     def home_connect_spotify(self, has_network: bool, library_empty: bool) -> bool:
@@ -379,7 +379,7 @@ class SetupMenu:
         switching = self._home_page and self.engine_setup.state == 'switching'
         want = bool(switching or (
             has_network and library_empty
-            and self.settings.soloist_setup_step_open and self.engine_setup.can_offer_soloist()
+            and self._spotify_is_setup_step and self.engine_setup.can_offer_soloist()
         ))
         if want and not self.engine_setup.running:
             now = time.time()
@@ -406,8 +406,13 @@ class SetupMenu:
         return self.engine_setup.screen_items()
 
     @property
+    def _no_key_yet(self) -> bool:
+        """A new (or reset) Mello: Spotify plays only once an API key is in."""
+        return bool(self.engine_setup) and self.engine_setup.engine == 'none'
+
+    @property
     def _spotify_is_setup_step(self) -> bool:
-        return bool(self.settings) and self.settings.soloist_setup_step_open
+        return self._no_key_yet or (bool(self.settings) and self.settings.soloist_setup_step_open)
 
     def show_spotify_prompt(self) -> bool:
         """Open the "a faster Mello" offer by itself.
@@ -428,6 +433,8 @@ class SetupMenu:
             return False
         if not self.engine_setup.can_offer_soloist():
             return False
+        if self._no_key_yet:
+            return False                 # the home screen asks for the key instead
         if self._spotify_is_setup_step:
             if self.catalog_manager and self.catalog_manager.items:
                 # Saved an album without connecting Spotify: setting up is
@@ -1223,8 +1230,8 @@ class SetupMenu:
 
         The key belongs to the owner's own Spotify developer account. After a
         factory reset the speaker may go to someone else, so it must not keep
-        it: the speaker goes back to the standard Spotify engine (at the end of
-        the reset) and a new owner can enter their own key.
+        it: Soloist is switched off (at the end of the reset) until a new owner
+        enters their own key.
         """
         subprocess.run(
             ['sudo', 'systemctl', 'stop', SPOTIFY_ENGINE_SERVICE],
@@ -1256,13 +1263,7 @@ class SetupMenu:
 
         # 2. Clear Spotify credentials
         try:
-            if SPOTIFY_ENGINE == 'soloist':
-                self._forget_soloist_owner()
-            elif LIBRESPOT_STATE_PATH.exists():
-                state = json.loads(LIBRESPOT_STATE_PATH.read_text())
-                state['credentials'] = {'username': '', 'data': None}
-                LIBRESPOT_STATE_PATH.write_text(json.dumps(state))
-                logger.info('Spotify credentials cleared')
+            self._forget_soloist_owner()
         except Exception as e:
             logger.error(f'Failed to clear Spotify credentials: {e}')
 
@@ -1336,8 +1337,8 @@ class SetupMenu:
         except Exception as e:
             logger.error(f'Failed to forget WiFi networks: {e}')
 
-        # 7. Restart app. A speaker on Soloist has no key any more: it goes
-        # back to go-librespot, and that script restarts the app itself.
+        # 7. Restart app. Without a key Soloist is switched off until the
+        # next owner enters theirs; that script restarts the app itself.
         def _restart_app():
             time.sleep(2)
             if SPOTIFY_ENGINE == 'soloist':
@@ -1349,9 +1350,9 @@ class SetupMenu:
                     )
                     if result.returncode == 0:
                         return
-                    logger.warning(f'Switching back to go-librespot failed: {result.stdout[-300:]}')
+                    logger.warning(f'Switching Soloist off failed: {result.stdout[-300:]}')
                 except Exception as ex:
-                    logger.warning(f'Could not switch back to go-librespot: {ex}')
+                    logger.warning(f'Could not switch Soloist off: {ex}')
             try:
                 subprocess.run(
                     ['sudo', 'systemctl', 'restart', 'mello-native'],

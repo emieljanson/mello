@@ -8,7 +8,7 @@ about, and presents it in the same shape as go-librespot's /status payload so
 the rest of the app does not need to know which engine is running.
 
 It fills two roles the app keeps separate for go-librespot:
-  - LibrespotAPIProtocol (status + playback commands)
+  - PlayerAPIProtocol (status + playback commands)
   - EventListener (start/stop, on_update / on_connect / on_inactive, context_uri)
 """
 import json

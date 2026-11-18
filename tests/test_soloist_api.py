@@ -9,9 +9,9 @@ from unittest.mock import MagicMock
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mello.api.librespot import LibrespotAPIProtocol
+from mello.api.player import PlayerAPIProtocol
 from mello.api.soloist import SoloistAPI
-from mello.models import LibrespotStatus
+from mello.models import PlayerStatus
 
 
 STOPPED = {'stopped': True, 'paused': False, 'context_uri': None, 'track': None}
@@ -71,7 +71,7 @@ def connected_api(logged_in=True, reply=None, active=None, **kwargs):
 
 
 def test_implements_the_engine_protocol():
-    assert isinstance(SoloistAPI('ws://x'), LibrespotAPIProtocol)
+    assert isinstance(SoloistAPI('ws://x'), PlayerAPIProtocol)
 
 
 # --- status -----------------------------------------------------------------
@@ -92,7 +92,7 @@ def test_status_maps_playing_track_to_librespot_shape():
     api = connected_api()
     api._handle_event(playback_state(position_ms=45000, speed=0.0))
 
-    status = LibrespotStatus.from_dict(api.status())
+    status = PlayerStatus.from_dict(api.status())
 
     assert status.playing is True
     assert status.paused is False
@@ -132,7 +132,7 @@ def test_buffering_is_not_reported_as_playing():
     api = connected_api()
     api._handle_event(playback_state(status='buffering'))
 
-    assert LibrespotStatus.from_dict(api.status()).playing is False
+    assert PlayerStatus.from_dict(api.status()).playing is False
 
 
 def test_granular_events_update_cached_state():
@@ -236,14 +236,14 @@ def test_new_context_without_item_reports_loading_not_old_track():
     switching['item'] = {'uri': '', 'entity_type': '', 'decorations': {}}
     api._handle_event(switching)
 
-    status = LibrespotStatus.from_dict(api.status())
+    status = PlayerStatus.from_dict(api.status())
     assert status.context_uri == 'spotify:album:a2'
     assert status.track_uri is None
     assert status.playing is False
 
     switching['item'] = entity('spotify:track:t9', 'First')
     api._handle_event(switching)
-    assert LibrespotStatus.from_dict(api.status()).track_uri == 'spotify:track:t9'
+    assert PlayerStatus.from_dict(api.status()).track_uri == 'spotify:track:t9'
 
 
 def test_empty_item_within_same_context_keeps_known_track():
@@ -449,7 +449,7 @@ def test_resume_starts_album_then_skips_to_saved_track_and_pauses():
 
     assert commands(api) == ['play', 'get_queue', 'skip_next', 'skip_next', 'skip_next']
     # Until the caller has seeked and resumed, the app only sees "loading".
-    loading = LibrespotStatus.from_dict(api.status())
+    loading = PlayerStatus.from_dict(api.status())
     assert (loading.context_uri, loading.track_uri, loading.playing) == (ALBUM, None, False)
 
     assert api.seek(45000) is True
@@ -752,11 +752,11 @@ def test_buffering_that_never_turns_into_playing_is_checked_with_a_snapshot(monk
     api._handle_event({'type': 'playback_changed', 'status': 'buffering'})
     api.sent.clear()
 
-    assert LibrespotStatus.from_dict(api.status()).playing is False   # a short load: just wait
+    assert PlayerStatus.from_dict(api.status()).playing is False   # a short load: just wait
     assert not [m for m in api.sent if m['command'] == 'get_state']
 
     clock[0] += 2.5
-    assert LibrespotStatus.from_dict(api.status()).playing is True    # asked, and it plays
+    assert PlayerStatus.from_dict(api.status()).playing is True    # asked, and it plays
     assert [m['command'] for m in api.sent].count('get_state') == 1
 
 

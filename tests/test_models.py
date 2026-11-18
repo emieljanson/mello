@@ -1,5 +1,5 @@
 """
-Tests for data models - LibrespotStatus, CatalogItem, etc.
+Tests for data models - PlayerStatus, CatalogItem, etc.
 """
 import pytest
 from pathlib import Path
@@ -7,11 +7,11 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mello.models import LibrespotStatus, CatalogItem
+from mello.models import PlayerStatus, CatalogItem
 
 
-class TestLibrespotStatus:
-    """Tests for LibrespotStatus.from_dict parsing."""
+class TestPlayerStatus:
+    """Tests for PlayerStatus.from_dict parsing."""
 
     def test_parses_playing_state(self):
         raw = {
@@ -28,7 +28,7 @@ class TestLibrespotStatus:
                 'duration': 260000,
             }
         }
-        s = LibrespotStatus.from_dict(raw, context_uri='spotify:album:abbey')
+        s = PlayerStatus.from_dict(raw, context_uri='spotify:album:abbey')
         assert s.playing is True
         assert s.paused is False
         assert s.stopped is False
@@ -44,50 +44,50 @@ class TestLibrespotStatus:
 
     def test_parses_repeat_context(self):
         raw = {'stopped': False, 'paused': False, 'repeat_context': True, 'track': {}}
-        s = LibrespotStatus.from_dict(raw)
+        s = PlayerStatus.from_dict(raw)
         assert s.repeat_context is True
 
     def test_parses_paused_state(self):
         raw = {'stopped': False, 'paused': True, 'track': {}}
-        s = LibrespotStatus.from_dict(raw)
+        s = PlayerStatus.from_dict(raw)
         assert s.playing is False
         assert s.paused is True
 
     def test_buffering_does_not_confirm_playback(self):
-        status = LibrespotStatus.from_dict({'stopped': False, 'paused': False, 'buffering': True})
+        status = PlayerStatus.from_dict({'stopped': False, 'paused': False, 'buffering': True})
 
         assert status.playing is False
         assert status.stopped is False
 
     def test_parses_stopped_state(self):
         raw = {'stopped': True, 'paused': False, 'track': {}}
-        s = LibrespotStatus.from_dict(raw)
+        s = PlayerStatus.from_dict(raw)
         assert s.playing is False
         assert s.stopped is True
 
     def test_handles_missing_track(self):
         raw = {'stopped': True}
-        s = LibrespotStatus.from_dict(raw)
+        s = PlayerStatus.from_dict(raw)
         assert s.track_name is None
         assert s.position == 0
 
     def test_handles_none_track(self):
         raw = {'stopped': True, 'track': None}
-        s = LibrespotStatus.from_dict(raw)
+        s = PlayerStatus.from_dict(raw)
         assert s.track_name is None
 
     def test_multiple_artists_joined(self):
         raw = {'stopped': False, 'paused': False, 'track': {'artist_names': ['A', 'B', 'C']}}
-        s = LibrespotStatus.from_dict(raw)
+        s = PlayerStatus.from_dict(raw)
         assert s.track_artist == 'A, B, C'
 
     def test_no_artists(self):
         raw = {'stopped': False, 'paused': False, 'track': {}}
-        s = LibrespotStatus.from_dict(raw)
+        s = PlayerStatus.from_dict(raw)
         assert s.track_artist is None
 
     def test_defaults(self):
-        s = LibrespotStatus()
+        s = PlayerStatus()
         assert s.playing is False
         assert s.stopped is True
         assert s.volume is None

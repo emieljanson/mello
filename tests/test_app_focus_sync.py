@@ -13,11 +13,50 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mello.app import Mello
 from mello.api.catalog import CatalogManager
-from mello.api.librespot import LibrespotAPI
 from mello.config import CONTEXT_SWITCH_WATCHDOG_TIMEOUT
 from mello.controllers.playback import PlaybackController
-from mello.handlers.events import EventListener
 from mello.models import CatalogItem, MenuState, NowPlaying
+
+
+class FakeEngine:
+    """Spotify's player as the app sees it: status, commands and events in one
+    object (like SoloistAPI). Tests set the status and read the plays sent."""
+
+    def __init__(self, on_update, on_inactive):
+        self.on_update, self.on_inactive = on_update, on_inactive
+        self.context_uri = None
+        self.raw = None
+        self.status_hook = None
+        self.plays = []
+
+    def status(self):
+        if self.status_hook:
+            self.status_hook()
+        return self.raw
+
+    def play(self, uri, skip_to_uri=None, paused=False):
+        self.plays.append(uri)
+        return True
+
+    def pause(self): return True
+    def resume(self): return True
+    def next(self): return True
+    def prev(self): return True
+    def seek(self, position): return True
+    def set_volume(self, level): return True
+    def set_repeat_context(self, enabled): return True
+    def abort_play(self): pass
+    def is_connected(self): return True
+    def metrics_snapshot(self): return {}
+
+    def event(self, kind, context_uri=None):
+        """A 'playing' or 'inactive' event from the player."""
+        if kind == 'playing':
+            self.context_uri = context_uri
+        elif kind == 'inactive':
+            self.context_uri = None
+            self.on_inactive()
+        self.on_update()
 
 
 def _item(item_id: str, uri: str, name: str) -> CatalogItem:
@@ -97,12 +136,7 @@ def playback_app(monkeypatch):
     app.auto_pause = MagicMock()
     app.bluetooth = MagicMock()
     app.volume.ensure_spotify_at_100 = MagicMock()
-    app.api = LibrespotAPI('http://localhost:3678')
-    app.api.session.post = MagicMock(return_value=MagicMock(status_code=200, ok=True))
-    app.api.session.get = MagicMock(return_value=MagicMock(status_code=200))
-    app.events = EventListener(
-        'ws://localhost:3678/events', app._on_ws_update, on_inactive=app._on_spotify_inactive,
-    )
+    app.api = app.events = FakeEngine(app._on_ws_update, app._on_spotify_inactive)
     app.playback = PlaybackController(
         app.api, MagicMock(get_progress=MagicMock(return_value=None)), app.volume,
         is_request_current=app._is_play_request_current,
@@ -122,18 +156,12 @@ def playback_app(monkeypatch):
 
 
 def _report_status(app, raw=None):
-    response = app.api.session.get.return_value
-    response.status_code = 204 if raw is None else 200
-    response.json.return_value = raw
+    app.api.raw = raw
     app._refresh_status()
 
 
 def _play_posts(app):
-    return [
-        request.kwargs['json']['uri']
-        for request in app.api.session.post.call_args_list
-        if request.args[0].endswith('/player/play')
-    ]
+    return app.api.plays
 
 
 def test_periodic_diagnostics_run_after_playback_handoff_changes(playback_app, caplog):
@@ -166,13 +194,13 @@ def test_transfer_to_computer_does_not_start_mello_again(
         app.setup_menu.is_open = False
 
     for _ in range(3):
-        app.events._on_message(None, '{"type":"playing","data":{"context_uri":"spotify:album:a"}}')
+        app.events.event('playing', 'spotify:album:a')
         _report_status(app, {'stopped': False, 'paused': False, 'repeat_context': True,
                              'track': {'uri': 'spotify:track:a'}})
         app._update(0.016)
 
         if inactive_event_delivered:
-            app.events._on_message(None, '{"type":"inactive"}')
+            app.events.event('inactive')
         app._apply_spotify_inactive()
         _report_status(app)  # The engine logs out during transfer.
         app._update(0.016)
@@ -223,7 +251,7 @@ def test_transfer_cancels_swipe_but_new_play_can_take_over(
     app._update(0.016)
 
     if inactive_event_delivered:
-        app.events._on_message(None, '{"type":"inactive"}')
+        app.events.event('inactive')
     clock.now += 2
     _report_status(app, {'stopped': True, 'paused': False, 'track': None})
     app._apply_spotify_inactive()
@@ -242,11 +270,7 @@ def test_stale_poll_cannot_restore_playing_after_inactive(playback_app):
     _report_status(app, playing)
     assert app.now_playing.playing
 
-    def late_response(*args, **kwargs):
-        app.events._on_message(None, '{"type":"inactive"}')
-        return MagicMock(status_code=200, json=MagicMock(return_value=playing))
-
-    app.api.session.get.side_effect = late_response
+    app.api.status_hook = lambda: app.events.event('inactive')   # arrives while the poll is out
     app._refresh_status()
 
     assert app.now_playing.stopped
@@ -514,6 +538,6 @@ def test_new_player_that_was_never_chosen_in_spotify_is_noticed(tmp_path, monkey
     app.api.logged_in = True
     assert Mello._spotify_needs_pairing(app) is False
 
-    monkeypatch.setattr(app_module, 'SPOTIFY_ENGINE', 'librespot')
+    monkeypatch.setattr(app_module, 'SPOTIFY_ENGINE', 'none')
     app.api.logged_in = False
-    assert Mello._spotify_needs_pairing(app) is False        # the old player has no such step
+    assert Mello._spotify_needs_pairing(app) is False        # no key yet: nothing to pair

@@ -1,28 +1,28 @@
 """
 Keeping the Mello app in step with Spotify: polling the engine's status,
 following what plays, the temporary 'now playing' item, network checks and
-restarting a stuck librespot.
+restarting a stuck Spotify engine.
 """
 import logging
 import subprocess
 import time
 
-from ..config import SPOTIFY_ENGINE_SERVICE
-from ..models import CatalogItem, NowPlaying, LibrespotStatus
+from ..config import SPOTIFY_ENGINE, SPOTIFY_ENGINE_SERVICE
+from ..models import CatalogItem, NowPlaying, PlayerStatus
 from ..controllers import is_repeatable_spotify_context
 from ..utils import run_async
 
 logger = logging.getLogger('mello.app')
 
-LIBRESPOT_RESTART_AFTER = 60.0
-LIBRESPOT_RESTART_COOLDOWN = 300.0
+ENGINE_RESTART_AFTER = 60.0
+ENGINE_RESTART_COOLDOWN = 300.0
 
 
 class SpotifySyncMixin:
-    """Status polling, following playback, the temp item and librespot restarts."""
+    """Status polling, following playback, the temp item and engine restarts."""
 
     def _poll_status(self):
-        """Poll librespot status in background.
+        """Poll the Spotify engine status in background.
         
         Intervals adapt to state: fast when disconnected, slow when idle,
         near-zero during sleep (WebSocket can signal instant wake via
@@ -65,7 +65,7 @@ class SpotifySyncMixin:
             self._poll_wake_event.clear()
     
     def _refresh_status(self):
-        """Refresh playback status from librespot."""
+        """Refresh playback status from the Spotify engine."""
         previous = self.now_playing
         raw = self.api.status()
         was_connected = self.connected
@@ -106,7 +106,7 @@ class SpotifySyncMixin:
                     f'api_ctx={api_context_uri[:40]} | ws_ctx={ws_context_uri[:40]} | '
                     f'track="{(raw.get("track") or {}).get("name") if isinstance(raw.get("track"), dict) else "none"}"'
                 )
-            status = LibrespotStatus.from_dict(raw, context_uri=ws_context_uri)
+            status = PlayerStatus.from_dict(raw, context_uri=ws_context_uri)
             current = NowPlaying(
                 playing=status.playing,
                 paused=status.paused,
@@ -177,25 +177,27 @@ class SpotifySyncMixin:
                     f'| connected={self.connected} | fail_count={self._connection_fail_count}'
                 )
                 self._last_status_unknown_log = now
-            self._maybe_restart_librespot(now)
+            self._maybe_restart_engine(now)
 
-    def _maybe_restart_librespot(self, now: float):
+    def _maybe_restart_engine(self, now: float):
         """Restart a locally hung Spotify engine after a sustained outage."""
+        if SPOTIFY_ENGINE != 'soloist':
+            return              # no key yet: there is no engine to restart
         failure_started_at = self._status_failure_started_at
         if failure_started_at == 0.0:
             return
-        if now - failure_started_at < LIBRESPOT_RESTART_AFTER:
+        if now - failure_started_at < ENGINE_RESTART_AFTER:
             return
         if (
-            self._last_librespot_restart_at > 0.0
-            and now - self._last_librespot_restart_at < LIBRESPOT_RESTART_COOLDOWN
+            self._last_engine_restart_at > 0.0
+            and now - self._last_engine_restart_at < ENGINE_RESTART_COOLDOWN
         ):
             return
 
-        self._last_librespot_restart_at = now
+        self._last_engine_restart_at = now
         self._show_toast('Spotify herstellen...')
         logger.warning(
-            'LIBRESPOT recovery | restarting unresponsive service '
+            'ENGINE recovery | restarting unresponsive service '
             f'after {now - failure_started_at:.1f}s'
         )
         try:
@@ -210,15 +212,15 @@ class SpotifySyncMixin:
                 self._status_failure_started_at = now
                 self._connection_fail_count = 0
                 self._poll_wake_event.set()
-                logger.info('LIBRESPOT recovery | restart requested successfully')
+                logger.info('ENGINE recovery | restart requested successfully')
             else:
                 logger.error(
-                    'LIBRESPOT recovery | restart failed '
+                    'ENGINE recovery | restart failed '
                     f'rc={result.returncode} stderr={result.stderr.strip()}'
                 )
             self.tracker.on_engine_restarted(now - failure_started_at, ok=result.returncode == 0)
         except Exception as exc:
-            logger.error(f'LIBRESPOT recovery | restart error: {exc}', exc_info=True)
+            logger.error(f'ENGINE recovery | restart error: {exc}', exc_info=True)
             self.tracker.on_engine_restarted(now - failure_started_at, ok=False)
     
     def _ensure_repeat_context_for_current_status(self):
@@ -382,7 +384,7 @@ class SpotifySyncMixin:
     def _initial_connect(self):
         """Initial connection with fast retries then slower backoff.
 
-        Tries quickly first (every 2s for ~20s) since go-librespot usually
+        Tries quickly first (every 2s for ~20s) since the engine usually
         boots within 10s on Pi. Falls back to slower retries after that.
         """
         start_time = time.time()
@@ -391,7 +393,7 @@ class SpotifySyncMixin:
             try:
                 self._refresh_status()
                 if self.connected:
-                    logger.info(f'Connected to librespot (attempt {attempt + 1})')
+                    logger.info(f'Connected to the Spotify engine (attempt {attempt + 1})')
                     break
             except Exception as e:
                 logger.warning(f'Connection attempt {attempt + 1}/{max_retries} failed: {e}')
@@ -400,7 +402,7 @@ class SpotifySyncMixin:
             delay = 2 if attempt < 10 else min(2 ** (attempt - 10), 10)
             time.sleep(delay)
         else:
-            logger.error(f'Failed to connect to librespot after {max_retries} attempts')
+            logger.error(f'Failed to connect to the Spotify engine after {max_retries} attempts')
 
         self._startup_ready = True
 

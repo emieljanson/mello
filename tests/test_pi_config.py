@@ -38,8 +38,8 @@ def _run_migration_015(sudoers_dir: Path):
     )
 
 
-def test_librespot_service_is_not_part_of_ui_service():
-    service = (ROOT / 'pi/systemd/mello-librespot.service.template').read_text()
+def test_soloist_service_is_not_part_of_ui_service():
+    service = (ROOT / 'pi/systemd/mello-soloist.service.template').read_text()
 
     assert 'PartOf=mello-native.service' not in service
 
@@ -56,7 +56,7 @@ def test_librespot_recovery_permission_is_installed_and_migrated():
     setup = (ROOT / 'pi/setup.sh').read_text()
     migration_015 = _migration_015_body()
 
-    assert '/bin/systemctl restart mello-librespot' in setup
+    assert '/bin/systemctl restart mello-soloist' in setup
     assert '/bin/systemctl restart mello-librespot' in migration_015
     assert '_migrate_015()' in migrate
     assert 'run_migration "015" "Allow automatic librespot recovery"' in migrate
@@ -672,3 +672,94 @@ def test_trixie_speaker_without_the_package_gets_it_installed_first(tmp_path):
     assert 'install' in (tmp_path / 'pip_calls').read_text()
     # (the stub still cannot import it, so it is held back after trying)
     assert head == old
+
+
+import pytest
+
+
+# --- soloist_hold_check: a speaker not on Soloist never runs a version without librespot ---
+
+def _librespot_speaker(tmp_path, engine_line):
+    """main: a librespot version, then (merged with a merge commit) the removal."""
+    repo = tmp_path / 'mello'
+    (repo / 'pi').mkdir(parents=True)
+    _git(repo, 'init', '-q', '-b', 'main')
+    (repo / 'a.txt').write_text('a')
+    _git(repo, 'add', '-A')
+    _git(repo, 'commit', '-qm', 'with librespot')
+    _git(repo, 'checkout', '-qb', 'remove')
+    (repo / 'pi/needs-soloist').write_text('')
+    _git(repo, 'add', '-A')
+    _git(repo, 'commit', '-qm', 'librespot removed')
+    _git(repo, 'checkout', '-q', 'main')
+    (repo / 'b.txt').write_text('b')
+    _git(repo, 'add', '-A')
+    last = _git(repo, 'commit', '-qm', 'last with librespot')
+    _git(repo, 'merge', '-q', '--no-ff', '-m', 'merge removal', 'remove')
+    new = _git(repo, 'rev-parse', 'HEAD')
+    if engine_line is not None:
+        (repo / '.env').write_text(engine_line + '\n')
+    return repo, last, new
+
+
+def _run_soloist_hold(tmp_path, repo):
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    assert 'if soloist_hold_check "$(cd' in migrate
+    # It runs before the migrations: a held speaker must not get the new ones.
+    assert migrate.index('if soloist_hold_check "$(cd') < migrate.index('run_migration "001"')
+    body = migrate.split('soloist_hold_check() {', 1)[1].split('\n}', 1)[0]
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        log() {{ echo "$*"; }}
+        HOME={str(tmp_path)!r}
+        SOLOIST_HOLD_FILE="$HOME/.mello-soloist-hold"
+        soloist_hold_check() {{
+        {body}
+        }}
+        if soloist_hold_check {str(repo)!r}; then echo HELD; fi
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout, _git(repo, 'rev-parse', 'HEAD')
+
+
+@pytest.mark.parametrize('engine_line', [None, 'MELLO_SPOTIFY_ENGINE=librespot',
+                                         'MELLO_SPOTIFY_ENGINE=soloist-disabled'])
+def test_speaker_not_on_soloist_goes_back_to_the_last_librespot_version(tmp_path, engine_line):
+    repo, last, new = _librespot_speaker(tmp_path, engine_line)
+    out, head = _run_soloist_hold(tmp_path, repo)
+    assert 'HELD' in out and 'HOLD' in out
+    assert head == last
+    assert 'kept on' in (tmp_path / '.mello-soloist-hold').read_text()
+
+
+def test_speaker_on_soloist_moves_on(tmp_path):
+    repo, last, new = _librespot_speaker(tmp_path, 'MELLO_SPOTIFY_ENGINE=soloist')
+    (tmp_path / '.mello-soloist-hold').write_text('old hold')
+    out, head = _run_soloist_hold(tmp_path, repo)
+    assert 'HELD' not in out
+    assert head == new
+    assert not (tmp_path / '.mello-soloist-hold').exists()
+
+
+def test_new_speakers_are_set_up_on_soloist_and_64_bit_only():
+    setup = (ROOT / 'pi/setup.sh').read_text()
+    assert 'MELLO_SPOTIFY_ENGINE=soloist' in setup        # or the update gate would hold it
+    assert 'aarch64-64|arm64-64) ;;' in setup
+    assert 'librespot' not in setup
+
+
+def test_deactivate_keeps_the_speaker_on_soloist(tmp_path):
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    (bin_dir / 'sudo').write_text('#!/bin/bash\nexit 0\n')
+    (bin_dir / 'sudo').chmod(0o755)
+    script = (ROOT / 'pi/soloist/soloist-setup.sh').read_text()
+    copy = tmp_path / 'repo/pi/soloist/soloist-setup.sh'
+    copy.parent.mkdir(parents=True)
+    copy.write_text(script)
+    (tmp_path / 'repo/.env').write_text('MELLO_SPOTIFY_ENGINE=soloist\n')
+    result = subprocess.run(['bash', str(copy), 'deactivate'], text=True, capture_output=True,
+                            env={'HOME': str(tmp_path), 'PATH': f'{bin_dir}:/usr/bin:/bin'})
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'repo/.env').read_text() == 'MELLO_SPOTIFY_ENGINE=soloist\n'

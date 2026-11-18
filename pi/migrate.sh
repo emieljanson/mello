@@ -1052,6 +1052,54 @@ slint_hold_check() {
 }
 
 # ============================================
+# Migration 024: go-librespot is gone
+# ============================================
+_migrate_024() {
+  # Spotify plays through Soloist only. Only speakers that use it get this
+  # far (soloist_hold_check keeps the others on the last version with
+  # go-librespot), so the old player can go: service, program and its login.
+  sudo systemctl disable --now mello-librespot 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/mello-librespot.service
+  sudo systemctl daemon-reload
+  sudo rm -f /usr/local/bin/go-librespot
+  rm -rf "$MELLO_HOME/.config/go-librespot"
+  log "Removed go-librespot"
+}
+
+# ============================================
+# Before any migration: is this speaker on Soloist?
+# ============================================
+# From the version that added pi/needs-soloist on, Spotify plays through
+# Soloist only. A speaker still on go-librespot normally never gets here: the
+# update gate in pi/update-target.sh keeps it back. A speaker whose code was
+# older than that gate (a stable speaker on an early release) can still jump
+# here, so this puts it back on the last version with go-librespot, where it
+# keeps playing and its settings menu says what to do.
+SOLOIST_HOLD_FILE="$HOME/.mello-soloist-hold"
+
+soloist_hold_check() {
+  local code_dir="$1" added keep
+  if grep -qE "^MELLO_SPOTIFY_ENGINE=[\"']?soloist[\"']?[[:space:]]*$" "$code_dir/.env" 2>/dev/null; then
+    rm -f "$SOLOIST_HOLD_FILE"
+    return 1
+  fi
+  [ -f "$code_dir/pi/needs-soloist" ] || return 1
+  added=$(git -C "$code_dir" log -1 --first-parent --diff-filter=A --format=%H HEAD -- pi/needs-soloist 2>/dev/null || true)
+  if [ -z "$added" ]; then
+    log "WARNING: not on Soloist, and no earlier version with go-librespot was found"
+    return 1
+  fi
+  keep=$(git -C "$code_dir" rev-parse "$added^")
+  log "HOLD: this speaker is not on Soloist yet. Staying on $(git -C "$code_dir" log -1 --format='%h %s' "$keep") until it is."
+  echo "$(date '+%Y-%m-%d %H:%M:%S') not on Soloist; kept on $keep" > "$SOLOIST_HOLD_FILE"
+  git -C "$code_dir" checkout -q --detach "$keep"
+}
+
+if soloist_hold_check "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; then
+  exit 0     # the older version's own migrations already ran on this speaker
+fi
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -1077,5 +1125,6 @@ run_migration "020" "Everything Slint needs to draw the screen"
 run_migration "021" "Nightly update via a systemd timer instead of cron"
 run_migration "022" "Make the speaker PipeWire's default output"
 run_migration "023" "WiFi watchdog outside the app"
+run_migration "024" "go-librespot is gone"
 
 slint_hold_check "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
