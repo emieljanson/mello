@@ -110,3 +110,45 @@ def test_manual_update_without_internet_says_so(monkeypatch, started, tmp_path):
     started.return_value.poll.return_value = 0
     menu.update()
     assert menu.update_button_label == 'No internet'
+
+
+# --- updates that wait for Spotify Soloist ---------------------------------
+
+def test_button_says_updates_need_soloist_and_opens_the_spotify_screen(monkeypatch, started):
+    monkeypatch.setattr(sm, 'needs_soloist', lambda: True)
+    menu = _menu()
+    menu.engine_setup = MagicMock(engine='librespot')
+    menu.open()
+    assert menu.update_button_label == 'Update needs Soloist'
+    rect = MagicMock()
+    rect.collidepoint.return_value = True
+    menu.handle_tap((0, 0), {'check_update': rect})
+    assert menu.state == sm.MenuState.SPOTIFY
+    started.assert_not_called()
+
+
+def test_a_check_that_finds_updates_waiting_for_soloist_says_so(monkeypatch, started):
+    held = []
+    monkeypatch.setattr(sm, 'needs_soloist', lambda: bool(held))
+    monkeypatch.setattr(sm.threading, 'Thread', _InlineThread)
+
+    def run(cmd, **kwargs):
+        if cmd[:1] == ['git']:
+            return SimpleNamespace(returncode=0, stdout='.git', stderr='')
+        held.append(True)            # update-target.sh writes the marker
+        return SimpleNamespace(returncode=0, stdout='current beta last-librespot-version abc\n', stderr='')
+    monkeypatch.setattr(sm.subprocess, 'run', run)
+    menu = _menu()
+    menu.engine_setup = MagicMock(engine='librespot')
+    menu.open()
+    assert menu.update_button_label == 'Check for updates'
+    menu._check_for_update()
+    assert menu.update_button_label == 'Update needs Soloist'
+
+
+def test_a_speaker_that_just_switched_to_soloist_is_not_told_to(monkeypatch):
+    monkeypatch.setattr(sm, 'needs_soloist', lambda: True)
+    menu = _menu()
+    menu.engine_setup = MagicMock(engine='soloist')
+    menu.open()
+    assert menu.update_button_label == 'Check for updates'

@@ -574,3 +574,26 @@ def test_factory_reset_on_soloist_removes_the_owners_key(tmp_path, monkeypatch):
     assert ['sudo', 'systemctl', 'restart', 'mello-native'] not in calls
     assert ['sudo', 'systemctl', 'start', 'mello-soloist'] not in calls
 
+
+
+def test_offer_keeps_coming_back_while_updates_wait_for_soloist(tmp_path, monkeypatch):
+    import mello.managers.settings as settings_module
+    import mello.managers.setup_menu as setup_menu
+    menu, setup = prompt_menu(tmp_path, monkeypatch)
+    monkeypatch.setattr(setup_menu, 'needs_soloist', lambda: True)
+    clock = [1_000_000.0]
+    monkeypatch.setattr(settings_module.time, 'time', lambda: clock[0])
+    monkeypatch.setattr(setup_menu.time, 'time', lambda: clock[0])
+    gap = settings_module.SOLOIST_PROMPT_GAP_DAYS * 86400
+    rects = {'prompt_close': FakeRect()}
+    try:
+        for _ in range(settings_module.SOLOIST_PROMPT_TRIES + 2):
+            assert menu.show_spotify_prompt() is True
+            assert menu.prompt_button == 'Hold to do it later'
+            menu.handle_press((0, 0), rects)
+            clock[0] += setup_menu.PROMPT_HOLD_SECONDS
+            menu.update()
+            assert menu.show_spotify_prompt() is False       # still a few days apart
+            clock[0] += gap
+    finally:
+        setup.stop()

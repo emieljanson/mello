@@ -290,3 +290,16 @@ def test_engine_must_be_exactly_soloist(speaker):
     (speaker.home / 'mello' / '.env').write_text(
         'MELLO_UPDATE_CHANNEL=beta\nMELLO_SPOTIFY_ENGINE=soloist-disabled\n')
     assert speaker.check()[3] == last
+
+
+def test_check_leaves_a_note_for_the_menu_while_updates_wait_for_soloist(speaker):
+    speaker.set_channel('beta')
+    speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    note = speaker.home / '.mello-needs-soloist'
+    speaker.check()
+    assert note.exists()
+    (speaker.home / 'mello' / '.env').write_text(
+        'MELLO_UPDATE_CHANNEL=beta\nMELLO_SPOTIFY_ENGINE=soloist\n')
+    speaker.check()
+    assert not note.exists()

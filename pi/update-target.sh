@@ -58,6 +58,12 @@ if ! grep -qE "^MELLO_SPOTIFY_ENGINE=[\"']?soloist[\"']?[[:space:]]*$" .env 2>/d
   TARGET=$(git rev-parse "$ADDED^")
   TARGET_NAME=last-librespot-version
 fi
+# For the settings menu (mello/update_status.py): updates wait for Soloist.
+if [ "$TARGET_NAME" = last-librespot-version ]; then
+  touch "$HOME/.mello-needs-soloist" || echo "update-target: cannot write $HOME/.mello-needs-soloist" >&2
+else
+  rm -f "$HOME/.mello-needs-soloist"
+fi
 
 if [ "$LOCAL" = "$TARGET" ]; then
   STATUS=current

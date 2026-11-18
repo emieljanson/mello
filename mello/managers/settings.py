@@ -95,6 +95,11 @@ class Settings:
                 and time.time() >= self._soloist_prompt_after)
 
     @property
+    def soloist_prompt_waited(self) -> bool:
+        """The few days after the offer was last held away are over."""
+        return time.time() >= self._soloist_prompt_after
+
+    @property
     def soloist_prompt_is_last(self) -> bool:
         """The offer is on its final try: holding it away now ends it for good."""
         return self._soloist_prompt_declined == SOLOIST_PROMPT_TRIES - 1
