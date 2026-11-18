@@ -21,8 +21,8 @@ STATE=/run/mello-wifi-watchdog.hotspot-since
 # The app touches this every 20 s while its WiFi setup screen is up (also
 # while it joins the network picked on the phone, with the hotspot down).
 SETUP_MARKER=/tmp/mello-wifi-setup
-BACKUP=/var/lib/mello/wifi-backup
-NM_DIR=/etc/NetworkManager/system-connections
+BACKUP=${BACKUP:-/var/lib/mello/wifi-backup}
+NM_DIR=${NM_DIR:-/etc/NetworkManager/system-connections}
 
 log() { echo "mello-wifi-watchdog: $*"; }
 
@@ -33,7 +33,7 @@ hotspot_up() {
 wifi_files() {
   # Keyfiles of the WiFi networks the owner set up (not the hotspot).
   grep -l -E '^type=(wifi|802-11-wireless)$' "$NM_DIR"/*.nmconnection 2>/dev/null \
-    | while read -r f; do grep -qx "id=$AP_NAME" "$f" || echo "$f"; done
+    | while IFS= read -r f; do grep -Fqx "id=$AP_NAME" "$f" || echo "$f"; done
 }
 
 back_up_networks() {
@@ -42,7 +42,7 @@ back_up_networks() {
   [ -n "$files" ] || return 0
   mkdir -p "$BACKUP" && chmod 700 "$BACKUP"
   rm -f "$BACKUP"/*.nmconnection
-  while read -r f; do cp -p "$f" "$BACKUP/"; done <<< "$files"
+  while IFS= read -r f; do cp -p "$f" "$BACKUP/"; done <<< "$files"
 }
 
 put_back_networks() {
@@ -53,7 +53,11 @@ put_back_networks() {
     ssid=$(sed -n 's/^ssid=//p' "$f")
     nmcli -t -f UUID con show | grep -qx "$uuid" && continue
     # The phone may have saved the same network anew: then it is not missing.
-    if [ -n "$ssid" ] && grep -lqx "ssid=$ssid" $(wifi_files) /dev/null 2>/dev/null; then continue; fi
+    # (Keyfile names often contain spaces; SSIDs may contain [ ] and such.)
+    if [ -n "$ssid" ] && wifi_files | { while IFS= read -r w; do
+         grep -Fqx "ssid=$ssid" "$w" && exit 0; done; exit 1; }; then
+      continue
+    fi
     install -m 600 "$f" "$NM_DIR/" && nmcli con load "$NM_DIR/$(basename "$f")" \
       && log "put back WiFi network $(sed -n 's/^id=//p' "$f")"
   done

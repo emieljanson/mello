@@ -911,7 +911,8 @@ class SetupMenu:
                     capture_output=True, text=True, timeout=5,
                 )
                 if result.returncode == 0:
-                    return (ssid, result.stdout.strip())
+                    # Only nmcli's newline: spaces can be part of a WiFi password.
+                    return (ssid, result.stdout.rstrip('\n'))
                 problem = (result.stderr or result.stdout).strip()[-200:]
             except Exception as e:
                 problem = str(e)
