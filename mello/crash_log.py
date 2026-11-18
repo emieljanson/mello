@@ -14,6 +14,7 @@ traced back afterwards.
 """
 import faulthandler
 import logging
+import re
 import sys
 import threading
 import time
@@ -54,6 +55,8 @@ def report_previous_run(log_dir: Path, boot_time: Callable[[], Optional[float]] 
     Returns {'ended': 'clean' | 'app_crashed' | 'power_lost', 'froze': bool,
     'dump': 'hang' | 'fatal'}: froze is True when crash.log got a stack
     dump (a main loop that hung 30 s, or a hard crash such as a segfault).
+    A dump from a stop that only took long (stop_requested) sets
+    'slow_stop': True instead of froze.
     """
     result = {'ended': 'clean', 'froze': False}
     marker = log_dir / _MARKER
@@ -78,15 +81,37 @@ def report_previous_run(log_dir: Path, boot_time: Callable[[], Optional[float]] 
         dump = lines[starts[-1] + 1:] if starts else lines
         if dump:
             logger.warning('Previous run wrote to crash.log:\n' + '\n'.join(dump[-_CRASH_TAIL:]))
-            result['froze'] = True
-            # dump_traceback_later starts with "Timeout (0:00:30)!"; a hard
-            # crash with "Fatal Python error".
-            result['dump'] = 'hang' if any(l.startswith('Timeout (') for l in dump) else 'fatal'
+            kind = _dump_kind(dump)
+            if kind == 'slow_stop':
+                # Only stopping was slow (stop_requested): the music and the
+                # screen were fine, so this is no freeze.
+                result['slow_stop'] = True
+            else:
+                result['froze'] = True
+                result['dump'] = kind
     try:
         marker.write_text(f'{time.time():.0f}\n')
     except OSError as e:
         logger.debug(f'Could not write run marker: {e}')
     return result
+
+
+def _dump_kind(dump: list) -> str:
+    """'fatal' for a hard crash ("Fatal Python error"), 'hang' for a main
+    loop that went quiet for HANG_AFTER, 'slow_stop' when only stopping took
+    longer than STOP_STUCK_AFTER. dump_traceback_later starts its dump with
+    "Timeout (0:00:30)!", the time it waited, which tells the last two apart."""
+    if any(line.startswith('Fatal Python error') for line in dump):
+        return 'fatal'
+    waits = []
+    for line in dump:
+        match = re.match(r'Timeout \((\d+):(\d+):(\d+)', line)
+        if match:
+            h, m, s = (int(x) for x in match.groups())
+            waits.append(h * 3600 + m * 60 + s)
+    if waits and max(waits) < HANG_AFTER:
+        return 'slow_stop'
+    return 'hang' if waits else 'fatal'
 
 
 def heartbeat(now: Optional[float] = None):

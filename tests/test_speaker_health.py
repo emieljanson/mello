@@ -108,6 +108,28 @@ def test_crash_log_tells_a_hang_from_a_hard_crash(tmp_path):
     assert crash_log.report_previous_run(tmp_path)["froze"] is False
 
 
+def test_a_slow_stop_is_not_reported_as_a_frozen_speaker(tmp_path, tracker):
+    """Seen on .203 (2026-11-18): offline, stopping waited 4 s on analytics,
+    the stop dump fired, and the next start sent main_loop_froze/hang."""
+    crash = tmp_path / "crash.log"
+    crash.write_text("--- Mello started x\nTimeout (0:00:03)!\nThread 0x1 (most recent call first):\n")
+    result = crash_log.report_previous_run(tmp_path)
+    assert result["froze"] is False and result["slow_stop"] is True
+    tracker.on_app_started(previous_run=result)
+    assert "main_loop_froze" not in names(tracker)
+    assert "slow_stop" in names(tracker)
+
+
+def test_stopping_does_not_wait_on_analytics_that_cannot_send(monkeypatch, tracker):
+    release = threading.Event()
+    monkeypatch.setattr(tracker._posthog, "shutdown", lambda: release.wait(10))
+    monkeypatch.setattr(analytics_module, "FLUSH_TIMEOUT", 0.2)
+    started = time.monotonic()
+    tracker.on_shutdown()
+    release.set()
+    assert time.monotonic() - started < 1.0
+
+
 def test_thread_that_dies_is_reported(clear_thread_listener):
     seen = []
     crash_log.on_thread_error = lambda name, kind: seen.append((name, kind))

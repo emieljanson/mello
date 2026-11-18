@@ -13,6 +13,7 @@ Events fired:
 Speaker health, so a release can be compared with the one before it:
   - unclean_shutdown       Previous run did not stop on purpose (cause: app_crashed / power_lost)
   - main_loop_froze        Previous run froze for 30 s or died hard (crash.log has a dump)
+  - slow_stop              Previous run took over 3 s to stop (systemd kills at 5 s)
   - thread_crashed         An uncaught error stopped a background thread
   - watchdog_tripped       Loading an album hung and was cancelled
   - engine_restarted       Spotify engine stopped answering and was restarted
@@ -32,7 +33,9 @@ speaker's person in PostHog also gets pi_model, so you can count speakers
 per architecture before dropping something only 64-bit can run.
 """
 import time
+import atexit
 import socket
+import threading
 import logging
 import platform
 from pathlib import Path
@@ -42,6 +45,11 @@ from typing import Optional
 from ..models import NowPlaying
 
 logger = logging.getLogger(__name__)
+
+# Most PostHog may hold up a stop. Offline its upload keeps retrying and
+# shutdown() waits for it without a limit, while systemd kills Mello 5 s after
+# asking it to stop (seen on a speaker without WiFi: 4 s spent here).
+FLUSH_TIMEOUT = 1.5
 
 try:
     from posthog import Posthog
@@ -150,7 +158,8 @@ class UsageTracker:
         """Call once at startup.
 
         ``previous_run`` is what crash_log found about the run before this
-        one: {'ended': 'clean' | 'app_crashed' | 'power_lost', 'froze': bool}.
+        one: {'ended': 'clean' | 'app_crashed' | 'power_lost', 'froze': bool,
+        'slow_stop': bool}.
         """
         if not self._enabled:
             return
@@ -173,15 +182,37 @@ class UsageTracker:
                 'cause': previous_run.get('dump', 'hang'),
                 'previous_run': ended,
             })
+        if previous_run.get('slow_stop'):
+            self._capture('slow_stop', {'previous_run': ended})
 
     def flush(self):
         """Send what is queued now (when Mello will not run long enough to)."""
         if not self._enabled:
             return
-        try:
-            self._posthog.shutdown()
-        except Exception:
-            pass
+        self._shutdown_posthog()
+
+    def _shutdown_posthog(self):
+        """Send what is queued, but give up after FLUSH_TIMEOUT: events that
+        cannot go out now are lost either way, a stop that hangs is not."""
+        posthog = self._posthog
+
+        def run():
+            try:
+                posthog.shutdown()
+            except Exception:
+                pass
+
+        sender = threading.Thread(target=run, daemon=True, name='analytics-flush')
+        sender.start()
+        sender.join(FLUSH_TIMEOUT)
+        if sender.is_alive():
+            # PostHog also joins its upload thread at interpreter exit
+            # (atexit), which would hang the stop just the same.
+            try:
+                atexit.unregister(posthog.join)
+            except Exception:
+                pass
+            logger.info(f'Analytics: could not send within {FLUSH_TIMEOUT}s (offline?), dropped')
 
     def on_shutdown(self):
         """Call before app exits to close any open session and flush."""
@@ -190,10 +221,7 @@ class UsageTracker:
         if self._was_playing:
             self._end_session('shutdown')
         self._capture('app_stopped', {'uptime_hours': self._uptime_hours()})
-        try:
-            self._posthog.shutdown()
-        except Exception:
-            pass
+        self._shutdown_posthog()
 
     def on_auto_pause(self):
         """Call when auto-pause triggers."""
