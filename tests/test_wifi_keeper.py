@@ -208,55 +208,79 @@ def test_hotspot_screen_says_when_the_chosen_network_could_not_be_joined():
 class JoiningNetworkManager:
     """nmcli for a join that wifi-connect gave up on too soon."""
 
-    def __init__(self, ups_until_joined):
+    def __init__(self, ups_until_joined, wrong_password=False):
         self.ups_until_joined = ups_until_joined    # None: never joins
+        self.wrong_password = wrong_password
         self.ups = 0
         self.calls = []
+        self.written = ''
 
-    def run(self, cmd, **_kw):
+    def run(self, cmd, input=None, **_kw):
         from types import SimpleNamespace
         args = [a for a in cmd if a != 'sudo']
         self.calls.append(args)
+        ok = SimpleNamespace(stdout='', stderr='', returncode=0)
         if args[:2] == ['nmcli', '-s']:
             return SimpleNamespace(stdout='secret\n', stderr='', returncode=0)
+        if args[:2] == ['nmcli', '--offline']:
+            psk = args[args.index('wifi-sec.psk') + 1]
+            return SimpleNamespace(stdout=f'[connection]\nuuid=1234-abcd\n[wifi-security]\npsk={psk}\n',
+                                   stderr='', returncode=0)
+        if args[:2] == ['sh', '-c']:
+            self.written = input
+            return ok
+        if args[0] == 'journalctl':
+            text = 'WPA: 4-Way Handshake failed - pre-shared key may be incorrect' if self.wrong_password else ''
+            return SimpleNamespace(stdout=text, stderr='', returncode=0)
         if 'up' in args and args[args.index('up') - 1] == 'con':
             self.ups += 1
             if self.ups_until_joined is not None and self.ups >= self.ups_until_joined:
                 return SimpleNamespace(stdout='successfully activated', stderr='', returncode=0)
-            return SimpleNamespace(stdout='', stderr='Error: Timeout 45 sec expired.', returncode=4)
-        return SimpleNamespace(stdout='', stderr='', returncode=0)
+            return SimpleNamespace(stdout='', stderr='Error: Connection activation failed', returncode=4)
+        return ok
 
 
-def _join_world(monkeypatch, ups_until_joined):
+class Now:
+    """A thread that runs straight away."""
+
+    def __init__(self, target, **_kw):
+        self.target = target
+
+    def start(self):
+        self.target()
+
+
+def _join_world(monkeypatch, nm, on_run=None):
     import threading
     import mello.managers.setup_menu as sm
 
-    class Now:
-        def __init__(self, target, **_kw):
-            self.target = target
-
-        def start(self):
-            self.target()
-
-    nm = JoiningNetworkManager(ups_until_joined)
-    monkeypatch.setattr(sm.subprocess, 'run', nm.run)
-    monkeypatch.setattr(threading, 'Thread', Now)
-    monkeypatch.setattr(sm.time, 'sleep', lambda _s: None)
     toasts = []
     menu = make_menu(toasts)
+
+    def run(cmd, **kw):
+        result = nm.run(cmd, **kw)
+        if on_run:
+            on_run(menu, nm)
+        return result
+
+    monkeypatch.setattr(sm.subprocess, 'run', run)
+    monkeypatch.setattr(threading, 'Thread', Now)
+    monkeypatch.setattr(sm.time, 'sleep', lambda _s: None)
     menu.state = MenuState.WIFI_AP
     menu._kill_wifi_processes = lambda: None
     menu._launch_wifi_connect = lambda: nm.calls.append(['wifi-connect'])
     menu._note_wifi_connect_line("Connecting to access point 'Home'...")
     menu._note_wifi_connect_line(
         "[wifi_connect::network:WARN] Connection to access point not activated 'Home': Activating")
-    return menu, nm, toasts
+    return menu, toasts
 
 
 def test_a_join_wifi_connect_gave_up_on_too_soon_is_finished_by_mello(monkeypatch):
-    menu, nm, toasts = _join_world(monkeypatch, ups_until_joined=2)
-    added = [c for c in nm.calls if c[:3] == ['nmcli', 'con', 'add']]
-    assert added and added[0][-1] == 'secret'            # same password the phone sent
+    nm = JoiningNetworkManager(ups_until_joined=2)
+    menu, toasts = _join_world(monkeypatch, nm)
+    assert 'psk=secret' in nm.written                    # same password the phone sent
+    assert ['nmcli', 'con', 'load', '/etc/NetworkManager/system-connections/1234-abcd.nmconnection'] in nm.calls
+    assert not any('secret' in a for c in nm.calls if c[0] != 'nmcli' or c[1] != '--offline' for a in c)
     assert nm.ups == 2
     assert ['wifi-connect'] not in nm.calls              # no hotspot again
     assert menu.wifi_join_failed is None
@@ -267,48 +291,51 @@ def test_a_join_wifi_connect_gave_up_on_too_soon_is_finished_by_mello(monkeypatc
 
 def test_a_join_that_keeps_failing_brings_the_hotspot_back_and_says_so(monkeypatch):
     from mello.managers.setup_menu import _JOIN_TRIES
-    menu, nm, toasts = _join_world(monkeypatch, ups_until_joined=None)
+    nm = JoiningNetworkManager(ups_until_joined=None)
+    menu, toasts = _join_world(monkeypatch, nm)
     assert nm.ups == _JOIN_TRIES
     assert ['nmcli', 'con', 'delete', 'Home'] in nm.calls   # the failed entry is not kept
     assert nm.calls[-1] == ['wifi-connect']               # hotspot is back for another try
     assert menu.wifi_join_failed == 'Home'
+    assert menu.wifi_join_wrong_password is False         # no answer: not the password's fault
     assert menu.wifi_joining is None
     menu.update()
     assert menu.state == MenuState.WIFI_AP
     assert toasts == []
 
 
-def test_leaving_setup_stops_the_extra_tries(monkeypatch):
-    import mello.managers.setup_menu as sm
-    nm = JoiningNetworkManager(ups_until_joined=None)
-    toasts = []
-    menu = make_menu(toasts)
+def test_a_password_the_router_turns_down_is_not_tried_again(monkeypatch):
+    nm = JoiningNetworkManager(ups_until_joined=None, wrong_password=True)
+    menu, _ = _join_world(monkeypatch, nm)
+    assert nm.ups == 1
+    assert menu.wifi_join_failed == 'Home'
+    assert menu.wifi_join_wrong_password is True
 
-    def run(cmd, **kw):
-        result = nm.run(cmd, **kw)
+
+def test_leaving_setup_stops_the_extra_tries(monkeypatch):
+    def leave_after_first_try(menu, nm):
         if nm.ups == 1:
             menu.state = MenuState.WIFI_LIST                # owner tapped back meanwhile
-        return result
 
-    import threading
-
-    class Now:
-        def __init__(self, target, **_kw):
-            self.target = target
-
-        def start(self):
-            self.target()
-
-    monkeypatch.setattr(sm.subprocess, 'run', run)
-    monkeypatch.setattr(threading, 'Thread', Now)
-    monkeypatch.setattr(sm.time, 'sleep', lambda _s: None)
-    menu.state = MenuState.WIFI_AP
-    menu._kill_wifi_processes = lambda: None
-    menu._launch_wifi_connect = lambda: nm.calls.append(['wifi-connect'])
-    menu._note_wifi_connect_line("Connecting to access point 'Home'...")
-    menu._note_wifi_connect_line("Connection to access point not activated 'Home': Activating")
+    nm = JoiningNetworkManager(ups_until_joined=None)
+    _join_world(monkeypatch, nm, leave_after_first_try)
     assert nm.ups == 1
     assert ['wifi-connect'] not in nm.calls
+
+
+def test_leaving_while_the_hotspot_comes_back_leaves_no_hotspot(monkeypatch):
+    from mello.managers.setup_menu import _JOIN_TRIES
+
+    def leave_as_hotspot_starts(menu, nm):
+        if nm.ups == _JOIN_TRIES and nm.calls[-1][:3] == ['nmcli', 'con', 'delete'] \
+                and nm.calls[-1][-1] == 'Mello-Setup':
+            menu.state = MenuState.WIFI_LIST
+
+    nm = JoiningNetworkManager(ups_until_joined=None)
+    menu, _ = _join_world(monkeypatch, nm, leave_as_hotspot_starts)
+    assert ['wifi-connect'] not in nm.calls
+    assert ['nmcli', 'device', 'set', 'wlan0', 'autoconnect', 'yes'] in nm.calls
+    assert menu.wifi_join_failed is None
 
 
 def test_a_fresh_hotspot_starts_without_the_old_failure(monkeypatch):
@@ -326,6 +353,7 @@ class FakeNetworkManager:
     def __init__(self, networks):
         self.networks = dict(networks)      # name -> (ssid, psk)
         self.added = []
+        self._pending = None                # written by --offline, not loaded yet
 
     def run(self, cmd, **_kw):
         from types import SimpleNamespace
@@ -338,11 +366,15 @@ class FakeNetworkManager:
             out = f'{ssid}\n{psk}\n'
         elif args[:3] == ['nmcli', '-g', '802-11-wireless.ssid']:
             out = self.networks[args[-1]][0] + '\n'
-        elif args[:3] == ['nmcli', 'con', 'add']:
+        elif args[:3] == ['nmcli', '--offline', 'con']:
             name = args[args.index('con-name') + 1]
             ssid = args[args.index('ssid') + 1]
             psk = args[args.index('wifi-sec.psk') + 1] if 'wifi-sec.psk' in args else ''
-            self.networks[name] = (ssid, psk)
+            self._pending = (name, (ssid, psk))
+            out = 'uuid=0000-1111\n'
+        elif args[:3] == ['nmcli', 'con', 'load'] and self._pending:
+            name, entry = self._pending
+            self.networks[name] = entry
             self.added.append(name)
         return SimpleNamespace(stdout=out, stderr='', returncode=code)
 

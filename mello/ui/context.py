@@ -32,6 +32,7 @@ class RenderContext:
     menu_current_network: Optional[str] = None
     menu_wifi_join_failed: Optional[str] = None   # picked on the phone, could not join
     menu_wifi_joining: Optional[str] = None       # picked on the phone, still joining
+    menu_wifi_join_wrong_password: bool = False   # the router turned the password down
     menu_spotify_items: List[tuple] = field(default_factory=list)
     menu_spotify_prompt: bool = False        # opened by itself: hold to close, no close button
     menu_prompt_hold_progress: float = 0.0
