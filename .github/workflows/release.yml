@@ -50,6 +50,20 @@ jobs:
           git checkout --quiet "$sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      # Speakers decide where to update with the update-target.sh of the
+      # version they run. A version without go-librespot (pi/needs-soloist)
+      # may only be released once the previous release has the gate that
+      # keeps librespot speakers back, or they would jump to it unprotected.
+      - name: Librespot speakers are protected
+        run: |
+          [ -e pi/needs-soloist ] || exit 0
+          prev=$(git for-each-ref --count=1 --sort=-v:refname \
+            --format='%(refname:short)' 'refs/tags/v*')
+          if [ -z "$prev" ] || ! git show "$prev:pi/update-target.sh" | grep -q needs-soloist; then
+            echo "::error::Release a version with the needs-soloist gate (but without pi/needs-soloist) first; the newest release (${prev:-none}) lacks it"
+            exit 1
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
