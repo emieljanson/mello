@@ -460,9 +460,9 @@ class SetupMenu:
                     self._on_invalidate()   # keep the button filling up
             elif (time.time() - max(self._spotify_prompt_since, self.engine_setup.last_request)
                   > _SPOTIFY_PROMPT_TIMEOUT):
-                # An open menu keeps the screen awake, so it steps aside when
-                # nobody is there (a phone that has the page open counts as
-                # somebody). It is back the next time the speaker wakes.
+                # It steps aside when nobody is there (a phone that has the
+                # page open counts as somebody). It is back the next time the
+                # speaker wakes.
                 logger.info('Setup menu: faster-Mello offer put away (unattended)')
                 self.close()
             elif not self.engine_setup.url:
