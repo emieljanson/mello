@@ -11,7 +11,7 @@ from . import crash_log
 from .config import (
     LOG_DIR,
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    LIBRESPOT_URL, LIBRESPOT_WS, SPOTIFY_ENGINE, SOLOIST_WS, DIRECT_PLAY,
+    SPOTIFY_ENGINE, SOLOIST_WS, DIRECT_PLAY,
     SOLOIST_HOME, SOLOIST_DATA_DIR, ENGINE_SETUP_PORT,
     CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR, DATA_DIR,
     MOCK_MODE,
@@ -20,9 +20,9 @@ from .config import (
     ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
 from .models import CatalogItem, NowPlaying
-from .api import LibrespotAPI, NullLibrespotAPI, SoloistAPI, CatalogManager
+from .api import NullPlayerAPI, SoloistAPI, CatalogManager
 from .api.play_orders import PlayOrders
-from .handlers import TouchHandler, EventListener, EvdevTouchHandler, InputEvent
+from .handlers import TouchHandler, EvdevTouchHandler, InputEvent
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AnimationTimer, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
 from .managers.engine_setup import EngineSetup, PROMPT_BENEFITS, PROMPT_SCAN_HINT
 from .managers.wifi_keeper import WifiKeeper
@@ -79,17 +79,16 @@ class Mello(DiagnosticsMixin, SpotifySyncMixin, TouchInputMixin, FocusPlaybackMi
         
         # API & Catalog (use NullAPI in mock mode)
         if self.mock_mode:
-            self.api = NullLibrespotAPI()
-        elif SPOTIFY_ENGINE == 'soloist':
+            self.api = NullPlayerAPI()
+        else:
             # Soloist has one socket for commands and events, so the same
-            # object is both the API and the event listener.
+            # object is both the API and the event listener. (Without a key
+            # it does not run yet: it simply cannot connect.)
             self.api = SoloistAPI(
                 SOLOIST_WS, self._on_ws_update, self._on_ws_reconnect,
                 on_inactive=self._on_spotify_inactive,
                 play_orders=PlayOrders(DATA_DIR / 'play_orders.json') if DIRECT_PLAY else None,
             )
-        else:
-            self.api = LibrespotAPI(LIBRESPOT_URL)
         self.settings = Settings()
         self.catalog_manager = CatalogManager(
             CATALOG_PATH, IMAGES_DIR, mock_mode=self.mock_mode,
@@ -104,13 +103,7 @@ class Mello(DiagnosticsMixin, SpotifySyncMixin, TouchInputMixin, FocusPlaybackMi
         
         # Handlers
         self.touch = TouchHandler()
-        if isinstance(self.api, SoloistAPI):
-            self.events = self.api
-        else:
-            self.events = EventListener(
-                LIBRESPOT_WS, self._on_ws_update, self._on_ws_reconnect,
-                on_inactive=self._on_spotify_inactive,
-            )
+        self.events = self.api
         
         # Evdev touch handler for KMSDRM mode (reads /dev/input directly)
         self.evdev_touch = EvdevTouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -207,7 +200,7 @@ class Mello(DiagnosticsMixin, SpotifySyncMixin, TouchInputMixin, FocusPlaybackMi
         self._status_unknown: bool = False
         self._last_status_unknown_log: float = 0.0
         self._status_failure_started_at: float = 0.0
-        self._last_librespot_restart_at: float = 0.0
+        self._last_engine_restart_at: float = 0.0
         self._connection_lost_at: float = 0.0   # 0: connected, or never was
         self._last_play_commit_uri: Optional[str] = None
         self._last_play_commit_at: float = 0.0
@@ -469,7 +462,7 @@ class Mello(DiagnosticsMixin, SpotifySyncMixin, TouchInputMixin, FocusPlaybackMi
             # app does; in the shared pool of 4 they would leave only two
             # workers for pause, skip and saving progress.
             threading.Thread(target=self._poll_status, daemon=True, name='status-poll').start()
-            logger.info(f'Polling {SOLOIST_WS if SPOTIFY_ENGINE == "soloist" else LIBRESPOT_URL} ({SPOTIFY_ENGINE})')
+            logger.info(f'Polling {SOLOIST_WS} ({SPOTIFY_ENGINE})')
 
             # Force initial connection check (don't wait for first poll interval)
             threading.Thread(target=self._initial_connect, daemon=True, name='initial-connect').start()

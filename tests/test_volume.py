@@ -19,7 +19,7 @@ class FakeSettings:
 
 
 class FakeAPI:
-    """Minimal fake that satisfies LibrespotAPIProtocol."""
+    """Minimal fake that satisfies PlayerAPIProtocol."""
 
     def __init__(self):
         self.volume_calls = []

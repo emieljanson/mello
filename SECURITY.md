@@ -12,7 +12,7 @@ You can expect an initial response within 48 hours.
 
 ### Spotify Credentials
 
-Mello uses [go-librespot](https://github.com/devgianlu/go-librespot) for Spotify Connect. Authentication happens via the Spotify app on your phone (device pairing), not through Mello itself. Session credentials are stored locally on each Pi at `~/.config/go-librespot/state.json` and are never transmitted.
+Mello uses Spotify Soloist for Spotify Connect. Authentication happens via the Spotify app on your phone (device pairing), not through Mello itself. Session credentials are stored locally on each Pi under `~/soloist/data` and are never transmitted. The owner's Soloist API key is stored at `~/soloist/key` (readable only by the Mello user) and is removed by a factory reset.
 
 ### Analytics
 

@@ -38,6 +38,16 @@ if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
   exit 1
 fi
 
+# Spotify's player for speakers (Soloist) is only built for 64-bit ARM. (A
+# 32-bit system on a 64-bit kernel says aarch64 too: LONG_BIT tells them apart.)
+case "$(uname -m)-$(getconf LONG_BIT)" in
+  aarch64-64|arm64-64) ;;
+  *)
+    echo "Mello needs the 64-bit Raspberry Pi OS (this system is $(uname -m), $(getconf LONG_BIT)-bit)."
+    echo "Write Raspberry Pi OS Lite (64-bit) to the SD card with Raspberry Pi Imager and run this again."
+    exit 1 ;;
+esac
+
 # ============================================
 # 1. Install system packages (needed by later steps)
 # ============================================
@@ -147,50 +157,18 @@ else
 fi
 
 # ============================================
-# 4. Install go-librespot (Spotify Connect daemon)
+# 4-5. Spotify: Soloist, Spotify's own player for speakers
 # ============================================
-if ! command -v go-librespot &> /dev/null; then
-  echo "Installing go-librespot..."
-  ARCH=$(dpkg --print-architecture)
-  LATEST=$(curl -sL https://api.github.com/repos/devgianlu/go-librespot/releases/latest \
-    | grep "browser_download_url.*linux_${ARCH}" | head -1 | cut -d '"' -f 4)
-
-  if [ -z "$LATEST" ]; then
-    echo "Could not find go-librespot release for $ARCH"
-    echo "   Install manually: https://github.com/devgianlu/go-librespot/releases"
-  else
-    curl -L "$LATEST" -o /tmp/go-librespot.tar.gz
-    sudo tar -xzf /tmp/go-librespot.tar.gz -C /usr/local/bin go-librespot
-    rm -f /tmp/go-librespot.tar.gz
-    echo "  go-librespot installed"
-  fi
+# Soloist needs an API key from the owner's own Spotify developer account, so
+# it is downloaded and started only once that key is entered on the speaker's
+# home screen (pi/soloist/soloist-setup.sh). Until then Mello asks for it.
+# The update gate (pi/update-target.sh) reads this setting.
+ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env"
+touch "$ENV_FILE"
+if grep -qE '^MELLO_SPOTIFY_ENGINE=' "$ENV_FILE"; then
+  sed -i 's|^MELLO_SPOTIFY_ENGINE=.*|MELLO_SPOTIFY_ENGINE=soloist|' "$ENV_FILE"
 else
-  echo "go-librespot already installed"
-fi
-
-# ============================================
-# 5. Configure go-librespot
-# ============================================
-mkdir -p ~/.config/go-librespot
-
-if [ ! -f ~/.config/go-librespot/config.yml ]; then
-  cat > ~/.config/go-librespot/config.yml << 'EOF'
-device_name: "Mello"
-device_type: "speaker"
-audio_backend: "alsa"
-external_volume: true
-initial_volume: 100
-bitrate: 320
-disable_autoplay: true
-server:
-  enabled: true
-  port: 3678
-credentials:
-  type: "zeroconf"
-  zeroconf:
-    persist_credentials: true
-EOF
-  echo "go-librespot config created"
+  echo "MELLO_SPOTIFY_ENGINE=soloist" >> "$ENV_FILE"
 fi
 
 # ============================================
@@ -298,7 +276,7 @@ sudo ln -sf ~/mello/pi/systemd/mello-touch-fix.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl disable mello-wifi 2>/dev/null || true
 sudo rm -f /etc/systemd/system/mello-wifi.service
-sudo systemctl enable mello-librespot mello-native mello-touch-fix
+sudo systemctl enable mello-native mello-touch-fix
 
 # Enable PipeWire user services (Bluetooth audio routing)
 sudo -u "$MELLO_USER" XDG_RUNTIME_DIR=/run/user/$MELLO_UID systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null || true
@@ -349,11 +327,11 @@ sudo install -m 644 ~/mello/pi/networkmanager/99-mello-wifi-powersave.conf /etc/
 sudo systemctl mask getty@tty1.service 2>/dev/null || true
 sudo systemctl stop getty@tty1.service 2>/dev/null || true
 
-# Allow Mello app to run wifi-connect, nmcli, and librespot service management
+# Allow Mello app to run wifi-connect, nmcli, and Soloist service management
 # without a password prompt (needed for the setup menu)
 TMP_SUDOERS="/tmp/mello-wifi.$$"
 cat > "$TMP_SUDOERS" << EOF
-$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop mello-librespot, /bin/systemctl start mello-librespot, /bin/systemctl restart mello-librespot, /bin/systemctl restart mello-native, /bin/systemctl stop mello-soloist, /bin/systemctl start mello-soloist, /bin/systemctl restart mello-soloist, /bin/systemctl enable mello-soloist, /bin/systemctl disable mello-soloist, /bin/systemctl enable mello-librespot, /bin/systemctl disable mello-librespot, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up, /usr/bin/hciconfig hci0 down, /usr/sbin/hciconfig hci0 down, /usr/sbin/rfkill unblock bluetooth
+$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl restart mello-native, /bin/systemctl stop mello-soloist, /bin/systemctl start mello-soloist, /bin/systemctl restart mello-soloist, /bin/systemctl enable mello-soloist, /bin/systemctl disable mello-soloist, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up, /usr/bin/hciconfig hci0 down, /usr/sbin/hciconfig hci0 down, /usr/sbin/rfkill unblock bluetooth
 EOF
 sudo visudo -cf "$TMP_SUDOERS"
 sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/mello-wifi
@@ -414,16 +392,16 @@ if [ "$BOOT_CHANGED" = true ]; then
   echo "After reboot, Mello starts automatically."
 else
   echo "Starting services..."
-  sudo systemctl start mello-librespot mello-native
+  sudo systemctl start mello-native
   echo ""
   echo "Mello is running!"
 fi
 
 echo ""
 echo "Next steps:"
-echo "  1. Open Spotify on your phone"
-echo "  2. Tap the speaker icon"
-echo "  3. Connect to 'Mello'"
+echo "  1. Scan the code on Mello's screen with a phone on the same WiFi"
+echo "  2. Paste your Soloist API key from Spotify"
+echo "  3. In Spotify, tap the speaker icon and pick 'Mello'"
 echo ""
 echo "If WiFi disconnects, Mello creates a"
 echo "'Mello-Setup' hotspot to reconfigure."

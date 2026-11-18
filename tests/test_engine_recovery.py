@@ -4,15 +4,22 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from mello.app import Mello
 from mello.models import NowPlaying
+
+
+@pytest.fixture(autouse=True)
+def _soloist_set_up(monkeypatch):
+    monkeypatch.setattr('mello.app_parts.spotify_sync.SPOTIFY_ENGINE', 'soloist')
 
 
 def _make_app():
     app = Mello.__new__(Mello)
     app.mock_mode = False
     app._status_failure_started_at = 100.0
-    app._last_librespot_restart_at = 0.0
+    app._last_engine_restart_at = 0.0
     app._connection_fail_count = 20
     app._show_toast = MagicMock()
     app._poll_wake_event = MagicMock()
@@ -50,7 +57,7 @@ def test_reachable_but_unusable_status_restarts_after_sustained_failure(
     app._refresh_status()
 
     mock_run.assert_called_once_with(
-        ['sudo', 'systemctl', 'restart', 'mello-librespot'],
+        ['sudo', 'systemctl', 'restart', 'mello-soloist'],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -59,14 +66,14 @@ def test_reachable_but_unusable_status_restarts_after_sustained_failure(
 
 
 @patch('mello.app_parts.spotify_sync.subprocess.run')
-def test_sustained_status_failure_restarts_librespot(mock_run):
+def test_sustained_status_failure_restarts_the_engine(mock_run):
     app = _make_app()
     mock_run.return_value = MagicMock(returncode=0, stderr='')
 
-    app._maybe_restart_librespot(now=161.0)
+    app._maybe_restart_engine(now=161.0)
 
     mock_run.assert_called_once_with(
-        ['sudo', 'systemctl', 'restart', 'mello-librespot'],
+        ['sudo', 'systemctl', 'restart', 'mello-soloist'],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -74,14 +81,14 @@ def test_sustained_status_failure_restarts_librespot(mock_run):
     )
     app._show_toast.assert_called_once_with('Spotify herstellen...')
     app._poll_wake_event.set.assert_called_once()
-    assert app._last_librespot_restart_at == 161.0
+    assert app._last_engine_restart_at == 161.0
 
 
 @patch('mello.app_parts.spotify_sync.subprocess.run')
 def test_short_status_failure_does_not_restart_librespot(mock_run):
     app = _make_app()
 
-    app._maybe_restart_librespot(now=159.0)
+    app._maybe_restart_engine(now=159.0)
 
     mock_run.assert_not_called()
     app._show_toast.assert_not_called()
@@ -90,9 +97,9 @@ def test_short_status_failure_does_not_restart_librespot(mock_run):
 @patch('mello.app_parts.spotify_sync.subprocess.run')
 def test_restart_cooldown_prevents_restart_loop(mock_run):
     app = _make_app()
-    app._last_librespot_restart_at = 150.0
+    app._last_engine_restart_at = 150.0
 
-    app._maybe_restart_librespot(now=200.0)
+    app._maybe_restart_engine(now=200.0)
 
     mock_run.assert_not_called()
     app._show_toast.assert_not_called()
@@ -103,8 +110,8 @@ def test_failed_restart_obeys_cooldown_without_waking_poll(mock_run):
     app = _make_app()
     mock_run.return_value = MagicMock(returncode=1, stderr='permission denied')
 
-    app._maybe_restart_librespot(now=161.0)
-    app._maybe_restart_librespot(now=200.0)
+    app._maybe_restart_engine(now=161.0)
+    app._maybe_restart_engine(now=200.0)
 
     assert mock_run.call_count == 1
     app._poll_wake_event.set.assert_not_called()
@@ -116,8 +123,8 @@ def test_timed_out_restart_obeys_cooldown(mock_run):
     app = _make_app()
     mock_run.side_effect = subprocess.TimeoutExpired('systemctl', 10)
 
-    app._maybe_restart_librespot(now=161.0)
-    app._maybe_restart_librespot(now=200.0)
+    app._maybe_restart_engine(now=161.0)
+    app._maybe_restart_engine(now=200.0)
 
     assert mock_run.call_count == 1
     app._poll_wake_event.set.assert_not_called()
@@ -126,9 +133,17 @@ def test_timed_out_restart_obeys_cooldown(mock_run):
 @patch('mello.app_parts.spotify_sync.subprocess.run')
 def test_restart_becomes_eligible_when_cooldown_expires(mock_run):
     app = _make_app()
-    app._last_librespot_restart_at = 150.0
+    app._last_engine_restart_at = 150.0
     mock_run.return_value = MagicMock(returncode=0, stderr='')
 
-    app._maybe_restart_librespot(now=450.0)
+    app._maybe_restart_engine(now=450.0)
 
     mock_run.assert_called_once()
+
+
+@patch('mello.app_parts.spotify_sync.subprocess.run')
+def test_a_mello_without_a_key_has_no_engine_to_restart(mock_run, monkeypatch):
+    monkeypatch.setattr('mello.app_parts.spotify_sync.SPOTIFY_ENGINE', 'none')
+    app = _make_app()
+    app._maybe_restart_engine(now=1000.0)
+    mock_run.assert_not_called()

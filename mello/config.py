@@ -31,18 +31,17 @@ SCREEN_HEIGHT = 1280
 # NETWORK ENDPOINTS
 # ============================================
 
-LIBRESPOT_URL = os.environ.get('LIBRESPOT_URL', 'http://localhost:3678')
-LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
-
-# Which Spotify Connect engine the app talks to: 'librespot' (go-librespot)
-# or 'soloist' (Spotify's official headless client).
-SPOTIFY_ENGINE = os.environ.get('MELLO_SPOTIFY_ENGINE', 'librespot')
+# Spotify's player is Soloist (Spotify's official headless client). It only
+# runs once the owner has entered their own API key: 'soloist' then, 'none'
+# on a new (or reset) Mello that is still waiting for one.
+SOLOIST_HOME = Path(os.environ.get('MELLO_SOLOIST_HOME', Path.home() / 'soloist'))
+SPOTIFY_ENGINE = 'soloist' if (SOLOIST_HOME / 'key').exists() else 'none'
 # Soloist: start a saved track/episode directly (~0.5 s) instead of skipping
 # to it through its album (up to 40 s for a podcast). See api/play_orders.py.
 # On by default; MELLO_DIRECT_PLAY=0 in .env switches it off for a speaker.
 DIRECT_PLAY = os.environ.get('MELLO_DIRECT_PLAY', '1') != '0'
 SOLOIST_WS = os.environ.get('SOLOIST_WS', 'ws://127.0.0.1:9090')
-SPOTIFY_ENGINE_SERVICE = 'mello-soloist' if SPOTIFY_ENGINE == 'soloist' else 'mello-librespot'
+SPOTIFY_ENGINE_SERVICE = 'mello-soloist'
 
 # ============================================
 # PATHS
@@ -55,9 +54,7 @@ PROGRESS_PATH = DATA_DIR / 'progress.json'
 SETTINGS_PATH = DATA_DIR / 'settings.json'
 IMAGES_DIR = DATA_DIR / 'images'
 ICONS_DIR = Path(__file__).parent.parent / 'icons'
-LIBRESPOT_STATE_PATH = Path.home() / '.config' / 'go-librespot' / 'state.json'
 # Soloist keeps its Spotify login and device identity here (see pi/soloist/run-soloist.sh).
-SOLOIST_HOME = Path(os.environ.get('MELLO_SOLOIST_HOME', Path.home() / 'soloist'))
 SOLOIST_DATA_DIR = SOLOIST_HOME / 'data'
 # Page for entering the Soloist API key (only served while the setup menu's Spotify screen is open).
 ENGINE_SETUP_PORT = int(os.environ.get('MELLO_SETUP_PORT', '8080'))

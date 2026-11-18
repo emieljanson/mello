@@ -5,7 +5,7 @@ Mello always owns volume: Spotify stays at 100%, Pi controls via ALSA.
 """
 import logging
 
-from ..api.librespot import LibrespotAPIProtocol
+from ..api.player import PlayerAPIProtocol
 from ..utils import run_async, set_system_volume, mute_speakers, unmute_speakers
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class VolumeController:
     """Manages volume state via ALSA. Spotify is kept at 100%."""
 
-    def __init__(self, api: LibrespotAPIProtocol, settings):
+    def __init__(self, api: PlayerAPIProtocol, settings):
         self.api = api
         self.settings = settings
         self.index = 1

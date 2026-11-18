@@ -5,7 +5,8 @@
 #                                 binary well before its 90-day expiry
 #   soloist-setup.sh activate     owner entered an API key: fetch the binary
 #                                 and make Soloist this speaker's Spotify engine
-#   soloist-setup.sh deactivate   go back to go-librespot
+#   soloist-setup.sh deactivate   key removed (factory reset): switch Soloist
+#                                 off until the next owner enters theirs
 #   soloist-setup.sh status       one line for humans and for the app
 #
 # Spotify does not allow redistributing the binary, and every owner needs
@@ -27,7 +28,7 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [soloist] $*"; }
 engine() {
   local value
   value=$(grep -E '^MELLO_SPOTIFY_ENGINE=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
-  echo "${value:-librespot}"
+  echo "${value:-soloist}"
 }
 
 set_engine() {
@@ -50,8 +51,9 @@ build_age_days() {
 }
 
 download_url() {
-  case "$(uname -m)" in
-    aarch64|arm64) echo "$URL_BASE/soloist_release_arm64.tar.gz" ;;
+  # A 32-bit system on a 64-bit kernel also says aarch64: LONG_BIT tells them apart.
+  case "$(uname -m)-$(getconf LONG_BIT)" in
+    aarch64-64|arm64-64) echo "$URL_BASE/soloist_release_arm64.tar.gz" ;;
     *) return 1 ;;
   esac
 }
@@ -130,9 +132,6 @@ cmd_activate() {
     log "ERROR: mello-soloist service is not installed yet (update Mello first)"
     return 3
   fi
-  # Two engines must never run together: they would both announce the speaker.
-  sudo systemctl disable mello-librespot
-  sudo systemctl stop mello-librespot
   sudo systemctl enable mello-soloist
   sudo systemctl restart mello-soloist
   set_engine soloist
@@ -141,12 +140,12 @@ cmd_activate() {
 }
 
 cmd_deactivate() {
+  # The engine setting stays soloist: there is no other one any more, and
+  # the update gate (pi/update-target.sh) reads it.
   sudo systemctl disable mello-soloist
   sudo systemctl stop mello-soloist
-  sudo systemctl enable mello-librespot
-  sudo systemctl restart mello-librespot
-  set_engine librespot
-  log "go-librespot is this speaker's Spotify engine again"
+  set_engine soloist
+  log "Soloist is off until a new API key is entered"
   sudo systemctl restart mello-native
 }
 

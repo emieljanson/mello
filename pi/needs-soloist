@@ -1,0 +1,5 @@
+From this version on, Spotify plays through Soloist only (go-librespot is gone).
+
+Its presence is the signal for the update gate in pi/update-target.sh and for
+soloist_hold_check in pi/migrate.sh: a speaker that is not on Soloist stays on
+the version just before the one that added this file. Do not remove or re-add it.

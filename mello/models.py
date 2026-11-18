@@ -19,8 +19,8 @@ class MenuState(Enum):
 
 
 @dataclass
-class LibrespotStatus:
-    """Parsed response from the go-librespot /status endpoint."""
+class PlayerStatus:
+    """Parsed response from the player status (the shape SoloistAPI.status() gives)."""
     playing: bool = False
     paused: bool = False
     stopped: bool = True
@@ -36,7 +36,7 @@ class LibrespotStatus:
     repeat_context: bool = False
 
     @classmethod
-    def from_dict(cls, data: dict, context_uri: Optional[str] = None) -> 'LibrespotStatus':
+    def from_dict(cls, data: dict, context_uri: Optional[str] = None) -> 'PlayerStatus':
         """Parse raw API dict into a typed object."""
         track = data.get('track') or {}
         if not isinstance(track, dict):
@@ -81,7 +81,7 @@ class CatalogItem:
 
 @dataclass
 class NowPlaying:
-    """Current playback state from librespot."""
+    """Current playback state from Spotify."""
     playing: bool = False
     paused: bool = False
     stopped: bool = True

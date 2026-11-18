@@ -199,13 +199,13 @@ class FakeCatalog:
         self.items = []
 
 
-def prompt_menu(tmp_path, monkeypatch, machine='aarch64'):
+def prompt_menu(tmp_path, monkeypatch, machine='aarch64', engine='librespot'):
     import mello.managers.engine_setup as engine_setup
     import mello.managers.setup_menu as setup_menu_module
     monkeypatch.setattr(engine_setup.platform, 'machine', lambda: machine)
     monkeypatch.setattr(setup_menu_module, 'lan_address', lambda: '192.168.1.50')
     monkeypatch.setattr(engine_setup, 'lan_address', lambda: '192.168.1.50')
-    setup = setup_for(tmp_path)
+    setup = setup_for(tmp_path, engine=engine)
     menu = make_menu(setup)
     from mello.managers.settings import Settings
     menu.settings = Settings(path=tmp_path / 'settings.json')
@@ -606,3 +606,19 @@ def test_a_32_bit_system_on_a_64_bit_kernel_cannot_run_soloist(monkeypatch):
     assert EngineSetup.can_run_soloist() is False
     monkeypatch.setattr(engine_setup.sys, 'maxsize', 2**63 - 1)
     assert EngineSetup.can_run_soloist() is True
+def test_a_mello_without_a_key_always_asks_for_one_on_its_home_screen(tmp_path, monkeypatch):
+    """Without librespot nothing plays before the owner's key is in: whatever
+    the old "set up / skipped" settings say, the home screen asks for it."""
+    menu, setup = prompt_menu(tmp_path, monkeypatch, engine='none')
+    try:
+        menu.settings.postpone_soloist_prompt()              # e.g. skipped back when librespot played
+        assert menu.home_connect_spotify(has_network=True, library_empty=True) is True
+        page = setup._render('/')
+        assert 'Connect Spotify' in page and 'update' not in page.lower()
+        assert menu.show_spotify_prompt() is False           # no "faster Mello" pop-up
+        menu.open()
+        menu._show_spotify_screen()
+        assert ('text', 'to connect Spotify') in menu.spotify_menu_items
+    finally:
+        menu.close()
+        setup.stop()

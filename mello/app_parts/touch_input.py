@@ -339,7 +339,7 @@ class TouchInputMixin:
 
         When the index changes this is the single point where playback
         is interrupted: timer cancelled, running play-thread invalidated,
-        and instant silence sent to librespot.
+        and instant silence sent to Spotify.
         """
         items = self.display_items
         if not items:

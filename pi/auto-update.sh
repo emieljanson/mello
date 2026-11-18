@@ -208,7 +208,7 @@ BAD_UPDATE_FILE="$HOME/.mello-bad-update"
 
 # Speakers on Spotify Soloist: its binary stops working 90 days after it was
 # built, so renew it in time. Runs every night, also when Mello itself has no
-# update. A no-op for speakers on go-librespot.
+# update. A no-op for speakers that have no key yet.
 if [ -f pi/soloist/soloist-setup.sh ]; then
   bash pi/soloist/soloist-setup.sh refresh || log "Soloist renewal failed, will retry next run"
 fi
@@ -238,12 +238,11 @@ log "Updates found on $CHANNEL channel, applying $TARGET_NAME (local=$LOCAL targ
 # Remember current code directory (may be ~/tomo or ~/berry during transition)
 CODE_DIR="$(pwd)"
 
-# Exactly one Spotify engine runs per speaker (see pi/soloist/soloist-setup.sh).
+# Spotify's player, Soloist, runs once the owner has entered an API key; a
+# new Mello that is still waiting for one has none (see soloist-setup.sh).
 engine_service() {
-  if grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' "$CODE_DIR/.env" 2>/dev/null; then
+  if [ -s "${MELLO_SOLOIST_HOME:-$HOME/soloist}/key" ]; then
     echo mello-soloist
-  else
-    echo mello-librespot
   fi
 }
 
@@ -266,7 +265,8 @@ sync_systemd_units() {
 }
 
 restart_services() {
-  sudo systemctl restart "$(engine_service)" mello-native
+  # shellcheck disable=SC2046  # no engine yet: just the app
+  sudo systemctl restart $(engine_service) mello-native
 }
 
 # Healthy = both services still running a minute after the restart, without
@@ -276,6 +276,7 @@ HEALTH_WAIT=60
 health_check() {
   local engine before_native before_engine after_native after_engine
   engine=$(engine_service)
+  engine=${engine:-mello-native}   # no engine yet: only the app to check
   before_native=$(systemctl show -p NRestarts --value mello-native)
   before_engine=$(systemctl show -p NRestarts --value "$engine")
   sleep "$HEALTH_WAIT"
