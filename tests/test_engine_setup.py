@@ -597,3 +597,12 @@ def test_offer_keeps_coming_back_while_updates_wait_for_soloist(tmp_path, monkey
             clock[0] += gap
     finally:
         setup.stop()
+
+
+def test_a_32_bit_system_on_a_64_bit_kernel_cannot_run_soloist(monkeypatch):
+    import mello.managers.engine_setup as engine_setup
+    monkeypatch.setattr(engine_setup.platform, 'machine', lambda: 'aarch64')
+    monkeypatch.setattr(engine_setup.sys, 'maxsize', 2**31 - 1)
+    assert EngineSetup.can_run_soloist() is False
+    monkeypatch.setattr(engine_setup.sys, 'maxsize', 2**63 - 1)
+    assert EngineSetup.can_run_soloist() is True
