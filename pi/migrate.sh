@@ -965,6 +965,26 @@ _migrate_022() {
 }
 
 # ============================================
+# Migration 023: WiFi watchdog outside the app
+# ============================================
+# A setup hotspot left up (app stopped mid-setup, or nobody finished setup)
+# kept the speaker offline until someone pulled the plug. The watchdog runs
+# every 2 minutes as root, independent of the app (pi/wifi-watchdog.sh).
+_migrate_023() {
+  local code_dir="$MELLO_HOME/mello"
+  sed -e "s|__USER__|$MELLO_USER|g" \
+      -e "s|__HOME__|$MELLO_HOME|g" \
+      -e "s|__UID__|$MELLO_UID|g" \
+      "$code_dir/pi/systemd/mello-wifi-watchdog.service.template" \
+    | sudo tee /etc/systemd/system/mello-wifi-watchdog.service > /dev/null || return 1
+  sudo ln -sf "$code_dir/pi/systemd/mello-wifi-watchdog.timer" /etc/systemd/system/mello-wifi-watchdog.timer || return 1
+  sudo systemctl daemon-reload || return 1
+  sudo systemctl enable mello-wifi-watchdog.timer || return 1
+  sudo systemctl start mello-wifi-watchdog.timer || return 1
+  log "WiFi watchdog runs every 2 minutes"
+}
+
+# ============================================
 # Migration 020: Everything Slint needs to draw the screen
 # ============================================
 _migrate_020() {
@@ -1056,5 +1076,6 @@ run_migration "019" "Libraries for the Slint screen"
 run_migration "020" "Everything Slint needs to draw the screen"
 run_migration "021" "Nightly update via a systemd timer instead of cron"
 run_migration "022" "Make the speaker PipeWire's default output"
+run_migration "023" "WiFi watchdog outside the app"
 
 slint_hold_check "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

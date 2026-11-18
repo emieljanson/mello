@@ -46,6 +46,8 @@ _JOIN_WAIT = 45     # seconds per try (NetworkManager ends a failed one sooner)
 # wpa_supplicant's line when the router turned the password down.
 _WRONG_PASSWORD = 'pre-shared key may be incorrect'
 _NM_CONNECTIONS = Path('/etc/NetworkManager/system-connections')
+# Touched while WiFi setup runs, so pi/wifi-watchdog.sh leaves it alone.
+WIFI_SETUP_MARKER = Path('/tmp/mello-wifi-setup')
 
 # How long the self-opened Soloist prompt may stay up without being touched.
 _SPOTIFY_PROMPT_TIMEOUT = 180
@@ -140,6 +142,7 @@ class SetupMenu:
         self._join_credentials: Optional[tuple] = None
         # Set by the join thread: True joined, False gave up.
         self._join_result: Optional[bool] = None
+        self._marker_touched = 0.0
         # Known networks as they were before the hotspot started:
         # {connection name: (ssid, password)}. Only kept in memory.
         self._networks_before_hotspot: dict = {}
@@ -524,6 +527,13 @@ class SetupMenu:
         if self._update_result and time.time() - self._update_result_time > _UPDATE_RESULT_SECONDS:
             self._update_result = None
             self._on_invalidate()
+
+        if self.state == MenuState.WIFI_AP and time.time() - self._marker_touched > 20:
+            self._marker_touched = time.time()
+            try:
+                WIFI_SETUP_MARKER.touch()
+            except OSError:
+                pass
 
         if self.state == MenuState.WIFI_AP and self._join_result is not None:
             joined, self._join_result = self._join_result, None
@@ -1288,6 +1298,9 @@ class SetupMenu:
                             ['sudo', 'nmcli', 'con', 'delete', name],
                             capture_output=True, timeout=5,
                         )
+            # The WiFi watchdog's copy too, or it would put them back.
+            subprocess.run(['sudo', 'rm', '-rf', '/var/lib/mello/wifi-backup'],
+                           capture_output=True, timeout=5)
             logger.info('WiFi networks forgotten')
         except Exception as e:
             logger.error(f'Failed to forget WiFi networks: {e}')

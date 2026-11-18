@@ -367,6 +367,12 @@ chmod +x ~/mello/pi/auto-update.sh
 sudo ln -sf ~/mello/pi/systemd/mello-update.timer /etc/systemd/system/mello-update.timer
 sudo systemctl daemon-reload
 sudo systemctl enable --now mello-update.timer
+
+# WiFi watchdog: stops a setup hotspot nobody finishes and rejoins the known
+# network, also when the app is not running (see pi/wifi-watchdog.sh)
+sudo ln -sf ~/mello/pi/systemd/mello-wifi-watchdog.timer /etc/systemd/system/mello-wifi-watchdog.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now mello-wifi-watchdog.timer
 # Installs from before the timer used cron (crontab -l exits 1 when empty;
 # with pipefail that would abort the whole script)
 ( (crontab -l 2>/dev/null || true) | grep -v "pi/auto-update.sh" || true ) | crontab -

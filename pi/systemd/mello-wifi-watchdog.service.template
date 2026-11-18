@@ -1,0 +1,10 @@
+[Unit]
+Description=Mello WiFi watchdog (pi/wifi-watchdog.sh): back online without the app
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+# Root: it manages NetworkManager and stops the root-owned wifi-connect.
+ExecStart=/bin/bash __HOME__/mello/pi/wifi-watchdog.sh
+StandardOutput=journal
+TimeoutStartSec=3min
