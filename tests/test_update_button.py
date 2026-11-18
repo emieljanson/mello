@@ -163,6 +163,8 @@ def test_a_32_bit_speaker_is_told_it_cannot_update_and_tapping_does_nothing(monk
     assert menu.update_button_label == 'No updates: needs 64-bit'
     rect = MagicMock()
     rect.collidepoint.return_value = True
+    menu._check_for_update = MagicMock()
     menu.handle_tap((0, 0), {'check_update': rect})
     assert menu.state == sm.MenuState.MAIN
+    menu._check_for_update.assert_not_called()
     started.assert_not_called()
