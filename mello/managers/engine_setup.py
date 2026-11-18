@@ -18,6 +18,7 @@ import platform
 import re
 import socket
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -386,8 +387,10 @@ class EngineSetup:
 
     @staticmethod
     def can_run_soloist() -> bool:
-        """Spotify only builds Soloist for 64-bit ARM."""
-        return platform.machine() in ('aarch64', 'arm64')
+        """Spotify only builds Soloist for 64-bit ARM. A 32-bit Raspberry Pi
+        OS on a 64-bit kernel also reports aarch64, so the programs' own
+        bitness (this Python's) decides."""
+        return platform.machine() in ('aarch64', 'arm64') and sys.maxsize > 2**32
 
     def can_offer_soloist(self) -> bool:
         """Whether this speaker could switch and has not been set up for it yet."""
