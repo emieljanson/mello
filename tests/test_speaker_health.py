@@ -210,7 +210,7 @@ def test_headphone_coming_and_going_is_reported(tracker):
 
 def test_health_snapshot_is_sent_every_few_hours(tracker, monkeypatch):
     sent = []
-    monkeypatch.setattr("mello.app.run_async", lambda fn: sent.append(fn))
+    monkeypatch.setattr("mello.app_parts.diagnostics.run_async", lambda fn: sent.append(fn))
     app = _app(tracker)
     app._report_health_changes()
     assert sent == []
