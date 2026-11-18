@@ -114,6 +114,7 @@ def playback_app(monkeypatch):
         fn(*args)
 
     monkeypatch.setattr('mello.app.run_async', run_inline)
+    monkeypatch.setattr('mello.app_parts.spotify_sync.run_async', run_inline)
     monkeypatch.setattr('mello.controllers.playback.run_async', run_inline)
     return app
 
@@ -295,7 +296,7 @@ class TestRepeatContextSync:
             NowPlaying(playing=True, context_uri='spotify:album:a', repeat_context=False),
         )
 
-        with patch('mello.app.run_async') as mock_run:
+        with patch('mello.app_parts.spotify_sync.run_async') as mock_run:
             mock_run.side_effect = lambda fn, *a: fn(*a)
             app._ensure_repeat_context_for_current_status()
 
