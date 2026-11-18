@@ -68,7 +68,9 @@ jobs:
           [ -e pi/needs-soloist ] || exit 0
           prev=$(git for-each-ref --count=1 --sort=-v:refname \
             --format='%(refname:short)' 'refs/tags/v*')
-          if [ -z "$prev" ] || ! git show "$prev:pi/update-target.sh" | grep -q needs-soloist; then
+          # The gate's own line in update-target.sh (#91), not just any mention.
+          gate='git cat-file -e "$TARGET:pi/needs-soloist"'
+          if [ -z "$prev" ] || ! git show "$prev:pi/update-target.sh" | grep -v '^[[:space:]]*#' | grep -qF "$gate"; then
             echo "::error::Release a version with the needs-soloist gate (but without pi/needs-soloist) first; the newest release (${prev:-none}) lacks it"
             exit 1
           fi
