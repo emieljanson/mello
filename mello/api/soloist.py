@@ -85,6 +85,16 @@ _EARLY_START_S = 0.25
 # where it really is and set the timer again from its answer, so a stall or a
 # pause it did not report cannot make Mello start the next chapter early.
 _VERIFY_BEFORE_S = 3.0
+# The next track is put in Spotify's queue this long before the current one
+# ends. Started by Mello at the end instead, every track is a new item: on the
+# device the last 0.8 s was cut off and 11-16 s of silence followed, which
+# breaks an audiobook split into 3-minute parts (heard as "chapters that do
+# not play to the end"). From the queue Spotify plays on without a gap, as the
+# album does in the Spotify app. Late, so that a queued track is rarely left
+# behind when the child picks something else.
+_QUEUE_LEAD_S = 20.0
+# A queued track Mello no longer wants is skipped if it turns up this soon.
+_STALE_QUEUE_S = 30 * 60
 
 
 def _name(entity: Optional[dict]) -> Optional[str]:
@@ -161,6 +171,7 @@ class SoloistAPI:
         self._learn_epoch = 0
         self._queue_lock = threading.Lock()   # one get_queue at a time
         self._end_timer: Optional[threading.Timer] = None
+        self._stale_queued: Optional[dict] = None
         self._step_timer: Optional[threading.Timer] = None
         # Taps on next/previous not yet sent: {'index', 'beyond'}
         self._pending_step: Optional[dict] = None
@@ -302,6 +313,7 @@ class SoloistAPI:
     def _handle_event(self, event: dict):
         event_type = event.get('type')
         advance = None
+        skip_stale = False
         need_snapshot = False
 
         if event_type in ('command_result', 'error'):
@@ -342,7 +354,8 @@ class SoloistAPI:
                 self._volume = event.get('volume')
                 self._is_active = bool(event.get('is_active'))
                 self._repeat = (event.get('options') or {}).get('repeat') or 'off'
-                advance = self._direct_follow_unlocked()
+                skip_stale = self._skip_stale_queued_unlocked()
+                advance = None if skip_stale else self._direct_follow_unlocked()
                 need_snapshot = self._arm_end_timer_unlocked()
             elif event_type == 'playback_changed':
                 self._set_status(event.get('status'))
@@ -366,7 +379,10 @@ class SoloistAPI:
                 return
             became_inactive = was_active and not self._is_active
             self._state_changed.notify_all()
-        if event_type == 'playback_state' and advance is not None:
+        if event_type == 'playback_state' and skip_stale:
+            logger.info('Soloist: skipping a track Mello queued before something else was picked')
+            self._send('skip_next')
+        elif event_type == 'playback_state' and advance is not None:
             self._play_next_direct(*advance)
         elif need_snapshot:
             self._request_snapshot()
@@ -858,7 +874,7 @@ class SoloistAPI:
     def _new_direct(context: str, order: list, index: int, complete: bool, started: bool) -> dict:
         return {'context': context, 'order': order, 'index': index, 'complete': complete,
                 'started': started, 'ended': None, 'ended_at': 0.0, 'last_pos': None,
-                'left': None, 'hold': False}
+                'left': None, 'hold': False, 'queued': None}
 
     def _end_direct_unlocked(self):
         for timer in (self._end_timer, self._step_timer):
@@ -866,7 +882,39 @@ class SoloistAPI:
                 timer.cancel()
         self._end_timer = self._step_timer = None
         self._pending_step = None
+        self._drop_queued_unlocked()
         self._direct = None
+
+    def _drop_queued_unlocked(self):
+        """The queued track is no longer wanted: Spotify cannot take it back.
+
+        Soloist has no command to remove it, so remember it and skip it if it
+        plays after whatever plays next.
+        """
+        direct = self._direct
+        if direct and direct.get('queued'):
+            self._stale_queued = {'uri': direct['queued'], 'since': time.time(), 'first': None}
+            direct['queued'] = None
+
+    def _skip_stale_queued_unlocked(self) -> bool:
+        """True when the track now playing is one Mello queued and then left."""
+        stale = self._stale_queued
+        item = self._item_uri_unlocked()
+        if not stale or not item:
+            return False
+        if time.time() - stale['since'] > _STALE_QUEUE_S:
+            self._stale_queued = None
+            return False
+        context = (self._context or {}).get('uri')
+        if item == stale['uri'] and context != item:
+            self._stale_queued = None
+            return True
+        if stale['first'] is None:
+            stale['first'] = item
+        elif item != stale['first']:
+            # Spotify moved on without it: it is gone from the queue.
+            self._stale_queued = None
+        return False
 
     def _direct_follow_unlocked(self):
         """After a snapshot during direct play: keep track of where we are.
@@ -911,9 +959,15 @@ class SoloistAPI:
                 duration and position >= duration - 2 * _END_MARGIN_MS:
             return None   # late news about the end of the track we just moved on from
         index = direct['index'] if order[direct['index']] == item else order.index(item)
+        if index != direct['index']:
+            if item == direct.get('queued'):
+                logger.info(f'Soloist: track {index + 1}/{len(order)} played on from the queue')
+            direct['queued'] = None
         direct['index'] = index
         if not duration or direct['hold'] or self._pending_step:
             return None
+        if direct.get('queued'):
+            return None   # Spotify moves on to the queued track itself
         at_end = self._status == 'buffering' and position >= duration - _END_MARGIN_MS
         # Fallback: track repeat already started it again from the top.
         wrapped = last is not None and last >= duration - 5000 and position < 3000
@@ -942,12 +996,16 @@ class SoloistAPI:
         context = (self._context or {}).get('uri')
         # Track repeat is only ever switched on by direct play: a single
         # track the child picked in Mello (or in the Spotify app) is left alone.
-        if not item or context != item or self._repeat != 'track':
+        if not item or not context:
             return None
         found = self.play_orders.find(item)
         if not found:
             return None
         album, order, complete = found
+        # Played on from the queue: the context is still the track before it.
+        from_queue = context != item and context in order and self._repeat == 'off'
+        if not from_queue and (context != item or self._repeat != 'track'):
+            return None
         complete = complete and _never_changes(album)
         self._direct = self._new_direct(album, order, order.index(item), complete, started=True)
         logger.info(f'Direct play picked up again: track {order.index(item) + 1}/{len(order)} of {album[:50]}')
@@ -985,6 +1043,16 @@ class SoloistAPI:
         if remaining < 0:
             return None
         context, index = direct['context'], direct['index']
+        next_index = self._next_index_unlocked(direct, index)
+        if direct.get('queued'):
+            return None
+        if next_index is not None and not direct.get('no_queue'):
+            timer = threading.Timer(max(0.0, remaining - _QUEUE_LEAD_S),
+                                    lambda: self._queue_next(context, index, next_index))
+            timer.daemon = True
+            self._end_timer = timer
+            timer.start()
+            return None
 
         if not verified and remaining > _VERIFY_BEFORE_S:
             def verify():
@@ -1018,6 +1086,32 @@ class SoloistAPI:
         self._end_timer.daemon = True
         self._end_timer.start()
         return None
+
+    def _queue_next(self, context: str, index: int, next_index: int):
+        """Put the next track in Spotify's queue so it follows without a gap."""
+        with self._state_lock:
+            direct = self._direct
+            if (not direct or direct['context'] != context or direct['index'] != index
+                    or direct['hold'] or direct.get('queued') or self._pending_step):
+                return
+            track = direct['order'][next_index]
+            direct['queued'] = track
+        # Track repeat would play this track again instead of the queue; and
+        # Soloist turns context repeat on for a single track by itself.
+        ok = (self._command('set_repeat_track', enabled=False) is True
+              and self._command('set_repeat_context', enabled=False) is True
+              and self._command('add_to_queue', uri=track) is True)
+        if ok:
+            logger.info(f'Soloist: queued track {next_index + 1}/{len(direct["order"])} to follow')
+            return
+        logger.warning('Soloist: could not queue the next track, starting it at the end instead')
+        with self._state_lock:
+            if self._direct is direct:
+                direct['queued'] = None
+                direct['no_queue'] = True
+        self._command('set_repeat_track', enabled=True)
+        with self._state_lock:
+            self._arm_end_timer_unlocked()
 
     def _play_next_direct(self, context: str, index: Optional[int]):
         """Start the next track of a direct play (from the socket or a timer thread)."""
@@ -1143,6 +1237,7 @@ class SoloistAPI:
                 last = direct['order'][index]
             elif index != current:
                 left = direct['order'][current]
+                self._drop_queued_unlocked()
                 direct.update(index=index, ended=None, last_pos=None, left=left)
             track = direct['order'][index]
             context = direct['context']
