@@ -50,6 +50,8 @@ class Daemon:
         self.plays = []
         self.context_delay = 0.0   # Spotify takes a while to start an album
         self.placeholder = False   # Spotify's queue may hold non-playable entries
+        self.queue = []            # added with add_to_queue
+        self.refuse = set()        # commands Soloist rejects
 
     def snapshot(self):
         event = playback_state(status=self.status, position_ms=self.position, repeat=self.repeat)
@@ -62,6 +64,9 @@ class Daemon:
 
     def __call__(self, message):
         api, command = self.api, message['command']
+        if command in self.refuse:
+            api._handle_event({'type': 'error', 'message': f'{command}_restricted'})
+            return False
         if command == 'get_state':
             return self.snapshot() if self.item else False
         if command == 'get_queue':
@@ -73,6 +78,8 @@ class Daemon:
                 coming = [self.item] * 10 if self.repeat != 'off' else []
             coming = coming[:self.queue_cap]
             upcoming = [{'uid': u, 'source': 'context', 'item': entity(u, f'Name {u}')} for u in coming]
+            upcoming = [{'uid': f'q{n}', 'source': 'queue', 'item': entity(u, f'Name {u}')}
+                        for n, u in enumerate(self.queue)] + upcoming
             if self.placeholder:
                 upcoming.insert(1, {'uid': 'p', 'source': 'context',
                                     'item': entity('spotify:meta:node_rules_placeholder', '')})
@@ -99,6 +106,8 @@ class Daemon:
         elif command == 'seek':
             self.position = message['position_ms']
             api._handle_event(self.snapshot())
+        elif command == 'add_to_queue':
+            self.queue.append(message['uri'])
         elif command in ('skip_next', 'skip_prev'):
             tracks = self.tracks()
             step = 1 if command == 'skip_next' else -1
@@ -113,6 +122,13 @@ class Daemon:
         return False
 
     def end_of_track(self, status='buffering'):
+        if self.queue and self.repeat != 'track':
+            # Spotify plays on from its queue by itself, without a gap; the
+            # context stays what it was (a track played on its own: that track).
+            self.context = self.context or self.item
+            self.item, self.position, self.status = self.queue.pop(0), 1000, 'playing'
+            self.api._handle_event(self.snapshot())
+            return
         self.position, self.status = DURATION, status
         self.api._handle_event(self.snapshot())
         self.status = 'playing'
@@ -305,11 +321,89 @@ def track_snapshot_end(uri):
     return event
 
 
-def test_next_track_starts_just_before_the_end():
+def test_next_track_is_queued_before_the_end_and_follows_without_a_gap():
+    """Audiobook parts lost their last 0.8 s and had 11-16 s of silence between them."""
     api, daemon, _ = playing()
-    daemon.position = DURATION - 400
+    daemon.position = DURATION - 15000                 # within the queue lead
     api._handle_event(daemon.snapshot())
-    assert wait_until(lambda: daemon.plays == [TRACKS[2]], 1.5)
+    assert wait_until(lambda: daemon.queue == [TRACKS[2]])
+    assert daemon.repeat == 'off'                      # track repeat would win over the queue
+    daemon.end_of_track()                              # Spotify plays on from its queue
+    assert daemon.item == TRACKS[2]
+    assert daemon.plays == []                          # Mello started nothing itself
+    assert api._direct['index'] == 2
+    daemon.position = DURATION - 15000
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.queue == [TRACKS[3]])
+
+
+def test_next_track_is_queued_only_near_the_end(monkeypatch):
+    monkeypatch.setattr(soloist_module, '_QUEUE_LEAD_S', 0.5)
+    api, daemon, _ = playing()
+    daemon.position = DURATION - 1500
+    api._handle_event(daemon.snapshot())
+    time.sleep(0.3)
+    assert daemon.queue == []
+    assert wait_until(lambda: daemon.queue == [TRACKS[2]], 1.5)
+
+
+def test_when_queueing_is_refused_the_next_track_starts_at_the_end():
+    api, daemon, _ = playing()
+    daemon.refuse.add('add_to_queue')
+    daemon.position = DURATION - 1000
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.plays == [TRACKS[2]], 2.5)
+    assert daemon.repeat == 'track'
+
+
+def test_a_queued_track_left_behind_is_skipped_when_it_turns_up():
+    """Spotify's queue outlives a new album; Soloist cannot take a track out of it."""
+    api, daemon, store = playing()
+    daemon.position = DURATION - 15000
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.queue == [TRACKS[2]])
+    api.play(PLAYLIST)                                 # the child picks something else
+    for item in (TRACKS[0], TRACKS[0], TRACKS[1]):     # a few of its tracks, several snapshots
+        daemon.item = item
+        api._handle_event(daemon.snapshot())
+    assert not any(m['command'] == 'skip_next' for m in api.sent)
+    daemon.item = TRACKS[2]                            # then our old queued track turns up
+    api._handle_event(daemon.snapshot())
+    assert [m['command'] for m in api.sent].count('skip_next') == 1
+
+
+def test_the_queued_track_itself_is_not_skipped():
+    api, daemon, _ = playing()
+    daemon.position = DURATION - 15000
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.queue == [TRACKS[2]])
+    daemon.end_of_track()
+    assert daemon.item == TRACKS[2]
+    assert not any(m['command'] == 'skip_next' for m in api.sent)
+
+
+def test_a_track_already_waiting_in_the_queue_is_skipped_for_the_next_chapter():
+    """Seen on the device: a chapter left in the queue played before ours and
+    the order went wrong (H31, H25, H32). With track repeat on such a track
+    never played, so it is skipped at the moment it turns up."""
+    api, daemon, _ = playing()
+    daemon.queue.append(TRACKS[5])                     # left over, or added in the Spotify app
+    daemon.position = DURATION - 15000
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.queue == [TRACKS[5], TRACKS[2]])
+    daemon.end_of_track()                              # Spotify plays the old one first
+    assert daemon.item == TRACKS[5]
+    assert daemon.plays == []
+    assert [m['command'] for m in api.sent].count('skip_next') == 1
+    assert api._direct['index'] == 1                   # still where it was, not at track 6
+
+
+def test_a_track_from_the_queue_is_picked_up_after_an_app_restart():
+    api, daemon, store = setup()
+    store.put(ALBUM, TRACKS)
+    daemon.context, daemon.item, daemon.repeat = TRACKS[1], TRACKS[2], 'off'
+    api._handle_event(daemon.snapshot())
+    assert api._direct and api._direct['index'] == 2
 
 
 def test_a_track_that_started_over_moves_on_and_is_retried_if_stuck(monkeypatch):
@@ -581,6 +675,7 @@ def test_a_pause_does_not_count_as_listened_time():
     to it, so the next chapter started that much too early.
     """
     api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    api._direct['no_queue'] = True                     # the timer that starts it at the end
     daemon.position = DURATION - 2000                  # 2 s left
     api._handle_event(daemon.snapshot())
     daemon({'command': 'pause'})
@@ -610,6 +705,7 @@ def test_the_end_is_checked_with_soloist_before_moving_on(monkeypatch):
     """
     monkeypatch.setattr(soloist_module, '_VERIFY_BEFORE_S', 0.5)
     api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    api._direct['no_queue'] = True                     # the timer that starts it at the end
     daemon.position = DURATION - 1500
     api._handle_event(daemon.snapshot())               # counted on: ends in 1.25 s
     time.sleep(1.6)                                    # but it stood still
