@@ -599,3 +599,22 @@ def test_position_stands_still_while_paused():
     time.sleep(0.5)
     daemon({'command': 'play'})
     assert api._current_position_ms() < 60300
+
+
+def test_the_end_is_checked_with_soloist_before_moving_on(monkeypatch):
+    """A long chapter: the position Mello counts on from is from its start.
+
+    If playback stood still meanwhile without Soloist saying so, counting on
+    would start the next chapter early. Just before the end Mello asks Soloist
+    where it is, and only moves on when it is really there.
+    """
+    monkeypatch.setattr(soloist_module, '_VERIFY_BEFORE_S', 0.5)
+    api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    daemon.position = DURATION - 1500
+    api._handle_event(daemon.snapshot())               # counted on: ends in 1.25 s
+    time.sleep(1.6)                                    # but it stood still
+    assert daemon.plays == []
+    assert any(m['command'] == 'get_state' for m in api.sent)
+    daemon.position = DURATION - 300                   # now it plays on to the end
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.plays == [EPISODES[2]], 1.5)
