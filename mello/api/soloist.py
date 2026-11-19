@@ -175,6 +175,8 @@ class SoloistAPI:
         self._end_timer: Optional[threading.Timer] = None
         # Tracks Mello put in Spotify's queue that have not played yet: uri -> when.
         self._mello_queued: dict = {}
+        self._skipped_foreign: Optional[str] = None
+        self._skip_foreign = False
         self._step_timer: Optional[threading.Timer] = None
         # Taps on next/previous not yet sent: {'index', 'beyond'}
         self._pending_step: Optional[dict] = None
@@ -384,6 +386,10 @@ class SoloistAPI:
             self._state_changed.notify_all()
         if event_type == 'playback_state' and skip_stale:
             logger.info('Soloist: skipping a track Mello queued before something else was picked')
+            self._send('skip_next')
+        elif event_type == 'playback_state' and self._skip_foreign:
+            self._skip_foreign = False
+            logger.info('Soloist: skipping a track that waited in the queue before the next chapter')
             self._send('skip_next')
         elif event_type == 'playback_state' and advance is not None:
             self._play_next_direct(*advance)
@@ -932,6 +938,15 @@ class SoloistAPI:
         # The album itself playing the normal way (next/previous were used
         # before it ever went direct) is ours too.
         ours = context == direct['context'] or context in order
+        queued = direct.get('queued')
+        if queued and item != queued and context != item and item != order[direct['index']] and ours:
+            # Something else was waiting in Spotify's queue before ours (added
+            # in the Spotify app, or left over): it plays first and would put
+            # the order wrong. With track repeat on it never played anyway.
+            if self._skipped_foreign != item:
+                self._skipped_foreign = item
+                self._skip_foreign = True
+            return None
         if not ours or item not in order:
             # Something else is playing now (started from the Spotify app, or
             # a new album): direct play is over. Before our track was seen,
@@ -956,6 +971,7 @@ class SoloistAPI:
             return None   # late news about the end of the track we just moved on from
         index = direct['index'] if order[direct['index']] == item else order.index(item)
         if index != direct['index']:
+            self._skipped_foreign = None
             if item == direct.get('queued'):
                 logger.info(f'Soloist: track {index + 1}/{len(order)} played on from the queue')
             direct['queued'] = None
@@ -1092,26 +1108,17 @@ class SoloistAPI:
                 return
             track = direct['order'][next_index]
             direct['queued'] = track
-        # Something already waiting in Spotify's queue (from the Spotify app,
-        # or left over) would play before ours and put the order wrong.
-        waiting = self._queued_by_hand()
-        if waiting is None or waiting:
-            reason = 'the queue could not be read' if waiting is None else \
-                f'{len(waiting)} track(s) already waiting in the queue'
-            logger.info(f'Soloist: not queueing the next track ({reason}), starting it at the end instead')
-            ok = False
-        else:
-            # Track repeat would play this track again instead of the queue;
-            # Soloist turns context repeat on for a single track by itself.
-            ok = (self._command('set_repeat_track', enabled=False) is True
-                  and self._command('set_repeat_context', enabled=False) is True
-                  and self._command('add_to_queue', uri=track) is True)
-            if ok:
-                with self._state_lock:
-                    self._mello_queued[track] = time.time()
-                logger.info(f'Soloist: queued track {next_index + 1}/{len(direct["order"])} to follow')
-                return
-            logger.warning('Soloist: could not queue the next track, starting it at the end instead')
+        # Track repeat would play this track again instead of the queue;
+        # Soloist turns context repeat on for a single track by itself.
+        ok = (self._command('set_repeat_track', enabled=False) is True
+              and self._command('set_repeat_context', enabled=False) is True
+              and self._command('add_to_queue', uri=track) is True)
+        if ok:
+            with self._state_lock:
+                self._mello_queued[track] = time.time()
+            logger.info(f'Soloist: queued track {next_index + 1}/{len(direct["order"])} to follow')
+            return
+        logger.warning('Soloist: could not queue the next track, starting it at the end instead')
         with self._state_lock:
             if self._direct is direct:
                 direct['queued'] = None
@@ -1465,26 +1472,6 @@ class SoloistAPI:
         """(uri, name) of what is still to come in the current context."""
         with self._queue_lock:
             return self._upcoming_locked()
-
-    def _queued_by_hand(self) -> Optional[list]:
-        """Uris waiting in Spotify's own queue (not the context's next items).
-
-        None when the queue could not be read.
-        """
-        with self._queue_lock:
-            with self._state_changed:
-                self._queue = None
-            if not self._send('get_queue', limit=0):
-                return None
-            if not self._wait_for(lambda: self._queue is not None, self.command_timeout):
-                return None
-            with self._state_lock:
-                return [
-                    (entry.get('item') or {}).get('uri')
-                    for entry in (self._queue or {}).get('upcoming') or []
-                    if entry.get('source') != 'context'
-                    and playable((entry.get('item') or {}).get('uri'))
-                ]
 
     def _upcoming_locked(self) -> Optional[list]:
         upcoming = None

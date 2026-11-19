@@ -123,7 +123,9 @@ class Daemon:
 
     def end_of_track(self, status='buffering'):
         if self.queue and self.repeat != 'track':
-            # Spotify plays on from its queue by itself, without a gap.
+            # Spotify plays on from its queue by itself, without a gap; the
+            # context stays what it was (a track played on its own: that track).
+            self.context = self.context or self.item
             self.item, self.position, self.status = self.queue.pop(0), 1000, 'playing'
             self.api._handle_event(self.snapshot())
             return
@@ -380,15 +382,20 @@ def test_the_queued_track_itself_is_not_skipped():
     assert not any(m['command'] == 'skip_next' for m in api.sent)
 
 
-def test_a_track_already_waiting_in_the_queue_keeps_the_old_way():
-    """Queued behind it, ours would play one late and the order would go wrong."""
+def test_a_track_already_waiting_in_the_queue_is_skipped_for_the_next_chapter():
+    """Seen on the device: a chapter left in the queue played before ours and
+    the order went wrong (H31, H25, H32). With track repeat on such a track
+    never played, so it is skipped at the moment it turns up."""
     api, daemon, _ = playing()
     daemon.queue.append(TRACKS[5])                     # left over, or added in the Spotify app
-    daemon.position = DURATION - 1000
+    daemon.position = DURATION - 15000
     api._handle_event(daemon.snapshot())
-    assert wait_until(lambda: daemon.plays == [TRACKS[2]], 2.5)
-    assert daemon.queue == [TRACKS[5]]
-    assert daemon.repeat == 'track'
+    assert wait_until(lambda: daemon.queue == [TRACKS[5], TRACKS[2]])
+    daemon.end_of_track()                              # Spotify plays the old one first
+    assert daemon.item == TRACKS[5]
+    assert daemon.plays == []
+    assert [m['command'] for m in api.sent].count('skip_next') == 1
+    assert api._direct['index'] == 1                   # still where it was, not at track 6
 
 
 def test_a_track_from_the_queue_is_picked_up_after_an_app_restart():
