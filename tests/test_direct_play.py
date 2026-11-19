@@ -571,3 +571,31 @@ def test_placeholders_in_spotifys_queue_are_not_learned_as_tracks(tmp_path):
     path.write_text(json.dumps({ALBUM: {'items': [TRACKS[0], 'spotify:meta:node_rules_placeholder'],
                                         'complete': False, 'learned_at': time.time()}}))
     assert PlayOrders(path).get(ALBUM) == [TRACKS[0]]
+
+
+def test_a_pause_does_not_count_as_listened_time():
+    """Audiobook chapters were cut short after a pause.
+
+    Soloist answers pause/resume with only a status change, no new position.
+    Counting on from the position seen before the pause added the paused time
+    to it, so the next chapter started that much too early.
+    """
+    api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    daemon.position = DURATION - 2000                  # 2 s left
+    api._handle_event(daemon.snapshot())
+    daemon({'command': 'pause'})
+    time.sleep(1.5)                                    # paused for a while
+    daemon({'command': 'play'})                        # resume: status only
+    time.sleep(1.0)                                    # 1 s of the chapter still to go
+    assert daemon.plays == []
+    assert wait_until(lambda: daemon.plays == [EPISODES[2]], 3.0)
+
+
+def test_position_stands_still_while_paused():
+    api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    daemon.position = 60000
+    api._handle_event(daemon.snapshot())
+    daemon({'command': 'pause'})
+    time.sleep(0.5)
+    daemon({'command': 'play'})
+    assert api._current_position_ms() < 60300

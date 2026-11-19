@@ -416,7 +416,21 @@ class SoloistAPI:
         status = status or 'idle'
         if status != self._status:
             self._status_since = time.time()
+            self._rebase_position_unlocked()
         self._status = status
+
+    def _rebase_position_unlocked(self):
+        """Pin the position at this moment, before the status changes.
+
+        Soloist answers a pause, a resume or a stall with only a status
+        change and keeps its last position anchor. Counting on from that
+        anchor after a resume added the paused time to the position, so the
+        next audiobook chapter started that much too early (cut off).
+        """
+        anchor = self._position
+        if anchor:
+            self._position = {**anchor, 'position_ms': self._current_position_ms(),
+                              'timestamp_ms': time.time() * 1000}
 
     def _recheck_if_stuck_buffering(self):
         """Ask for the real status when "buffering" has lasted a while."""
