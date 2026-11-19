@@ -78,6 +78,8 @@ class Daemon:
                 coming = [self.item] * 10 if self.repeat != 'off' else []
             coming = coming[:self.queue_cap]
             upcoming = [{'uid': u, 'source': 'context', 'item': entity(u, f'Name {u}')} for u in coming]
+            upcoming = [{'uid': f'q{n}', 'source': 'queue', 'item': entity(u, f'Name {u}')}
+                        for n, u in enumerate(self.queue)] + upcoming
             if self.placeholder:
                 upcoming.insert(1, {'uid': 'p', 'source': 'context',
                                     'item': entity('spotify:meta:node_rules_placeholder', '')})
@@ -353,15 +355,40 @@ def test_when_queueing_is_refused_the_next_track_starts_at_the_end():
 
 
 def test_a_queued_track_left_behind_is_skipped_when_it_turns_up():
+    """Spotify's queue outlives a new album; Soloist cannot take a track out of it."""
     api, daemon, store = playing()
     daemon.position = DURATION - 15000
     api._handle_event(daemon.snapshot())
     assert wait_until(lambda: daemon.queue == [TRACKS[2]])
     api.play(PLAYLIST)                                 # the child picks something else
-    daemon.item = TRACKS[2]                            # after its first track: our old queue
-    daemon.context = PLAYLIST
+    for item in (TRACKS[0], TRACKS[0], TRACKS[1]):     # a few of its tracks, several snapshots
+        daemon.item = item
+        api._handle_event(daemon.snapshot())
+    assert not any(m['command'] == 'skip_next' for m in api.sent)
+    daemon.item = TRACKS[2]                            # then our old queued track turns up
     api._handle_event(daemon.snapshot())
-    assert any(m['command'] == 'skip_next' for m in api.sent)
+    assert [m['command'] for m in api.sent].count('skip_next') == 1
+
+
+def test_the_queued_track_itself_is_not_skipped():
+    api, daemon, _ = playing()
+    daemon.position = DURATION - 15000
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.queue == [TRACKS[2]])
+    daemon.end_of_track()
+    assert daemon.item == TRACKS[2]
+    assert not any(m['command'] == 'skip_next' for m in api.sent)
+
+
+def test_a_track_already_waiting_in_the_queue_keeps_the_old_way():
+    """Queued behind it, ours would play one late and the order would go wrong."""
+    api, daemon, _ = playing()
+    daemon.queue.append(TRACKS[5])                     # left over, or added in the Spotify app
+    daemon.position = DURATION - 1000
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.plays == [TRACKS[2]], 2.5)
+    assert daemon.queue == [TRACKS[5]]
+    assert daemon.repeat == 'track'
 
 
 def test_a_track_from_the_queue_is_picked_up_after_an_app_restart():
