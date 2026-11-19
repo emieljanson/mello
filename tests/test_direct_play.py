@@ -571,3 +571,50 @@ def test_placeholders_in_spotifys_queue_are_not_learned_as_tracks(tmp_path):
     path.write_text(json.dumps({ALBUM: {'items': [TRACKS[0], 'spotify:meta:node_rules_placeholder'],
                                         'complete': False, 'learned_at': time.time()}}))
     assert PlayOrders(path).get(ALBUM) == [TRACKS[0]]
+
+
+def test_a_pause_does_not_count_as_listened_time():
+    """Audiobook chapters were cut short after a pause.
+
+    Soloist answers pause/resume with only a status change, no new position.
+    Counting on from the position seen before the pause added the paused time
+    to it, so the next chapter started that much too early.
+    """
+    api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    daemon.position = DURATION - 2000                  # 2 s left
+    api._handle_event(daemon.snapshot())
+    daemon({'command': 'pause'})
+    time.sleep(1.5)                                    # paused for a while
+    daemon({'command': 'play'})                        # resume: status only
+    time.sleep(1.0)                                    # 1 s of the chapter still to go
+    assert daemon.plays == []
+    assert wait_until(lambda: daemon.plays == [EPISODES[2]], 3.0)
+
+
+def test_position_stands_still_while_paused():
+    api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    daemon.position = 60000
+    api._handle_event(daemon.snapshot())
+    daemon({'command': 'pause'})
+    time.sleep(0.5)
+    daemon({'command': 'play'})
+    assert api._current_position_ms() < 60300
+
+
+def test_the_end_is_checked_with_soloist_before_moving_on(monkeypatch):
+    """A long chapter: the position Mello counts on from is from its start.
+
+    If playback stood still meanwhile without Soloist saying so, counting on
+    would start the next chapter early. Just before the end Mello asks Soloist
+    where it is, and only moves on when it is really there.
+    """
+    monkeypatch.setattr(soloist_module, '_VERIFY_BEFORE_S', 0.5)
+    api, daemon, _ = playing(track=EPISODES[1], context=SHOW)
+    daemon.position = DURATION - 1500
+    api._handle_event(daemon.snapshot())               # counted on: ends in 1.25 s
+    time.sleep(1.6)                                    # but it stood still
+    assert daemon.plays == []
+    assert any(m['command'] == 'get_state' for m in api.sent)
+    daemon.position = DURATION - 300                   # now it plays on to the end
+    api._handle_event(daemon.snapshot())
+    assert wait_until(lambda: daemon.plays == [EPISODES[2]], 1.5)

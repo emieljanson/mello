@@ -80,6 +80,11 @@ _ADVANCE_RETRY_S = 6.0
 # repeat on, waiting for the end let a moment of the same track start again
 # (seen on the device). The last 0.25 s of a track is nearly always silence.
 _EARLY_START_S = 0.25
+# The end timer counts on from Soloist's last position, which may be from the
+# start of a long audiobook chapter. This long before the end, ask Soloist
+# where it really is and set the timer again from its answer, so a stall or a
+# pause it did not report cannot make Mello start the next chapter early.
+_VERIFY_BEFORE_S = 3.0
 
 
 def _name(entity: Optional[dict]) -> Optional[str]:
@@ -416,7 +421,21 @@ class SoloistAPI:
         status = status or 'idle'
         if status != self._status:
             self._status_since = time.time()
+            self._rebase_position_unlocked()
         self._status = status
+
+    def _rebase_position_unlocked(self):
+        """Pin the position at this moment, before the status changes.
+
+        Soloist answers a pause, a resume or a stall with only a status
+        change and keeps its last position anchor. Counting on from that
+        anchor after a resume added the paused time to the position, so the
+        next audiobook chapter started that much too early (cut off).
+        """
+        anchor = self._position
+        if anchor:
+            self._position = {**anchor, 'position_ms': self._current_position_ms(),
+                              'timestamp_ms': time.time() * 1000}
 
     def _recheck_if_stuck_buffering(self):
         """Ask for the real status when "buffering" has lasted a while."""
@@ -934,7 +953,7 @@ class SoloistAPI:
         logger.info(f'Direct play picked up again: track {order.index(item) + 1}/{len(order)} of {album[:50]}')
         return self._direct
 
-    def _arm_end_timer_unlocked(self) -> Optional[bool]:
+    def _arm_end_timer_unlocked(self, verified: bool = False) -> Optional[bool]:
         """During direct play, start the next track just before this one ends.
 
         Returns True when a fresh snapshot is needed to know the position.
@@ -966,6 +985,22 @@ class SoloistAPI:
         if remaining < 0:
             return None
         context, index = direct['context'], direct['index']
+
+        if not verified and remaining > _VERIFY_BEFORE_S:
+            def verify():
+                with self._state_lock:
+                    if self._end_timer is not timer:
+                        return
+                    # Should the answer not come, the timer still runs from
+                    # what is known; the answer replaces it.
+                    self._arm_end_timer_unlocked(verified=True)
+                self._request_snapshot()
+
+            timer = threading.Timer(remaining - _VERIFY_BEFORE_S, verify)
+            timer.daemon = True
+            self._end_timer = timer
+            timer.start()
+            return None
 
         def fire():
             with self._state_lock:
