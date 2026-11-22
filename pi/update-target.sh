@@ -65,7 +65,7 @@ fi
 # file was added, and moves on by itself once it has switched. --first-parent:
 # a PR merged with a merge commit must land on main's commit before the merge,
 # not on the branch's own history.
-if ! grep -qE "^[[:space:]]*MELLO_SPOTIFY_ENGINE[[:space:]]*=[[:space:]]*[\"']?soloist[\"']?[[:space:]]*$" .env 2>/dev/null \
+if ! grep -qE "^MELLO_SPOTIFY_ENGINE=[\"']?soloist[\"']?[[:space:]]*$" .env 2>/dev/null \
    && git cat-file -e "$TARGET:pi/needs-soloist" 2>/dev/null; then
   ADDED=$(git log -1 --first-parent --diff-filter=A --format=%H "$TARGET" -- pi/needs-soloist)
   TARGET=$(git rev-parse "$ADDED^")

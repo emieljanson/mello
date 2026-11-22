@@ -1122,7 +1122,7 @@ soloist_hold_check() {
     echo "MELLO_SPOTIFY_ENGINE=soloist" >> "$code_dir/.env"
     log "Soloist key found: MELLO_SPOTIFY_ENGINE=soloist written back to .env"
   fi
-  if grep -qE "^[[:space:]]*MELLO_SPOTIFY_ENGINE[[:space:]]*=[[:space:]]*[\"']?soloist[\"']?[[:space:]]*$" "$code_dir/.env" 2>/dev/null; then
+  if grep -qE "^MELLO_SPOTIFY_ENGINE=[\"']?soloist[\"']?[[:space:]]*$" "$code_dir/.env" 2>/dev/null; then
     rm -f "$SOLOIST_HOLD_FILE"
     return 1
   fi
