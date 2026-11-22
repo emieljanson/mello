@@ -333,6 +333,7 @@ def test_failed_migration_runs_again_without_a_new_version(speaker):
     (speaker.home / 'migrate-fail').write_text('')
     newest = _add_migrate(speaker)
     code, out = speaker.update()
+    assert code == 0, out                        # the update itself goes on
     assert speaker.version == newest and _runs(speaker) == 1
     assert not (speaker.home / '.mello-migrated').exists()
 
@@ -356,7 +357,6 @@ def test_screen_error_is_repaired_without_a_new_version(speaker):
     assert code == 0, out
     assert 'Repair' in out and _runs(speaker) == 2
     assert 'Repair: restarting the app' in out
-    assert not (speaker.home / '.mello-screen-error').exists()
 
 
 def test_update_that_cannot_draw_the_screen_is_rolled_back(speaker):
@@ -394,3 +394,14 @@ def test_a_soloist_key_without_the_program_still_waits(speaker):
     (speaker.home / 'soloist').mkdir()
     (speaker.home / 'soloist' / 'key').write_text('k' * 37 + '\n')
     assert speaker.check()[3] == last
+
+
+def test_failed_catch_up_is_written_down(speaker):
+    speaker.set_channel('beta')
+    _add_migrate(speaker)
+    speaker.update()
+    (speaker.home / '.mello-screen-error').write_text('libinput.so.10 missing')
+    (speaker.home / 'migrate-fail').write_text('')
+    code, out = speaker.update()
+    assert code == 0, out
+    assert 'result=failed' in (speaker.home / '.mello-update-status').read_text()

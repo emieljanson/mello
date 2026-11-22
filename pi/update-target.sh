@@ -52,7 +52,7 @@ TARGET=$(git rev-parse "$TARGET_NAME^{commit}")
 # kept the home folder), is on Soloist: write the setting back rather than
 # hold the speaker and ask for the key again. pi/migrate.sh does the same.
 SOLOIST_HOME="${MELLO_SOLOIST_HOME:-$HOME/soloist}"
-if ! grep -qE "^MELLO_SPOTIFY_ENGINE=" .env 2>/dev/null \
+if ! grep -qE "^[[:space:]]*MELLO_SPOTIFY_ENGINE[[:space:]]*=" .env 2>/dev/null \
    && [ -s "$SOLOIST_HOME/key" ] && [ -x "$SOLOIST_HOME/soloist" ]; then
   # (finish a last line without a newline first)
   if [ -s .env ] && [ -n "$(tail -c1 .env)" ]; then echo >> .env; fi

@@ -224,9 +224,9 @@ def _start_screen_repair(logger: logging.Logger) -> bool:
     try:
         import subprocess
         from .managers.setup_menu import _update_command
-        SCREEN_REPAIR_FILE.write_text(f'{time.time():.0f}\n')
         subprocess.Popen(_update_command(Path.home() / 'mello-update.log'),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        SCREEN_REPAIR_FILE.write_text(f'{time.time():.0f}\n')
         logger.info('Screen repair started (update script)')
         return True
     except Exception as e:

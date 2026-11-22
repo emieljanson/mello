@@ -1110,7 +1110,7 @@ SOLOIST_HOLD_FILE="$HOME/.mello-soloist-hold"
 soloist_hold_check() {
   local code_dir="$1" added keep
   local soloist_home="${MELLO_SOLOIST_HOME:-$HOME/soloist}"
-  if ! grep -qE "^MELLO_SPOTIFY_ENGINE=" "$code_dir/.env" 2>/dev/null \
+  if ! grep -qE "^[[:space:]]*MELLO_SPOTIFY_ENGINE[[:space:]]*=" "$code_dir/.env" 2>/dev/null \
      && [ -s "$soloist_home/key" ] && [ -x "$soloist_home/soloist" ]; then
     # The owner entered a key and Soloist is installed (the app plays through
     # it whenever the key is there), but .env has no engine setting at all,

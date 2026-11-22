@@ -880,3 +880,10 @@ def test_soloist_key_without_the_program_is_still_held(tmp_path):
     _soloist_files(tmp_path, binary=False)
     out, head = _run_soloist_hold(tmp_path, repo)
     assert 'HELD' in out and head == last
+
+
+def test_spaced_engine_setting_counts_as_explicit(tmp_path):
+    repo, last, new = _librespot_speaker(tmp_path, 'MELLO_SPOTIFY_ENGINE = librespot')
+    _soloist_files(tmp_path)
+    out, head = _run_soloist_hold(tmp_path, repo)
+    assert 'HELD' in out and head == last

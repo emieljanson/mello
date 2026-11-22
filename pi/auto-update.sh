@@ -374,6 +374,7 @@ catch_up() {
   fi
   if ! run_migrations; then
     log "WARNING: migration failed, will try again next run"
+    write_status failed "migration failed, will try again next run"
   fi
   if [ -d ~/mello ]; then CODE_DIR=~/mello; cd "$CODE_DIR"; fi
   if [ "$(git rev-parse HEAD)" != "$head" ]; then
@@ -382,8 +383,9 @@ catch_up() {
     sync_systemd_units || log "WARNING: installing systemd units failed"
     restart_services || log "WARNING: restarting services failed"
   elif [ "$screen_error" = true ]; then
+    # (The app removes SCREEN_ERROR_FILE once it draws, or writes it again:
+    # if this restart fails, the next run still sees it and tries again.)
     log "Repair: restarting the app"
-    rm -f "$SCREEN_ERROR_FILE"
     sudo systemctl restart mello-native || log "WARNING: restarting the app failed"
   fi
 }
