@@ -404,4 +404,6 @@ def test_failed_catch_up_is_written_down(speaker):
     (speaker.home / 'migrate-fail').write_text('')
     code, out = speaker.update()
     assert code == 0, out
-    assert 'result=failed' in (speaker.home / '.mello-update-status').read_text()
+    assert _runs(speaker) == 2                   # it did run the migrations again
+    status = dict(l.split('=', 1) for l in (speaker.home / '.mello-update-status').read_text().splitlines())
+    assert status['result'] == 'failed' and 'migration failed' in status['message']
