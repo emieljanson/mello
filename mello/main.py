@@ -174,7 +174,64 @@ def main():
     except ScreenUnavailable as e:
         _wait_with_screen_error(logger, e)
         return
+    SCREEN_ERROR_FILE.unlink(missing_ok=True)
     app.start()
+
+
+# While Slint cannot start, this file says why. The update script reads it:
+# its health check fails on it, and a run with no new version repairs the
+# speaker (pi/auto-update.sh catch_up, pi/migrate.sh ensure_screen_libs).
+SCREEN_ERROR_FILE = Path.home() / '.mello-screen-error'
+# When the app last started such a repair itself, so it is not started again
+# on every restart.
+SCREEN_REPAIR_FILE = Path.home() / '.mello-screen-repair'
+SCREEN_REPAIR_EVERY = 6 * 3600
+
+
+def _system_too_old() -> bool:
+    """Slint's wheels need Python 3.12+ (Raspberry Pi OS Trixie or newer)."""
+    return sys.version_info < (3, 12)
+
+
+def screen_error_lines(too_old: bool) -> list:
+    """What the screen says. Only an old system needs a reinstall: on a
+    current one the cause is something that can be fixed in place (missing
+    screen libraries, an update that stopped halfway), and Mello does that."""
+    if too_old:
+        return [
+            'This speaker needs a newer Raspberry Pi OS',
+            'Reinstall it with the current Raspberry Pi OS Lite',
+            'and set up Mello again',
+        ]
+    return [
+        'Mello is repairing its screen',
+        'This takes a few minutes',
+        'Keep the speaker on and connected to WiFi',
+    ]
+
+
+def _start_screen_repair(logger: logging.Logger) -> bool:
+    """Run the update script now: with SCREEN_ERROR_FILE there it installs
+    what is missing and restarts the app. At most once every few hours."""
+    import time
+    try:
+        last = float(SCREEN_REPAIR_FILE.read_text().strip())
+    except (OSError, ValueError):
+        last = 0.0
+    if time.time() - last < SCREEN_REPAIR_EVERY:
+        logger.info('Screen repair started recently, not starting it again')
+        return False
+    try:
+        import subprocess
+        from .managers.setup_menu import _update_command
+        SCREEN_REPAIR_FILE.write_text(f'{time.time():.0f}\n')
+        subprocess.Popen(_update_command(Path.home() / 'mello-update.log'),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info('Screen repair started (update script)')
+        return True
+    except Exception as e:
+        logger.error(f'Could not start the screen repair: {e}')
+        return False
 
 
 def _report_screen_error(logger: logging.Logger, error: Exception):
@@ -210,19 +267,24 @@ def _wait_with_screen_error(logger: logging.Logger, error: Exception):
     import signal
     import time
     from .ui import screen_error
-    logger.error(
-        f'SCREEN UNAVAILABLE | Slint cannot start: {error} | '
-        f'Python {platform.python_version()}, {platform.machine()}, glibc {platform.libc_ver()[1]} | '
-        'Slint needs Raspberry Pi OS Trixie or newer (Python 3.12+, glibc 2.35+). '
-        'Reinstall the speaker with the current Raspberry Pi OS.'
-    )
-    shown = screen_error.show([
-        'This speaker needs a newer Raspberry Pi OS',
-        'Reinstall it with the current Raspberry Pi OS Lite',
-        'and set up Mello again',
-    ])
+    too_old = _system_too_old()
+    system = f'Python {platform.python_version()}, {platform.machine()}, glibc {platform.libc_ver()[1]}'
+    if too_old:
+        advice = ('Slint needs Raspberry Pi OS Trixie or newer (Python 3.12+, glibc 2.35+). '
+                  'Reinstall the speaker with the current Raspberry Pi OS.')
+    else:
+        advice = ('The system is new enough, so something is missing (for example the screen '
+                  'library libinput10): the update script repairs it.')
+    logger.error(f'SCREEN UNAVAILABLE | Slint cannot start: {error} | {system} | {advice}')
+    try:
+        SCREEN_ERROR_FILE.write_text(f'{error} ({system})\n'[:500])
+    except OSError as e:
+        logger.warning(f'Could not write {SCREEN_ERROR_FILE}: {e}')
+    shown = screen_error.show(screen_error_lines(too_old))
     logger.info(f'Screen error message shown: {shown}')
     _report_screen_error(logger, error)
+    if not too_old:
+        _start_screen_repair(logger)
     stop = {'now': False}
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, lambda *_: stop.update(now=True))

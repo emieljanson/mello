@@ -25,6 +25,10 @@ case "$1" in
     n=$(cat "$HOME/nrestarts" 2>/dev/null || echo 0)
     if [ -f "$HOME/mello/CRASH" ]; then n=$((n + 1)); echo "$n" > "$HOME/nrestarts"; fi
     echo "$n" ;;
+  restart)
+    # The app cannot draw its screen while the code has a NOSCREEN file.
+    if [ -f "$HOME/mello/NOSCREEN" ]; then echo "libinput.so.10 missing" > "$HOME/.mello-screen-error"; fi
+    exit 0 ;;
   *) exit 0 ;;
 esac
 '''
@@ -303,3 +307,90 @@ def test_check_leaves_a_note_for_the_menu_while_updates_wait_for_soloist(speaker
         'MELLO_UPDATE_CHANNEL=beta\nMELLO_SPOTIFY_ENGINE=soloist\n')
     speaker.check()
     assert not note.exists()
+
+
+# --- finishing what an earlier run left undone (the "libinput10 missing" report) ---
+
+MIGRATE_STUB = """#!/bin/bash
+echo run >> "$HOME/migrate-runs"
+[ -f "$HOME/migrate-fail" ] && exit 1
+exit 0
+"""
+
+
+def _add_migrate(speaker, name='with-migrate'):
+    (speaker.work / 'pi' / 'migrate.sh').write_text(MIGRATE_STUB)
+    return speaker.commit(name)
+
+
+def _runs(speaker):
+    runs = speaker.home / 'migrate-runs'
+    return len(runs.read_text().split()) if runs.exists() else 0
+
+
+def test_failed_migration_runs_again_without_a_new_version(speaker):
+    speaker.set_channel('beta')
+    (speaker.home / 'migrate-fail').write_text('')
+    newest = _add_migrate(speaker)
+    code, out = speaker.update()
+    assert speaker.version == newest and _runs(speaker) == 1
+    assert not (speaker.home / '.mello-migrated').exists()
+
+    (speaker.home / 'migrate-fail').unlink()     # say apt works again
+    code, out = speaker.update()                 # next night: nothing new
+    assert code == 0, out
+    assert 'Catch-up' in out and _runs(speaker) == 2
+    assert (speaker.home / '.mello-migrated').read_text().strip() == newest
+
+    speaker.update()                             # done: not again
+    assert _runs(speaker) == 2
+
+
+def test_screen_error_is_repaired_without_a_new_version(speaker):
+    speaker.set_channel('beta')
+    _add_migrate(speaker)
+    speaker.update()
+    assert _runs(speaker) == 1
+    (speaker.home / '.mello-screen-error').write_text('libinput.so.10 missing')
+    code, out = speaker.update()
+    assert code == 0, out
+    assert 'Repair' in out and _runs(speaker) == 2
+    assert 'Repair: restarting the app' in out
+    assert not (speaker.home / '.mello-screen-error').exists()
+
+
+def test_update_that_cannot_draw_the_screen_is_rolled_back(speaker):
+    speaker.set_channel('beta')
+    good = speaker.version
+    (speaker.work / 'NOSCREEN').write_text('')
+    speaker.commit('no-screen')
+    code, out = speaker.update()
+    assert code == 1
+    assert 'cannot draw the screen' in out and 'ROLLBACK' in out
+    assert speaker.version == good
+
+
+def test_speaker_with_a_soloist_key_but_no_engine_setting_moves_on(speaker):
+    # A reinstall kept ~/soloist (key and program) but wrote a new .env.
+    speaker.set_channel('beta')
+    speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    newest = speaker.commit('after')
+    soloist = speaker.home / 'soloist'
+    soloist.mkdir()
+    (soloist / 'key').write_text('k' * 37 + '\n')
+    (soloist / 'soloist').write_text('#!/bin/bash\n')
+    (soloist / 'soloist').chmod(0o755)
+    assert speaker.check() == ['update', 'beta', 'origin/main', newest]
+    assert 'MELLO_SPOTIFY_ENGINE=soloist' in (speaker.home / 'mello' / '.env').read_text().splitlines()
+    assert 'MELLO_UPDATE_CHANNEL=beta' in (speaker.home / 'mello' / '.env').read_text().splitlines()
+
+
+def test_a_soloist_key_without_the_program_still_waits(speaker):
+    speaker.set_channel('beta')
+    last = speaker.commit('last-with-librespot')
+    _drop_librespot(speaker)
+    speaker.commit('after')
+    (speaker.home / 'soloist').mkdir()
+    (speaker.home / 'soloist' / 'key').write_text('k' * 37 + '\n')
+    assert speaker.check()[3] == last

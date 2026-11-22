@@ -1005,6 +1005,31 @@ _migrate_020() {
 }
 
 # ============================================
+# Every update: are Slint's screen libraries there?
+# ============================================
+# Migrations 019/020 installed them once, but a marker says nothing about
+# today: a speaker reinstalled with its home folder kept, or an in-place
+# upgrade of Raspberry Pi OS, can have the marker and still miss them. Slint
+# loads libinput only when it opens the screen, so "import slint" works and
+# the app then fails to draw. A dpkg check per package is cheap, so check
+# every run and install what is missing.
+ensure_screen_libs() {
+  local missing=() pkg
+  for pkg in $SLINT_LIBS; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  [ ${#missing[@]} -eq 0 ] && return 0
+  log "Screen libraries missing: ${missing[*]}; installing"
+  sudo apt-get update -q || true
+  if sudo apt-get install -y -q "${missing[@]}"; then
+    log "Installed screen libraries: ${missing[*]}"
+  else
+    log "ERROR: could not install screen libraries: ${missing[*]}"
+    return 1
+  fi
+}
+
+# ============================================
 # Every update: can this speaker run the Slint screen?
 # ============================================
 # Slint needs Raspberry Pi OS Trixie or newer (Python 3.12+, glibc 2.35+). A
@@ -1019,6 +1044,9 @@ slint_hold_check() {
   local code_dir="$1"
   local py="$code_dir/venv/bin/python"
   [ -x "$py" ] || return 0
+  # Already on a version that draws with Pygame: nothing to hold back from
+  # (and the check below would otherwise step back one more version).
+  [ -f "$code_dir/mello/ui/helpers.py" ] && return 0
   if "$py" -c 'import slint' >/dev/null 2>&1; then
     rm -f "$SLINT_HOLD_FILE"
     return 0
@@ -1079,6 +1107,19 @@ SOLOIST_HOLD_FILE="$HOME/.mello-soloist-hold"
 
 soloist_hold_check() {
   local code_dir="$1" added keep
+  local soloist_home="${MELLO_SOLOIST_HOME:-$HOME/soloist}"
+  if ! grep -qE "^MELLO_SPOTIFY_ENGINE=" "$code_dir/.env" 2>/dev/null \
+     && [ -s "$soloist_home/key" ] && [ -x "$soloist_home/soloist" ]; then
+    # The owner entered a key and Soloist is installed (the app plays through
+    # it whenever the key is there), but .env has no engine setting at all,
+    # for example a new .env after a reinstall that kept the home folder.
+    # Write it back instead of sending the speaker back to go-librespot and
+    # asking for the key again. (An explicit other setting is left alone.)
+    # (finish a last line without a newline first)
+    if [ -s "$code_dir/.env" ] && [ -n "$(tail -c1 "$code_dir/.env")" ]; then echo >> "$code_dir/.env"; fi
+    echo "MELLO_SPOTIFY_ENGINE=soloist" >> "$code_dir/.env"
+    log "Soloist key found: MELLO_SPOTIFY_ENGINE=soloist written back to .env"
+  fi
   if grep -qE "^MELLO_SPOTIFY_ENGINE=[\"']?soloist[\"']?[[:space:]]*$" "$code_dir/.env" 2>/dev/null; then
     rm -f "$SOLOIST_HOLD_FILE"
     return 1
@@ -1108,29 +1149,45 @@ fi
 # ============================================
 # Run all migrations
 # ============================================
-run_migration "001" "Bluetooth audio via PipeWire"
-run_migration "002" "Install pactl (missing from 001 on Trixie)"
-run_migration "003" "Dynamic username support"
-run_migration "004" "Berry to Mello rebrand"
-run_migration "005" "Tomo to Mello rebrand"
-run_migration "006" "Plymouth boot splash"
-run_migration "007" "Mask getty@tty1 (missed by older installs)"
-run_migration "008" "Route go-librespot audio through PipeWire"
-run_migration "009" "Update sudoers for hciconfig down+up"
-run_migration "010" "Remove go-librespot audio_device (use default sink)"
-run_migration "011" "Converge Raspberry Pi Touch Display 2 boot config"
-run_migration "012" "Reboot after display boot config changes"
-run_migration "013" "Disable Spotify suggested autoplay"
-run_migration "014" "Keep librespot independent of UI sleep/restarts"
-run_migration "015" "Allow automatic librespot recovery"
-run_migration "016" "Let a speaker switch to Spotify Soloist"
-run_migration "017" "Keep the WiFi chip awake (no power save)"
-run_migration "018" "Faster boot: skip cloud-init after the first boot"
-run_migration "019" "Libraries for the Slint screen"
-run_migration "020" "Everything Slint needs to draw the screen"
-run_migration "021" "Nightly update via a systemd timer instead of cron"
-run_migration "022" "Make the speaker PipeWire's default output"
-run_migration "023" "WiFi watchdog outside the app"
-run_migration "024" "go-librespot is gone"
+# Migrations run in order and stop at the first that fails (a later one may
+# build on it); it runs again on the next update. The every-run checks below
+# still run either way: a speaker must not miss its screen libraries because
+# an unrelated migration failed (with set -e this script used to stop here).
+MIGRATIONS_OK=true
+{
+  run_migration "001" "Bluetooth audio via PipeWire" &&
+  run_migration "002" "Install pactl (missing from 001 on Trixie)" &&
+  run_migration "003" "Dynamic username support" &&
+  run_migration "004" "Berry to Mello rebrand" &&
+  run_migration "005" "Tomo to Mello rebrand" &&
+  run_migration "006" "Plymouth boot splash" &&
+  run_migration "007" "Mask getty@tty1 (missed by older installs)" &&
+  run_migration "008" "Route go-librespot audio through PipeWire" &&
+  run_migration "009" "Update sudoers for hciconfig down+up" &&
+  run_migration "010" "Remove go-librespot audio_device (use default sink)" &&
+  run_migration "011" "Converge Raspberry Pi Touch Display 2 boot config" &&
+  run_migration "012" "Reboot after display boot config changes" &&
+  run_migration "013" "Disable Spotify suggested autoplay" &&
+  run_migration "014" "Keep librespot independent of UI sleep/restarts" &&
+  run_migration "015" "Allow automatic librespot recovery" &&
+  run_migration "016" "Let a speaker switch to Spotify Soloist" &&
+  run_migration "017" "Keep the WiFi chip awake (no power save)" &&
+  run_migration "018" "Faster boot: skip cloud-init after the first boot" &&
+  run_migration "019" "Libraries for the Slint screen" &&
+  run_migration "020" "Everything Slint needs to draw the screen" &&
+  run_migration "021" "Nightly update via a systemd timer instead of cron" &&
+  run_migration "022" "Make the speaker PipeWire's default output" &&
+  run_migration "023" "WiFi watchdog outside the app" &&
+  run_migration "024" "go-librespot is gone"
+} || MIGRATIONS_OK=false
 
-slint_hold_check "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CODE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHECKS_OK=true
+ensure_screen_libs || CHECKS_OK=false
+slint_hold_check "$CODE_ROOT"
+
+if [ "$MIGRATIONS_OK" != true ] || [ "$CHECKS_OK" != true ]; then
+  log "ERROR: not everything is in place yet; the next update run tries again"
+  exit 1
+fi
+
