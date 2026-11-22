@@ -213,9 +213,12 @@ if [ -f pi/soloist/soloist-setup.sh ]; then
   bash pi/soloist/soloist-setup.sh refresh || log "Soloist renewal failed, will retry next run"
 fi
 
+# No new version to apply: the run still finishes what an earlier run left
+# undone (see catch_up below), so it does not exit right away.
+NO_UPDATE=false
 case "$STATUS" in
   current)
-    exit 0  # No updates
+    NO_UPDATE=true
     ;;
   older)
     # A fresh clone starts on main; a stable speaker must still go to its
@@ -224,19 +227,37 @@ case "$STATUS" in
       log "Fresh clone: moving to $CHANNEL target $TARGET_NAME"
     else
       log "Skip: $CHANNEL target $TARGET_NAME ($TARGET) is older than the running code ($LOCAL)"
-      exit 0
+      NO_UPDATE=true
     fi
     ;;
   failed)
     log "Skip: $TARGET_NAME ($TARGET) failed its health check before, waiting for a newer version"
     write_status failed "waiting for a fix: $TARGET_NAME failed here before"
-    exit 0 ;;
+    NO_UPDATE=true
+    ;;
 esac
 
-log "Updates found on $CHANNEL channel, applying $TARGET_NAME (local=$LOCAL target=$TARGET)"
+if [ "$NO_UPDATE" = false ]; then
+  log "Updates found on $CHANNEL channel, applying $TARGET_NAME (local=$LOCAL target=$TARGET)"
+fi
 
 # Remember current code directory (may be ~/tomo or ~/berry during transition)
 CODE_DIR="$(pwd)"
+
+# The commit pi/migrate.sh last finished for without errors. A run that
+# failed (or never ran: an update that stopped halfway) runs again on the next
+# night, also when there is no new version, instead of never.
+MIGRATED_FILE="$HOME/.mello-migrated"
+# Written by the app while it cannot draw its screen (mello/main.py).
+SCREEN_ERROR_FILE="$HOME/.mello-screen-error"
+
+run_migrations() {
+  if [ ! -f "$CODE_DIR/pi/migrate.sh" ] || bash "$CODE_DIR/pi/migrate.sh"; then
+    git -C "$CODE_DIR" rev-parse HEAD > "$MIGRATED_FILE" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
 
 # Spotify's player, Soloist, runs once the owner has entered an API key; a
 # new Mello that is still waiting for one has none (see soloist-setup.sh).
@@ -265,6 +286,8 @@ sync_systemd_units() {
 }
 
 restart_services() {
+  # A fresh start says for itself whether it can draw (see health_check).
+  rm -f "$SCREEN_ERROR_FILE"
   # shellcheck disable=SC2046  # no engine yet: just the app
   sudo systemctl restart $(engine_service) mello-native
 }
@@ -288,6 +311,11 @@ health_check() {
   fi
   if ! systemctl is-active --quiet "$engine"; then
     log "Health check: $engine is not running"
+    return 1
+  fi
+  # The app does not crash when it cannot draw: it shows a message and waits.
+  if [ -f "$SCREEN_ERROR_FILE" ]; then
+    log "Health check: the app cannot draw the screen: $(head -c 300 "$SCREEN_ERROR_FILE")"
     return 1
   fi
   if [ "$after_native" != "$before_native" ]; then
@@ -328,6 +356,45 @@ rollback() {
   exit 1
 }
 
+# No new version: finish what is still undone on the running one. The
+# migration script runs again when it did not finish for this commit (it
+# failed, or an earlier update stopped before it), or when the app cannot draw
+# its screen (pi/migrate.sh installs missing screen libraries on every run).
+catch_up() {
+  local head screen_error=false
+  head=$(git rev-parse HEAD)
+  [ -f "$SCREEN_ERROR_FILE" ] && screen_error=true
+  if [ "$(cat "$MIGRATED_FILE" 2>/dev/null)" = "$head" ] && [ "$screen_error" = false ]; then
+    return 0
+  fi
+  if [ "$screen_error" = true ]; then
+    log "Repair: the app cannot draw its screen, running the migration script"
+  else
+    log "Catch-up: the migration script has not finished for $head yet, running it"
+  fi
+  if ! run_migrations; then
+    log "WARNING: migration failed, will try again next run"
+    write_status failed "migration failed, will try again next run"
+  fi
+  if [ -d ~/mello ]; then CODE_DIR=~/mello; cd "$CODE_DIR"; fi
+  if [ "$(git rev-parse HEAD)" != "$head" ]; then
+    # A hold moved the code to another version: start that one.
+    log "Catch-up: now on $(git rev-parse HEAD), restarting"
+    sync_systemd_units || log "WARNING: installing systemd units failed"
+    restart_services || log "WARNING: restarting services failed"
+  elif [ "$screen_error" = true ]; then
+    # (The app removes SCREEN_ERROR_FILE once it draws, or writes it again:
+    # if this restart fails, the next run still sees it and tries again.)
+    log "Repair: restarting the app"
+    sudo systemctl restart mello-native || log "WARNING: restarting the app failed"
+  fi
+}
+
+if [ "$NO_UPDATE" = true ]; then
+  catch_up
+  exit 0
+fi
+
 # Backup user data that may still be tracked by git (e.g. data/catalog.json
 # was committed early on but later gitignored; git rm --cached will cause
 # git pull to delete it from disk).
@@ -364,8 +431,8 @@ fi
 # ============================================
 if [ -f "$CODE_DIR/pi/migrate.sh" ]; then
   log "Running migration script"
-  if ! bash "$CODE_DIR/pi/migrate.sh"; then
-    log "WARNING: migration failed, continuing with service restart"
+  if ! run_migrations; then
+    log "WARNING: migration failed, continuing with service restart (next run tries again)"
   fi
 fi
 

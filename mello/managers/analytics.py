@@ -23,8 +23,9 @@ Speaker health, so a release can be compared with the one before it:
   - bluetooth_disconnected Headphone went away (connected_minutes, while_playing, from_menu)
   - device_health          Every 6 hours: uptime, free memory, CPU temperature
   - slint_fallback         Slint could not load (error). Since Pygame was removed the
-                           screen then shows "needs a newer Raspberry Pi OS" (fallback=
-                           screen_message). Speakers held back on Bookworm by pi/migrate.sh
+                           screen then shows a plain message (fallback=screen_message):
+                           "needs a newer Raspberry Pi OS" on Python < 3.12, otherwise
+                           "repairing its screen" while the update script fixes it. Speakers held back on Bookworm by pi/migrate.sh
                            run the last Pygame version and report it from there (ui=pygame).
 
 Every event carries app_version (branch@commit), engine, ui (the screen
@@ -312,7 +313,8 @@ class UsageTracker:
 
     def on_slint_fallback(self, error: str, fallback: str = 'screen_message'):
         """Slint could not load, so Mello cannot draw its screen; the speaker
-        shows a plain "needs a newer Raspberry Pi OS" message instead."""
+        shows a plain message instead ("needs a newer Raspberry Pi OS" on an
+        old system, "repairing its screen" on a current one)."""
         if not self._enabled:
             return
         self._capture('slint_fallback', {'error': error, 'fallback': fallback})

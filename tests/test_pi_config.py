@@ -190,7 +190,7 @@ def test_soloist_service_template_is_rendered_with_the_other_services():
 def test_nightly_update_renews_soloist_even_without_a_mello_update():
     update = (ROOT / 'pi/auto-update.sh').read_text()
     renew = update.index('soloist-setup.sh refresh')
-    no_update_exit = update.index('exit 0  # No updates')
+    no_update_exit = update.index('NO_UPDATE=true\n    ;;')
     assert renew < no_update_exit
 
 
@@ -631,7 +631,7 @@ def _speaker(tmp_path, slint_works: bool, python='3.11.2'):
 
 def _run_hold_check(tmp_path, repo):
     migrate = (ROOT / 'pi/migrate.sh').read_text()
-    assert 'slint_hold_check "$(cd' in migrate
+    assert 'slint_hold_check "$CODE_ROOT"' in migrate
     body = migrate.split('slint_hold_check() {', 1)[1].split('\n}', 1)[0]
     script = textwrap.dedent(f'''\
         set -euo pipefail
@@ -779,3 +779,112 @@ def test_deactivate_keeps_the_speaker_on_soloist(tmp_path):
                             env={'HOME': str(tmp_path), 'PATH': f'{bin_dir}:/usr/bin:/bin'})
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'repo/.env').read_text() == 'MELLO_SPOTIFY_ENGINE=soloist\n'
+
+
+# --- every run: screen libraries and the checks after a failed migration ---
+
+def _run_ensure_screen_libs(tmp_path, missing):
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    body = migrate.split('ensure_screen_libs() {', 1)[1].split('\n}', 1)[0]
+    calls = tmp_path / 'calls'
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        log() {{ :; }}
+        SLINT_LIBS="libinput10 libgbm1 libegl1"
+        dpkg-query() {{ case " {' '.join(missing)} " in *" $3 "*) echo "deinstall ok config-files" ;; *) echo "install ok installed" ;; esac; }}
+        sudo() {{ echo "$*" >> {str(calls)!r}; }}
+        ensure_screen_libs() {{
+        {body}
+        }}
+        ensure_screen_libs
+        ''')
+    result = subprocess.run(['bash'], input=script, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    return calls.read_text() if calls.exists() else ''
+
+
+def test_missing_libinput_is_installed_even_after_its_migration_ran(tmp_path):
+    # Migrations 019/020 have their markers, but libinput10 is gone (the report
+    # that led to this check: the screen said "needs a newer Raspberry Pi OS").
+    calls = _run_ensure_screen_libs(tmp_path, ['libinput10'])
+    assert 'apt-get install -y -q libinput10' in calls
+    assert 'libgbm1' not in calls
+
+
+def test_screen_libraries_present_means_no_apt(tmp_path):
+    assert _run_ensure_screen_libs(tmp_path, []) == ''
+
+
+def _run_migration_list(tmp_path, failing_id):
+    """The bottom of migrate.sh with stub migrations, one of which fails."""
+    migrate = (ROOT / 'pi/migrate.sh').read_text()
+    tail = migrate[migrate.index('MIGRATIONS_OK=true'):]
+    script = textwrap.dedent(f'''\
+        set -euo pipefail
+        log() {{ echo "$*"; }}
+        run_migration() {{ echo "migration $1"; [ "$1" != "{failing_id}" ]; }}
+        ensure_screen_libs() {{ echo "screen libs checked"; }}
+        slint_hold_check() {{ echo "slint checked"; }}
+        ''') + tail
+    return subprocess.run(['bash'], input=script, text=True, capture_output=True)
+
+
+def test_failed_migration_does_not_skip_the_screen_checks(tmp_path):
+    result = _run_migration_list(tmp_path, '003')
+    assert result.returncode == 1
+    out = result.stdout
+    assert 'migration 003' in out and 'migration 004' not in out   # order kept
+    assert 'screen libs checked' in out and 'slint checked' in out
+
+
+def test_all_migrations_ok(tmp_path):
+    result = _run_migration_list(tmp_path, 'none')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'migration 024' in result.stdout and 'screen libs checked' in result.stdout
+
+
+def test_speaker_already_on_the_pygame_version_is_not_moved_further_back(tmp_path):
+    repo, old, new = _speaker(tmp_path, slint_works=False, python='3.11.2')
+    _git(repo, 'checkout', '-q', '--detach', old)
+    out, head = _run_hold_check(tmp_path, repo)
+    assert head == old and 'HOLD' not in out
+
+
+def _soloist_files(tmp_path, binary=True):
+    soloist = tmp_path / 'soloist'
+    soloist.mkdir()
+    (soloist / 'key').write_text('k' * 37 + '\n')
+    if binary:
+        (soloist / 'soloist').write_text('#!/bin/bash\n')
+        (soloist / 'soloist').chmod(0o755)
+
+
+def test_soloist_key_without_engine_setting_is_not_sent_back(tmp_path):
+    repo, last, new = _librespot_speaker(tmp_path, 'MELLO_UPDATE_CHANNEL=beta')
+    _soloist_files(tmp_path)
+    out, head = _run_soloist_hold(tmp_path, repo)
+    assert 'HELD' not in out and head == new
+    assert (repo / '.env').read_text().splitlines() == [
+        'MELLO_UPDATE_CHANNEL=beta', 'MELLO_SPOTIFY_ENGINE=soloist']
+
+
+def test_explicit_other_engine_setting_is_left_alone(tmp_path):
+    repo, last, new = _librespot_speaker(tmp_path, 'MELLO_SPOTIFY_ENGINE=librespot')
+    _soloist_files(tmp_path)
+    out, head = _run_soloist_hold(tmp_path, repo)
+    assert 'HELD' in out and head == last
+
+
+def test_soloist_key_without_the_program_is_still_held(tmp_path):
+    repo, last, new = _librespot_speaker(tmp_path, None)
+    _soloist_files(tmp_path, binary=False)
+    out, head = _run_soloist_hold(tmp_path, repo)
+    assert 'HELD' in out and head == last
+
+
+def test_spaced_engine_setting_counts_as_explicit(tmp_path):
+    repo, last, new = _librespot_speaker(tmp_path, 'MELLO_SPOTIFY_ENGINE = librespot')
+    _soloist_files(tmp_path)
+    out, head = _run_soloist_hold(tmp_path, repo)
+    assert 'HELD' in out and head == last
+

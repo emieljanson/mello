@@ -47,6 +47,19 @@ fi
 LOCAL=$(git rev-parse HEAD)
 TARGET=$(git rev-parse "$TARGET_NAME^{commit}")
 
+# A speaker whose owner entered a Soloist key and has Soloist installed, but
+# whose .env has no engine setting at all (a new .env after a reinstall that
+# kept the home folder), is on Soloist: write the setting back rather than
+# hold the speaker and ask for the key again. pi/migrate.sh does the same.
+SOLOIST_HOME="${MELLO_SOLOIST_HOME:-$HOME/soloist}"
+if ! grep -qE "^[[:space:]]*MELLO_SPOTIFY_ENGINE[[:space:]]*=" .env 2>/dev/null \
+   && [ -s "$SOLOIST_HOME/key" ] && [ -x "$SOLOIST_HOME/soloist" ]; then
+  # (finish a last line without a newline first)
+  if [ -s .env ] && [ -n "$(tail -c1 .env)" ]; then echo >> .env; fi
+  echo "MELLO_SPOTIFY_ENGINE=soloist" >> .env
+  echo "update-target: Soloist key found, wrote MELLO_SPOTIFY_ENGINE=soloist to .env" >&2
+fi
+
 # Versions with pi/needs-soloist no longer have go-librespot. A speaker that
 # has not switched to Spotify Soloist stays on the version just before that
 # file was added, and moves on by itself once it has switched. --first-parent:
