@@ -791,7 +791,7 @@ def _run_ensure_screen_libs(tmp_path, missing):
         set -euo pipefail
         log() {{ :; }}
         SLINT_LIBS="libinput10 libgbm1 libegl1"
-        dpkg() {{ case " {' '.join(missing)} " in *" $2 "*) return 1 ;; esac; }}
+        dpkg-query() {{ case " {' '.join(missing)} " in *" $4 "*) echo "deinstall ok config-files" ;; *) echo "install ok installed" ;; esac; }}
         sudo() {{ echo "$*" >> {str(calls)!r}; }}
         ensure_screen_libs() {{
         {body}

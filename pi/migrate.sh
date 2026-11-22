@@ -1016,7 +1016,9 @@ _migrate_020() {
 ensure_screen_libs() {
   local missing=() pkg
   for pkg in $SLINT_LIBS; do
-    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+    # (dpkg -s also succeeds for a removed package that left its config)
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' \
+      || missing+=("$pkg")
   done
   [ ${#missing[@]} -eq 0 ] && return 0
   log "Screen libraries missing: ${missing[*]}; installing"
