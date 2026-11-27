@@ -121,6 +121,7 @@ def _run_migration_016(sudoers_dir: Path, home: Path):
         set -euo pipefail
         HOME={str(home)!r}
         MELLO_SUDOERS_DIR={str(sudoers_dir)!r}
+        unset MELLO_SOLOIST_HOME
         log() {{ :; }}
         sudo() {{
           if [ "$1" = visudo ]; then return 0; fi
