@@ -169,8 +169,29 @@ def test_migration_016_keeps_soloist_enabled_on_a_speaker_already_using_it(tmp_p
     (tmp_path / 'mello').mkdir()
     (tmp_path / 'mello' / '.env').write_text('MELLO_SPOTIFY_ENGINE=soloist\n')
 
+    (tmp_path / 'soloist').mkdir()
+    (tmp_path / 'soloist' / 'key').write_text('key\n')
+
     assert _run_migration_016(sudoers, tmp_path).returncode == 0
     assert 'systemctl enable mello-soloist' in (tmp_path / 'systemctl.log').read_text()
+
+
+def test_migration_016_leaves_soloist_off_until_the_owner_enters_a_key(tmp_path):
+    # A new speaker on Soloist without a key: enabling Soloist now would make
+    # it fail every 5 seconds until the owner enters one (seen on a new
+    # speaker updated from a May 2026 version).
+    sudoers = tmp_path / 'sudoers.d'
+    sudoers.mkdir()
+    (sudoers / 'mello-wifi').write_text(SUDOERS_AFTER_015)
+    (tmp_path / 'mello').mkdir()
+    (tmp_path / 'mello' / '.env').write_text('MELLO_SPOTIFY_ENGINE=soloist\n')
+
+    result = _run_migration_016(sudoers, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    log = tmp_path / 'systemctl.log'
+    assert not log.exists() or 'enable' not in log.read_text()
+    assert '/bin/systemctl enable mello-soloist' in (sudoers / 'mello-wifi').read_text()
 
 
 def test_app_service_does_not_start_an_engine_by_itself():

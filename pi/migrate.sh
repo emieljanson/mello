@@ -812,8 +812,14 @@ _migrate_016() {
   local ENGINE_SERVICE=mello-librespot
   if grep -qE '^MELLO_SPOTIFY_ENGINE=soloist' "$CODE_DIR/.env" 2>/dev/null; then
     ENGINE_SERVICE=mello-soloist
+    # No key yet (a new speaker waiting for its owner): soloist-setup.sh
+    # enables Soloist once the key is entered. Enabled now, it would fail
+    # every 5 seconds for ever (run-soloist.sh exits without a key).
+    if [ ! -s "${MELLO_SOLOIST_HOME:-$HOME/soloist}/key" ]; then
+      ENGINE_SERVICE=""
+    fi
   fi
-  if ! sudo systemctl enable "$ENGINE_SERVICE"; then
+  if [ -n "$ENGINE_SERVICE" ] && ! sudo systemctl enable "$ENGINE_SERVICE"; then
     # Without this the speaker would come back from a reboot with no engine.
     log "ERROR: could not enable $ENGINE_SERVICE"
     return 1
