@@ -434,3 +434,188 @@ class TestAdapterRecovery:
         show_calls = [c for c in mock_run.call_args_list
                       if c[0][0][:2] == ['bluetoothctl', 'show']]
         assert len(show_calls) >= 2
+
+
+# -----------------------------------------------------------------------
+# Reliability fixes (connect races, Pi 3B A2DP recovery, adapter health)
+# -----------------------------------------------------------------------
+
+MAC = 'AA:BB:CC:DD:EE:FF'
+SINK = 'bluez_output.AA_BB_CC_DD_EE_FF.1'
+
+
+def _result(stdout=''):
+    r = MagicMock()
+    r.stdout = stdout
+    r.stderr = ''
+    r.returncode = 0
+    return r
+
+
+class TestAlreadyConnected:
+
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_already_connected_counts_as_connected(self, mock_run, bt):
+        mock_run.return_value = _result(
+            'Failed to connect: org.bluez.Error.AlreadyConnected')
+        assert bt._bt_connect(MAC) is True
+
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_connect_output_missed_but_info_says_connected(self, mock_run, bt):
+        def run(cmd, **kw):
+            if cmd[:2] == ['bluetoothctl', 'info']:
+                return _result('Connected: yes')
+            return _result('Attempting to connect')
+        mock_run.side_effect = run
+        assert bt._bt_connect(MAC) is True
+
+    @patch('mello.managers.bluetooth.time.sleep')
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_connected_without_a2dp_restarts_adapter(self, mock_run, _sleep, bt):
+        """The Pi 3B quirk: connected, but no sink. Must reach the restart."""
+        restarted = {'done': False}
+
+        def run(cmd, **kw):
+            if cmd[:2] == ['bluetoothctl', 'show']:
+                return _result('Powered: yes')
+            if cmd[:2] == ['bluetoothctl', 'connect']:
+                return _result('Failed to connect: org.bluez.Error.AlreadyConnected')
+            if 'systemctl' in cmd:
+                restarted['done'] = True
+                return _result()
+            if cmd[:3] == ['pactl', 'list', 'sinks']:
+                if restarted['done']:
+                    return _result(f'5\t{SINK}\tPipeWire\ts16le 2ch 48000Hz\tIDLE')
+                return _result('1\talsa_output.x\tPipeWire\ts16le 2ch 48000Hz\tIDLE')
+            return _result()
+
+        mock_run.side_effect = run
+        assert bt._reliable_connect(MAC) == SINK
+        assert restarted['done']
+
+
+class TestFindSinkForDevice:
+
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_ignores_other_devices_sink(self, mock_run, bt):
+        mock_run.return_value = _result(
+            '5\tbluez_output.11_22_33_44_55_66.1\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n'
+            f'6\t{SINK}\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n')
+        assert bt._find_bt_sink(mac=MAC) == SINK
+
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_without_mac_any_bt_sink(self, mock_run, bt):
+        mock_run.return_value = _result(
+            '5\tbluez_output.11_22_33_44_55_66.1\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n')
+        assert bt._find_bt_sink() == 'bluez_output.11_22_33_44_55_66.1'
+
+
+class TestPollWaitsForTap:
+
+    @patch('mello.managers.bluetooth.sys')
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_poll_skipped_while_connect_runs(self, mock_run, mock_sys, bt):
+        mock_sys.platform = 'linux'
+        held = threading.Event()
+        release = threading.Event()
+
+        def tap():
+            with bt._connect_lock:
+                held.set()
+                release.wait(2)
+
+        t = threading.Thread(target=tap)
+        t.start()
+        held.wait(1)
+        bt._poll_connection_state()
+        release.set()
+        t.join()
+        mock_run.assert_not_called()
+
+
+class TestAdapterHealth:
+
+    @patch('mello.managers.bluetooth.sys')
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_one_unanswered_show_does_not_restart(self, mock_run, mock_sys, bt):
+        """A busy bluetoothd must not get the playing headphone dropped."""
+        mock_sys.platform = 'linux'
+        bt._connected_device = BluetoothDevice(mac=MAC, name='HP', connected=True, is_audio=True)
+        bt._audio_active = True
+
+        def run(cmd, **kw):
+            if cmd[:2] == ['bluetoothctl', 'show']:
+                raise __import__('subprocess').TimeoutExpired(cmd, 5)
+            return _result()
+        mock_run.side_effect = run
+
+        bt._poll_connection_state()
+        bt._poll_connection_state()
+
+        assert not any('systemctl' in c[0][0] for c in mock_run.call_args_list)
+        assert bt._connected_device is not None
+        assert bt._audio_active is True
+
+    @patch('mello.managers.bluetooth.time.sleep')
+    @patch('mello.managers.bluetooth.sys')
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_restart_after_repeated_silence_then_backoff(self, mock_run, mock_sys, _sleep, bt):
+        mock_sys.platform = 'linux'
+        mock_run.side_effect = lambda cmd, **kw: _result('No default controller available')
+
+        for _ in range(3):
+            bt._poll_connection_state()
+        restarts = [c for c in mock_run.call_args_list if 'systemctl' in c[0][0]]
+        assert len(restarts) == 1
+
+        # Recovery failed: no new restart on the next polls
+        for _ in range(5):
+            bt._poll_connection_state()
+        restarts = [c for c in mock_run.call_args_list if 'systemctl' in c[0][0]]
+        assert len(restarts) == 1
+
+
+class TestVolumeBeforeAudio:
+
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_set_connected_sets_volume_before_moving_stream(self, mock_run, settings, callbacks):
+        order = []
+        bt = BluetoothManager(settings=settings, on_toast=callbacks['on_toast'],
+                              on_invalidate=callbacks['on_invalidate'],
+                              on_audio_changed=lambda a: order.append(('audio', bt._desired_sink)))
+        with patch.object(bt, '_set_default_sink'), \
+             patch.object(bt, '_move_stream', side_effect=lambda s: order.append(('move', s))):
+            bt._set_connected(BluetoothDevice(mac=MAC, name='HP'), SINK)
+        assert order == [('audio', SINK), ('move', SINK)]
+
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_toggle_on_applies_volume_once_sink_known(self, mock_run, settings, callbacks):
+        seen = []
+        bt = BluetoothManager(settings=settings, on_toast=callbacks['on_toast'],
+                              on_invalidate=callbacks['on_invalidate'],
+                              on_audio_changed=lambda a: seen.append((a, bt._desired_sink)))
+        bt._connected_device = BluetoothDevice(mac=MAC, name='HP', connected=True, is_audio=True)
+        mock_run.return_value = _result(f'6\t{SINK}\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n')
+
+        bt._activate_audio()
+        for _ in range(50):
+            if (True, SINK) in seen:
+                break
+            time.sleep(0.02)
+        assert (True, SINK) in seen
+
+
+class TestConnectedWithoutSink:
+
+    @patch('mello.managers.bluetooth.time.sleep')
+    @patch('mello.managers.bluetooth.subprocess.run')
+    def test_default_sink_back_to_speaker(self, mock_run, _sleep, bt):
+        from mello.managers.bluetooth import WM8960_SINK
+        dev = BluetoothDevice(mac=MAC, name='HP', paired=True, connected=True, is_audio=True)
+        with patch.object(bt, '_find_bt_sink', return_value=None), \
+             patch.object(bt, '_reliable_connect', return_value=None), \
+             patch.object(bt, '_set_default_sink') as set_default:
+            bt._handle_device_connected(dev)
+        assert set_default.call_args_list[-1] == call(WM8960_SINK)
+        assert bt._connected_device is dev
+        assert bt._audio_active is False

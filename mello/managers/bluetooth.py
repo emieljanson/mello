@@ -22,6 +22,16 @@ from ..config import WM8960_SINK, BT_MONITOR_INTERVAL, BT_SCAN_DURATION
 logger = logging.getLogger(__name__)
 
 AUDIO_SINK_UUID = '0000110b-0000-1000-8000-00805f9b34fb'
+
+# A `bluetoothctl show` that times out or finds no controller says little
+# about the adapter: bluetoothd is often just busy. Restarting the service
+# then drops a headphone that was playing fine, so only an adapter that
+# reports `Powered: no`, or gives no answer this many polls in a row, is
+# restarted.
+ADAPTER_UNKNOWN_POLLS_BEFORE_RESTART = 3
+# Polls to wait after a restart that did not bring the adapter back, so a
+# dead adapter is not restarted every 5 s all day.
+ADAPTER_RECOVERY_BACKOFF_POLLS = 12
 AUDIO_ICONS = {'audio-headphones', 'audio-headset', 'audio-card'}
 
 BLUEZ_SERVICE = 'org.bluez'
@@ -71,6 +81,11 @@ class BluetoothManager:
         self._on_audio_changed = on_audio_changed
 
         self._lock = threading.Lock()
+        # One connect, pair, audio switch or adapter restart at a time. The
+        # monitor skips its poll while a tap holds this: it used to see the
+        # headphone half connected, find no sink yet and restart the adapter
+        # under the connect the person had just started.
+        self._connect_lock = threading.RLock()
         self._paired_devices: List[BluetoothDevice] = []
         self._discovered_devices: List[BluetoothDevice] = []
         self._connected_device: Optional[BluetoothDevice] = None
@@ -88,6 +103,8 @@ class BluetoothManager:
         self._pause_event.set()  # Start unpaused
         self._reconnect_cooldown: int = 0
         self._reconnect_failures: int = 0
+        self._adapter_unknown_polls: int = 0
+        self._adapter_recovery_cooldown: int = 0
         self._audio_generation: int = 0  # Bumped on each activate/deactivate to cancel stale threads
 
     # ------------------------------------------------------------------
@@ -321,33 +338,47 @@ class BluetoothManager:
         """Connect to a paired device (from settings menu tap)."""
         def _do():
             self._on_toast('Connecting...')
-            sink = self._reliable_connect(mac)
-            if sink:
-                self.refresh_paired()
-                dev = next((d for d in self._paired_devices if d.mac == mac and d.connected), None)
-                if dev:
-                    self._set_connected(dev, sink)
-            else:
-                self._on_toast('Connection failed')
+            with self._connect_lock:
+                sink = self._reliable_connect(mac)
+                if sink:
+                    self._set_connected(self._paired_device(mac), sink)
+                else:
+                    self._on_toast('Connection failed')
             self._on_invalidate()
         threading.Thread(target=_do, daemon=True).start()
+
+    def _paired_device(self, mac: str) -> BluetoothDevice:
+        """Fresh paired-device entry for a device we just connected.
+
+        bluetoothctl can lag a moment behind a connect; a device with a sink
+        is connected whatever `info` says, so audio is switched regardless.
+        """
+        self.refresh_paired()
+        with self._lock:
+            dev = next((d for d in self._paired_devices if d.mac == mac), None)
+        if dev is None:
+            return BluetoothDevice(mac=mac, name=mac, paired=True,
+                                   connected=True, is_audio=True)
+        dev.connected = True
+        return dev
 
     def disconnect(self):
         dev = self.connected_device
         if not dev:
             return
         def _do():
-            logger.info(f'Bluetooth: disconnecting {dev.mac}')
-            if self.audio_active:
-                self._deactivate_audio()
-            try:
-                subprocess.run(['bluetoothctl', 'disconnect', dev.mac],
-                               capture_output=True, timeout=10)
-            except Exception as e:
-                logger.warning(f'Bluetooth: disconnect error: {e}')
-            with self._lock:
-                self._connected_device = None
-            self.refresh_paired()
+            with self._connect_lock:
+                logger.info(f'Bluetooth: disconnecting {dev.mac}')
+                if self.audio_active:
+                    self._deactivate_audio()
+                try:
+                    subprocess.run(['bluetoothctl', 'disconnect', dev.mac],
+                                   capture_output=True, timeout=10)
+                except Exception as e:
+                    logger.warning(f'Bluetooth: disconnect error: {e}')
+                with self._lock:
+                    self._connected_device = None
+                self.refresh_paired()
             self._on_invalidate()
         threading.Thread(target=_do, daemon=True).start()
 
@@ -362,32 +393,8 @@ class BluetoothManager:
             try:
                 # Stop discovery — adapter can't pair while scanning
                 self.stop_scan(wait=True)
-                self._wait_adapter_ready()
-
-                # Pair via D-Bus with NoInputNoOutput agent (required for AirPods etc.)
-                paired = asyncio.run(self._dbus_pair(mac))
-                if not paired:
-                    self._on_toast('Pairing failed')
-                    return
-
-                subprocess.run(['bluetoothctl', 'trust', mac], capture_output=True, timeout=5)
-
-                # Move device from discovered to paired section
-                self.refresh_paired()
-                with self._lock:
-                    self._discovered_devices = [
-                        d for d in self._discovered_devices if d.mac != mac
-                    ]
-                self._on_invalidate()
-
-                sink = self._reliable_connect(mac)
-                if sink:
-                    self.refresh_paired()
-                    dev = next((d for d in self._paired_devices if d.mac == mac and d.connected), None)
-                    if dev:
-                        self._set_connected(dev, sink)
-                else:
-                    self._on_toast('Connection failed')
+                with self._connect_lock:
+                    self._pair_and_connect_locked(mac)
             except Exception as e:
                 logger.warning(f'Bluetooth: pair error: {e}')
                 self._on_toast('Pairing failed')
@@ -396,6 +403,32 @@ class BluetoothManager:
                     self._pairing_mac = None
                 self._on_invalidate()
         threading.Thread(target=_do, daemon=True).start()
+
+    def _pair_and_connect_locked(self, mac: str):
+        self._wait_adapter_ready()
+
+        # Pair via D-Bus with NoInputNoOutput agent (required for AirPods etc.)
+        paired = asyncio.run(self._dbus_pair(mac))
+        if not paired:
+            self._on_toast('Pairing failed')
+            return
+
+        # Trusted devices may connect back on their own when switched on.
+        subprocess.run(['bluetoothctl', 'trust', mac], capture_output=True, timeout=5)
+
+        # Move device from discovered to paired section
+        self.refresh_paired()
+        with self._lock:
+            self._discovered_devices = [
+                d for d in self._discovered_devices if d.mac != mac
+            ]
+        self._on_invalidate()
+
+        sink = self._reliable_connect(mac)
+        if sink:
+            self._set_connected(self._paired_device(mac), sink)
+        else:
+            self._on_toast('Connection failed')
 
     async def _dbus_pair(self, mac: str) -> bool:
         """Pair with device via D-Bus, registering a NoInputNoOutput agent."""
@@ -414,6 +447,28 @@ class BluetoothManager:
 
             @method()
             def RequestConfirmation(self, device: 'o', passkey: 'u'):
+                pass
+
+            @method()
+            def RequestAuthorization(self, device: 'o'):
+                pass
+
+            # Older headphones still use a PIN; nearly all take 0000.
+            # Without these BlueZ got "method not found" and pairing failed.
+            @method()
+            def RequestPinCode(self, device: 'o') -> 's':
+                return '0000'
+
+            @method()
+            def RequestPasskey(self, device: 'o') -> 'u':
+                return 0
+
+            @method()
+            def DisplayPinCode(self, device: 'o', pincode: 's'):
+                pass
+
+            @method()
+            def DisplayPasskey(self, device: 'o', passkey: 'u', entered: 'q'):
                 pass
 
             @method()
@@ -457,6 +512,9 @@ class BluetoothManager:
                     logger.info('Bluetooth: D-Bus pair success')
                     return True
                 except Exception as e:
+                    if 'AlreadyExists' in f'{getattr(e, "type", "")} {e}':
+                        logger.info('Bluetooth: already paired')
+                        return True
                     logger.info(f'Bluetooth: D-Bus pair attempt {attempt + 1} failed: {e}')
                     if attempt == 0:
                         await asyncio.sleep(2)
@@ -500,7 +558,7 @@ class BluetoothManager:
             return None
 
         # Check for sink (wait up to 5s for PipeWire)
-        sink = self._find_bt_sink(retries=5)
+        sink = self._find_bt_sink(retries=5, mac=mac)
         if sink:
             logger.info(f'Bluetooth: connected with sink {sink}')
             return sink
@@ -517,7 +575,7 @@ class BluetoothManager:
         if not self._bt_connect(mac):
             return None
 
-        sink = self._find_bt_sink(retries=5)
+        sink = self._find_bt_sink(retries=5, mac=mac)
         if sink:
             logger.info(f'Bluetooth: connected with sink {sink} (after adapter restart)')
         else:
@@ -525,22 +583,37 @@ class BluetoothManager:
         return sink
 
     def _bt_connect(self, mac: str) -> bool:
-        """Run bluetoothctl connect. Returns True if successful."""
+        """Run bluetoothctl connect. Returns True if the device is connected.
+
+        A device that is already connected counts as success: BlueZ answers
+        `AlreadyConnected` then, which used to end the connect right there,
+        so a headphone connected without A2DP (the Pi 3B quirk) never got
+        the adapter restart that fixes it.
+        """
         try:
             result = subprocess.run(
                 ['bluetoothctl', 'connect', mac],
                 capture_output=True, text=True, timeout=15,
             )
-            success = 'Connection successful' in result.stdout or 'Connected: yes' in result.stdout
-            if not success:
-                logger.info(f'Bluetooth: connect failed: {result.stdout.strip()[:80]}')
-            return success
+            out = f'{result.stdout or ""}{result.stderr or ""}'
+            if ('Connection successful' in out or 'Connected: yes' in out
+                    or 'AlreadyConnected' in out):
+                return True
+            if self._is_connected(mac):
+                return True
+            logger.info(f'Bluetooth: connect failed: {out.strip()[:80]}')
+            return False
         except subprocess.TimeoutExpired:
+            if self._is_connected(mac):
+                return True
             logger.info(f'Bluetooth: connect timeout for {mac}')
             return False
         except Exception as e:
             logger.warning(f'Bluetooth: connect error: {e}')
             return False
+
+    def _is_connected(self, mac: str) -> bool:
+        return 'Connected: yes' in self._get_device_info(mac)
 
     # ------------------------------------------------------------------
     # Audio routing
@@ -586,29 +659,36 @@ class BluetoothManager:
         self._on_invalidate()
 
         def _do():
-            sink = self._find_bt_sink(retries=5)
-            if not sink:
-                sink = self._reliable_connect(dev.mac) if dev else None
-            # Check if a newer toggle has superseded us
-            with self._lock:
-                if self._audio_generation != my_gen:
-                    logger.info(f'Bluetooth: activate cancelled (gen {my_gen} != {self._audio_generation})')
-                    return
-            if not sink:
-                logger.warning('Bluetooth: cannot activate audio — no sink')
-                # Roll back optimistic state
+            with self._connect_lock:
+                sink = self._find_bt_sink(retries=5, mac=dev.mac)
+                if not sink:
+                    sink = self._reliable_connect(dev.mac)
+                # Check if a newer toggle has superseded us
                 with self._lock:
-                    if self._audio_generation == my_gen:
-                        self._audio_active = False
-                self._on_audio_changed(False)
-                self._on_invalidate()
-                return
-            self._set_default_sink(sink)
-            self._move_stream(sink)
-            with self._lock:
-                if self._audio_generation == my_gen:
+                    if self._audio_generation != my_gen:
+                        logger.info(f'Bluetooth: activate cancelled (gen {my_gen} != {self._audio_generation})')
+                        return
+                if not sink:
+                    logger.warning('Bluetooth: cannot activate audio — no sink')
+                    # Roll back optimistic state
+                    with self._lock:
+                        if self._audio_generation == my_gen:
+                            self._audio_active = False
+                    self._on_audio_changed(False)
+                    self._on_toast(f'{dev.name} not available')
+                    self._on_invalidate()
+                    return
+                with self._lock:
+                    if self._audio_generation != my_gen:
+                        return
                     self._desired_sink = sink
-            self._settings.set_last_bt_device_mac(dev.mac)
+                # Again now that the sink is known: the first call came
+                # before it was, so the headphone volume was never set and
+                # played at whatever level the sink had (often 100%).
+                self._on_audio_changed(True)
+                self._set_default_sink(sink)
+                self._move_stream(sink)
+                self._settings.set_last_bt_device_mac(dev.mac)
         threading.Thread(target=_do, daemon=True).start()
 
     def _deactivate_audio(self):
@@ -650,8 +730,13 @@ class BluetoothManager:
         except Exception as e:
             logger.warning(f'Bluetooth: move-sink-input error: {e}')
 
-    def _find_bt_sink(self, retries: int = 1) -> Optional[str]:
-        """Find a Bluetooth A2DP audio sink (not HFP/HSP headset sink)."""
+    def _find_bt_sink(self, retries: int = 1, mac: Optional[str] = None) -> Optional[str]:
+        """Find a Bluetooth A2DP audio sink (not HFP/HSP headset sink).
+
+        With a mac, only that device's sink counts, so audio never goes to
+        another Bluetooth device that happens to still be connected.
+        """
+        mac_key = mac.replace(':', '_').upper() if mac else None
         for attempt in range(retries):
             try:
                 result = subprocess.run(['pactl', 'list', 'sinks', 'short'],
@@ -660,14 +745,16 @@ class BluetoothManager:
                     parts = line.split()
                     if len(parts) < 2 or 'bluez' not in parts[1]:
                         continue
+                    if mac_key and mac_key not in parts[1].upper():
+                        continue
                     # Reject HFP/HSP sinks (mono 8/16kHz) — need A2DP (stereo 44.1/48kHz)
                     spec = ' '.join(parts[2:])
                     if '1ch' in spec and ('8000Hz' in spec or '16000Hz' in spec):
                         logger.info(f'Bluetooth: skipping HFP sink {parts[1]}')
                         continue
                     return parts[1]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f'Bluetooth: list sinks failed: {e}')
             if attempt < retries - 1:
                 time.sleep(1)
         return None
@@ -723,14 +810,56 @@ class BluetoothManager:
 
     def _is_adapter_powered(self) -> bool:
         """Check if the BT adapter is powered on."""
+        return self._adapter_state() == 'on'
+
+    def _adapter_state(self) -> str:
+        """'on', 'off' (adapter says Powered: no) or 'unknown' (no answer)."""
         try:
             result = subprocess.run(
                 ['bluetoothctl', 'show'],
                 capture_output=True, text=True, timeout=5,
             )
-            return 'Powered: yes' in result.stdout
         except Exception:
+            return 'unknown'
+        if 'Powered: yes' in result.stdout:
+            return 'on'
+        if 'Powered: no' in result.stdout:
+            return 'off'
+        return 'unknown'
+
+    def _adapter_healthy(self) -> bool:
+        """Check the adapter and restart it when it is really down.
+
+        Returns False when the poll should stop here.
+        """
+        state = self._adapter_state()
+        if state == 'on':
+            self._adapter_unknown_polls = 0
+            self._adapter_recovery_cooldown = 0
+            return True
+        if state == 'unknown':
+            self._adapter_unknown_polls += 1
+            if self._adapter_unknown_polls < ADAPTER_UNKNOWN_POLLS_BEFORE_RESTART:
+                logger.info(f'Bluetooth: adapter did not answer '
+                            f'({self._adapter_unknown_polls}/{ADAPTER_UNKNOWN_POLLS_BEFORE_RESTART})')
+                return False
+        if self._adapter_recovery_cooldown > 0:
+            self._adapter_recovery_cooldown -= 1
             return False
+
+        logger.warning(f'Bluetooth: adapter {state}, attempting recovery')
+        self._restart_adapter()
+        if self._is_adapter_powered():
+            self._adapter_unknown_polls = 0
+            return True
+
+        logger.warning('Bluetooth: adapter recovery failed')
+        self._adapter_recovery_cooldown = ADAPTER_RECOVERY_BACKOFF_POLLS
+        with self._lock:
+            prev = self._connected_device
+        if prev:
+            self._handle_device_disconnected(prev)
+        return False
 
     # ------------------------------------------------------------------
     # Background monitoring
@@ -750,18 +879,20 @@ class BluetoothManager:
     def _poll_connection_state(self):
         if sys.platform != 'linux':
             return
+        # A connect, pair or audio switch from a tap is running: leave the
+        # adapter to it and look again next poll.
+        if not self._connect_lock.acquire(blocking=False):
+            return
+        try:
+            self._poll_connection_state_locked()
+        finally:
+            self._connect_lock.release()
+
+    def _poll_connection_state_locked(self):
         try:
             # Check adapter health — BCM43430A1 can lock up completely
-            if not self._is_adapter_powered():
-                logger.warning('Bluetooth: adapter not powered, attempting recovery')
-                self._restart_adapter()
-                if not self._is_adapter_powered():
-                    logger.warning('Bluetooth: adapter recovery failed')
-                    with self._lock:
-                        prev = self._connected_device
-                    if prev:
-                        self._handle_device_disconnected(prev)
-                    return
+            if not self._adapter_healthy():
+                return
 
             with self._lock:
                 prev = self._connected_device
@@ -777,11 +908,15 @@ class BluetoothManager:
             elif not now_connected and prev_mac:
                 self._handle_device_disconnected(prev)
             elif now_mac and now_mac != prev_mac:
-                with self._lock:
-                    self._connected_device = now_connected
-                self._on_invalidate()
+                # Another headphone took over: route audio to it too.
+                self._handle_device_connected(now_connected)
             elif not now_connected:
-                self._try_auto_reconnect(paired)
+                with self._lock:
+                    busy = self._scanning or self._pairing_mac is not None
+                # Paging a headphone while the menu scans or pairs makes
+                # both fail on this adapter.
+                if not busy:
+                    self._try_auto_reconnect(paired)
         except Exception as e:
             logger.warning(f'Bluetooth: monitor poll error: {e}')
 
@@ -795,38 +930,47 @@ class BluetoothManager:
         self._set_default_sink(expected_sink)
 
         # Check if sink already exists (e.g. fresh connect with A2DP)
-        sink = self._find_bt_sink(retries=3)
+        sink = self._find_bt_sink(retries=3, mac=dev.mac)
         if not sink:
             # Pi 3B: often connected without A2DP — restart adapter and reconnect
             logger.info(f'Bluetooth: no sink, restarting adapter')
             sink = self._reliable_connect(dev.mac)
-            if sink:
-                self._set_default_sink(sink)
         if sink:
             self._set_connected(dev, sink)
         else:
             logger.warning(f'Bluetooth: {dev.name} connected but no sink')
+            # Undo the guess above: a BT sink that shows up later would
+            # otherwise take new streams while Mello shows the speaker.
+            self._set_default_sink(WM8960_SINK)
             with self._lock:
                 self._connected_device = dev
+                self._audio_active = False
+                self._desired_sink = None
+            self._on_audio_changed(False)
             self._on_invalidate()
 
     def _set_connected(self, dev: BluetoothDevice, sink: str):
         """Set device as connected and auto-switch audio to BT."""
         logger.info(f'Bluetooth: {dev.name} active with sink {sink}')
-        self._set_default_sink(sink)
-        self._move_stream(sink)
         with self._lock:
+            self._audio_generation += 1  # Supersede any in-flight toggle
             self._connected_device = dev
             self._audio_active = True
             self._desired_sink = sink
             self._reconnect_failures = 0
-        self._settings.set_last_bt_device_mac(dev.mac)
+            self._reconnect_cooldown = 0
+        # Volume first, then move the music: otherwise the first moment
+        # plays at the headphone's previous (often full) volume.
         self._on_audio_changed(True)
+        self._set_default_sink(sink)
+        self._move_stream(sink)
+        self._settings.set_last_bt_device_mac(dev.mac)
         self._on_invalidate()
 
     def _handle_device_disconnected(self, prev_dev: BluetoothDevice):
         logger.info(f'Bluetooth: {prev_dev.name} disconnected')
         self._set_default_sink(WM8960_SINK)
+        self._move_stream(WM8960_SINK)
         with self._lock:
             self._connected_device = None
             was_active = self._audio_active
@@ -871,7 +1015,7 @@ class BluetoothManager:
             return
 
         # Connected — check if PipeWire created a sink
-        sink = self._find_bt_sink(retries=5)
+        sink = self._find_bt_sink(retries=5, mac=dev.mac)
         if not sink:
             # Connected but no A2DP sink — now escalate to full reliable_connect
             logger.info(f'Bluetooth: connected but no sink, escalating to reliable_connect')
@@ -883,11 +1027,7 @@ class BluetoothManager:
             sink = self._reliable_connect(dev.mac)
 
         if sink:
-            self.refresh_paired()
-            connected_dev = next(
-                (d for d in self._paired_devices if d.mac == dev.mac and d.connected), None)
-            if connected_dev:
-                self._set_connected(connected_dev, sink)
+            self._set_connected(self._paired_device(dev.mac), sink)
             self._reconnect_failures = 0
         else:
             self._reconnect_failures += 1
